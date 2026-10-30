@@ -57,6 +57,14 @@
             android:src="@drawable/ic_share" />
 
         <ImageButton
+            android:id="@+id/add_captions"
+            style="@style/DF.IconButton"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:contentDescription="@string/add_captions"
+            android:src="@drawable/ic_closed_caption" />
+
+        <ImageButton
             android:id="@+id/edit"
             style="@style/DF.IconButton"
             android:layout_marginStart="8dp"

@@ -40,6 +40,30 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 
+/**
+ * Hands a transcript to the caption editor and waits for the corrected, styled words, so a
+ * take's captions can be reviewed before its videos are made.
+ */
+object CaptionReview {
+    var words: List<CaptionWord> = emptyList()
+        private set
+    private var pending: kotlinx.coroutines.CompletableDeferred<List<CaptionWord>>? = null
+
+    suspend fun review(words: List<CaptionWord>): List<CaptionWord> {
+        this.words = words
+        val d = kotlinx.coroutines.CompletableDeferred<List<CaptionWord>>()
+        pending = d
+        return d.await()
+    }
+
+    /** The editor's result; null keeps the words as they were. */
+    fun submit(edited: List<CaptionWord>?) {
+        val d = pending ?: return
+        pending = null
+        d.complete(edited ?: words)
+    }
+}
+
 /** Caption language. Hinglish uses Android's Indian-English model, which writes Hindi words in Roman script. */
 enum class CaptionLanguage(val label: String, val tag: String) {
     OFF("Off", ""),
@@ -47,7 +71,13 @@ enum class CaptionLanguage(val label: String, val tag: String) {
     HINGLISH("Hinglish", "en-IN"),
 }
 
-data class CaptionWord(val startMs: Long, val endMs: Long, val text: String)
+data class CaptionWord(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String,
+    /** This word's own colour / size / effect, set in the caption editor. */
+    val look: WordLook? = null,
+)
 
 data class CaptionLine(val startMs: Long, val endMs: Long, val words: List<CaptionWord>)
 
@@ -101,13 +131,13 @@ object Transcriber {
     /** Every spoken word in [file] with its time. Call on the main thread. Empty if none / unavailable. */
     suspend fun transcribe(
         context: Context,
-        file: File,
+        video: android.net.Uri,
         language: CaptionLanguage,
         onProgress: (Int) -> Unit,
     ): List<CaptionWord> {
         if (language == CaptionLanguage.OFF || !isAvailable(context) || Build.VERSION.SDK_INT < 33) return emptyList()
         val pcm = withContext(Dispatchers.IO) {
-            runCatching { AudioScan.mono16k(context, android.net.Uri.fromFile(file), MAX_BYTES) }.getOrNull()
+            runCatching { AudioScan.mono16k(context, video, MAX_BYTES) }.getOrNull()
         } ?: return emptyList()
         if (pcm.isEmpty()) return emptyList()
         return recognize33(context, pcm, language, onProgress)
@@ -338,8 +368,10 @@ class CaptionOverlay(
         val sinceWord = ms - line.words[wordIndex].startMs
         val phase = (sinceWord.toFloat() / CaptionRenderer.ENTRANCE_MS).coerceIn(0f, 1f)
         // While a word animates in (or the style keeps moving), redraw ~25 times a second.
+        val texts = line.words.map { it.text }
+        val looks = line.words.map { it.look }
         val tick = when {
-            renderer.animatesContinuously -> ms / 40
+            renderer.animatesContinuously(texts, looks) -> ms / 40
             phase < 1f -> sinceWord / 40
             else -> 999L
         }
@@ -347,7 +379,7 @@ class CaptionOverlay(
         if (key == cachedKey) return cached
         cachedKey = key
         // Old bitmaps aren't recycled: Media3 may still be reading the previous one.
-        cached = renderer.render(line.words.map { it.text }, wordIndex, phase, ms, videoW, videoH)
+        cached = renderer.render(texts, wordIndex, phase, ms, videoW, videoH, looks)
         return cached
     }
 }

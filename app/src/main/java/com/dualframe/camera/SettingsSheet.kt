@@ -343,6 +343,24 @@ class SettingsSheet(
             draft = draft.copy(captions = it)
         }
         if (available) {
+            root.addView(Glass.label(context, "Look").apply { setPadding(0, dp(12f), 0, dp(6f)) })
+            var captionStyle = CaptionStyle.load(context)
+            choices(listOf(false, true), captionStyle.emphasis, {
+                if (it) "Auto-emphasise key words" else "Same look for every word"
+            }) {
+                captionStyle = CaptionStyle.load(context).copy(emphasis = it)
+                CaptionStyle.save(context, captionStyle)
+            }
+            root.addView(Glass.caption(
+                context,
+                "Auto-emphasis gives numbers, money, emoji words and your own key words their own colour, size and " +
+                    "effect (set them in Caption style).",
+            ).apply { setPadding(0, dp(6f), 0, 0) })
+            toggle(
+                "Review & edit before saving",
+                "Fix words and give any word its own colour, size or effect. Off: captions go straight in.",
+                draft.captionReview,
+            ) { draft = draft.copy(captionReview = it) }
             root.addView(Glass.pill(context, "Caption style…  font, colours, effects") { onCaptionStyle() }.apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,

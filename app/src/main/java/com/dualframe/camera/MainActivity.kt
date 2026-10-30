@@ -331,9 +331,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     private fun openCaptionStyle() {
-        captionStyleSheet = CaptionStyleSheet(this) {
+        captionStyleSheet = CaptionStyleSheet(this, onImportFont = {
             importFont.launch(arrayOf("font/*", "application/x-font-ttf", "application/x-font-otf", "application/octet-stream"))
-        }.also { it.show() }
+        }).also { it.show() }
     }
 
     private val importLut = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -1776,6 +1776,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 timecodeRate = settings.fpsLabel,
                 captions = settings.captions,
                 captionStyle = CaptionStyle.load(this),
+                captionReview = settings.captionReview,
                 track = if (settings.activeAutoReframe && dualKind == DualKind.NONE) {
                     synchronized(trackSamples) { trackSamples.toList() }
                 } else {
@@ -2587,6 +2588,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
         when (state) {
             is ExportState.Idle -> shownResult = null
+            is ExportState.ReviewCaptions -> if (shownResult != state) {
+                shownResult = state
+                CaptionEditorActivity.review(this)
+            }
             is ExportState.Running -> {
                 exportStep.text = getString(R.string.exporting_step, state.step, state.total)
                 exportTitle.text = state.label ?: getString(R.string.exporting, state.format.label)

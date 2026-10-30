@@ -170,4 +170,24 @@
     <string name="editor_saved">Saved to your library. The originals are unchanged.</string>
     <string name="editor_failed">Couldn\'t save: %1$s</string>
     <string name="editor_load_failed">Couldn\'t open these videos.</string>
+    <string name="add_captions">Add captions</string>
+    <string name="caption_editor_title">Captions</string>
+    <string name="caption_editor_style">Style</string>
+    <string name="caption_editor_done">Done</string>
+    <string name="caption_editor_review_hint">Tap any word to fix it or give it its own colour, size or effect. Done makes your videos with these captions; ✕ keeps them as recognized.</string>
+    <string name="caption_editor_pick_language">What language is spoken? Captions are made on the phone, free.</string>
+    <string name="caption_editor_make">Make captions</string>
+    <string name="caption_editor_listening">Listening…</string>
+    <string name="caption_editor_no_speech">No speech recognized. If the speech pack is still downloading, try again in a minute.</string>
+    <string name="caption_editor_word">Word</string>
+    <string name="caption_editor_word_hint">Type to correct. A space splits it into words; clear it to remove the word.</string>
+    <string name="caption_editor_join">Join with next</string>
+    <string name="caption_editor_apply_all">Same look for every “%1$s”</string>
+    <string name="caption_editor_applied">Applied to every match.</string>
+    <string name="caption_editor_colour">Colour</string>
+    <string name="caption_editor_custom">Custom…</string>
+    <string name="caption_editor_size">Size</string>
+    <string name="caption_editor_effect">Effect</string>
+    <string name="caption_editor_saving">Adding captions…</string>
+    <string name="caption_editor_saved">Saved a captioned copy to your library. The original is unchanged.</string>
 </resources>

@@ -224,6 +224,8 @@ data class CaptureSettings(
     val anamorphic: Float = 1f,
     /** Burned-in captions (and an .srt) in this language; off by default. */
     val captions: CaptionLanguage = CaptionLanguage.OFF,
+    /** Open the caption editor (corrections, per-word looks) before the videos are made. */
+    val captionReview: Boolean = true,
     /** Auto-reframe: every frame follows the main face, live and in the finished videos. */
     val autoReframe: Boolean = false,
     /** Record a landscape video when the phone is turned sideways. */
@@ -347,6 +349,7 @@ object SettingsStore {
             followRotation = p.getBoolean("followRotation", d.followRotation),
             autoReframe = p.getBoolean("autoReframe", d.autoReframe),
             captions = enumOr(p.getString("captions", null), d.captions),
+            captionReview = p.getBoolean("captionReview", d.captionReview),
             insetCorner = enumOr(p.getString("insetCorner", null), d.insetCorner),
             lensFacing = p.getInt("lensFacing", d.lensFacing),
         )
@@ -397,6 +400,7 @@ object SettingsStore {
             .putBoolean("followRotation", s.followRotation)
             .putBoolean("autoReframe", s.autoReframe)
             .putString("captions", s.captions.name)
+            .putBoolean("captionReview", s.captionReview)
             .putString("insetCorner", s.insetCorner.name)
             .putInt("lensFacing", s.lensFacing)
             .apply()

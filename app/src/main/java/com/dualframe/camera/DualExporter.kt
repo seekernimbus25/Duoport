@@ -63,6 +63,8 @@ sealed interface ExportState {
     ) : ExportState
     data class Done(val videos: List<SavedVideo>, val note: String? = null) : ExportState
     data class Failed(val message: String, val savedOriginal: Uri?) : ExportState
+    /** Waiting for the captions to be reviewed in the caption editor. */
+    data class ReviewCaptions(val token: Long) : ExportState
 }
 
 data class SavedVideo(
@@ -113,6 +115,8 @@ data class ExportJob(
     /** Burn in captions in this language (real-time videos only). */
     val captions: CaptionLanguage = CaptionLanguage.OFF,
     val captionStyle: CaptionStyle = CaptionStyle(),
+    /** Open the caption editor before making the videos. */
+    val captionReview: Boolean = false,
 )
 
 /** One still photo to cut into every chosen shape. */
@@ -174,8 +178,12 @@ object DualExporter {
                 var words: List<CaptionWord> = emptyList()
                 if (job.captions != CaptionLanguage.OFF && job.speed == 1f) {
                     _state.value = ExportState.Running(0, job.outputs.size, first.first, 0, CAPTIONS_LABEL)
-                    words = Transcriber.transcribe(app, job.main.file, job.captions) { p ->
+                    words = Transcriber.transcribe(app, Uri.fromFile(job.main.file), job.captions) { p ->
                         _state.value = ExportState.Running(0, job.outputs.size, first.first, p, CAPTIONS_LABEL)
+                    }
+                    if (words.isNotEmpty() && job.captionReview) {
+                        _state.value = ExportState.ReviewCaptions(System.nanoTime())
+                        words = CaptionReview.review(words)
                     }
                     if (words.isEmpty()) {
                         note = NO_CAPTIONS_NOTE

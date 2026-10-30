@@ -33,6 +33,19 @@ enum class CaptionBackground(val label: String) {
     NONE("None"), PILL("Pill"), BAR("Full bar"), WORDS("Word boxes")
 }
 
+/** A look you can give a single word (in the caption editor, or automatically for key words). */
+enum class WordEffect(val label: String, val animation: CaptionAnimation? = null) {
+    NONE("None"), GLOW("Glow"), NEON("Neon"), BOX("Box"), UNDERLINE("Underline"),
+    POP("Pop", CaptionAnimation.POP_IN), BOUNCE("Bounce", CaptionAnimation.BOUNCE),
+    SHAKE("Shake", CaptionAnimation.SHAKE), FLICKER("Flicker", CaptionAnimation.FLICKER),
+    GLITCH("Glitch", CaptionAnimation.GLITCH),
+}
+
+/** One word's own colour, size and effect; null fields fall back to the caption style. */
+data class WordLook(val color: Int? = null, val sizePct: Int? = null, val effect: WordEffect = WordEffect.NONE) {
+    val isEmpty get() = color == null && sizePct == null && effect == WordEffect.NONE
+}
+
 enum class CaptionShadow(val label: String) {
     OFF("Off"), SOFT("Soft"), HARD("Hard"), LONG("Long")
 }
@@ -69,7 +82,23 @@ data class CaptionStyle(
     val effect: CaptionEffect = CaptionEffect.NONE,
     /** Adds a fitting emoji after words like "money", "fire", "love", "paisa", "pyaar". */
     val autoEmoji: Boolean = false,
+    /** Key words (numbers, money, emoji words, your own list) get their own colour, size and effect. */
+    val emphasis: Boolean = false,
+    val emphasisColor: Int = 0xFF39FF7A.toInt(),
+    val emphasisSizePct: Int = 130,
+    val emphasisEffect: WordEffect = WordEffect.POP,
+    /** Extra words to emphasise, comma separated. */
+    val emphasisWords: String = "",
 ) {
+    /** The automatic look for [word], if it's a key word. */
+    fun emphasisLook(word: String): WordLook? {
+        if (!emphasis) return null
+        val clean = word.trim(',', '.', '!', '?', '"', '\'', ':', ';').lowercase(Locale.US)
+        val listed = emphasisWords.split(',').map { it.trim().lowercase(Locale.US) }.filter { it.isNotEmpty() }
+        val key = clean.any { it.isDigit() } || clean.any { it in "₹$€£%" } || CaptionEmoji.after(clean) != null || clean in listed
+        return if (key) WordLook(emphasisColor, emphasisSizePct, emphasisEffect) else null
+    }
+
     companion object {
         private const val PREFS = "caption_style"
 
@@ -98,6 +127,11 @@ data class CaptionStyle(
                 reveal = p.getBoolean("reveal", d.reveal),
                 effect = e("effect", CaptionEffect.entries.toTypedArray(), d.effect),
                 autoEmoji = p.getBoolean("autoEmoji", d.autoEmoji),
+                emphasis = p.getBoolean("emphasis", d.emphasis),
+                emphasisColor = p.getInt("emphasisColor", d.emphasisColor),
+                emphasisSizePct = p.getInt("emphasisSizePct", d.emphasisSizePct),
+                emphasisEffect = e("emphasisEffect", WordEffect.entries.toTypedArray(), d.emphasisEffect),
+                emphasisWords = p.getString("emphasisWords", null) ?: d.emphasisWords,
             )
         }
 
@@ -122,6 +156,11 @@ data class CaptionStyle(
                 .putBoolean("reveal", s.reveal)
                 .putString("effect", s.effect.name)
                 .putBoolean("autoEmoji", s.autoEmoji)
+                .putBoolean("emphasis", s.emphasis)
+                .putInt("emphasisColor", s.emphasisColor)
+                .putInt("emphasisSizePct", s.emphasisSizePct)
+                .putString("emphasisEffect", s.emphasisEffect.name)
+                .putString("emphasisWords", s.emphasisWords)
                 .apply()
         }
 
@@ -146,7 +185,7 @@ data class CaptionStyle(
                 font = "res:archivo_black", sizePct = 130, uppercase = true, wordsPerLine = 2,
                 highlight = CaptionHighlight.COLOR, highlightColor = 0xFF39FF7A.toInt(), outline = 4,
                 background = CaptionBackground.NONE, shadow = CaptionShadow.HARD, animation = CaptionAnimation.BOUNCE,
-                autoEmoji = true,
+                autoEmoji = true, emphasis = true, emphasisColor = 0xFFFFE14D.toInt(), emphasisSizePct = 140,
             ),
             "Neon flicker" to CaptionStyle(
                 font = "res:bebas_neue", sizePct = 150, uppercase = true, effect = CaptionEffect.NEON,
@@ -293,12 +332,28 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
     /** True when the picture keeps changing while a word is on screen (needs a fresh frame often). */
     val animatesContinuously get() = style.animation == CaptionAnimation.SHAKE || style.animation == CaptionAnimation.FLICKER
 
+    /** Same, taking the line's own word looks into account. */
+    fun animatesContinuously(words: List<String>, looks: List<WordLook?>): Boolean =
+        animatesContinuously || words.indices.any { i ->
+            val e = (looks.getOrNull(i) ?: style.emphasisLook(words[i]))?.effect
+            e == WordEffect.SHAKE || e == WordEffect.FLICKER
+        }
+
     /**
      * [words] of the current line, [active] = the word being spoken, [phase] = 0..1 how far
      * into that word's entrance we are, [timeMs] for continuous effects. Returns a bitmap
      * [videoW] wide; the text stays inside the central safe area.
      */
-    fun render(words: List<String>, active: Int, phase: Float, timeMs: Long, videoW: Int, videoH: Int): Bitmap {
+    fun render(
+        words: List<String>,
+        active: Int,
+        phase: Float,
+        timeMs: Long,
+        videoW: Int,
+        videoH: Int,
+        /** Each word's own look (from the caption editor), by position; null = automatic. */
+        wordLooks: List<WordLook?> = emptyList(),
+    ): Bitmap {
         val vertical = videoH > videoW
         val base = minOf(videoW, videoH) * (if (vertical) 0.062f else 0.05f) * style.sizePct / 100f * sizeBoost()
         text.textSize = base
@@ -308,14 +363,18 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
         }
         if (shown.isEmpty()) return Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
 
+        val looks = shown.indices.map { i -> wordLooks.getOrNull(i) ?: style.emphasisLook(words[i]) }
         val p = phase.coerceIn(0f, 1f)
+        /** A word's own effect can bring its own entrance. */
+        fun animationOf(i: Int) = looks[i]?.effect?.animation ?: style.animation
         fun scaleOf(i: Int): Float {
-            val entrance = if (i != active) 1f else when (style.animation) {
+            val entrance = if (i != active) 1f else when (animationOf(i)) {
                 CaptionAnimation.POP_IN -> 0.7f + 0.3f * easeOut(p)
                 CaptionAnimation.BOUNCE -> bounce(p)
                 else -> 1f
             }
-            return entrance * if (i == active && style.highlight == CaptionHighlight.POP) 1.15f else 1f
+            val own = (looks[i]?.sizePct ?: 100) / 100f
+            return own * entrance * if (i == active && style.highlight == CaptionHighlight.POP) 1.15f else 1f
         }
         val space = text.measureText(" ")
         val widths = shown.mapIndexed { i, w -> text.measureText(w) * scaleOf(i) }
@@ -374,14 +433,17 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
                 var dy = 0f
                 var alpha = 1f
                 var word = shown[i]
-                if (isActive) {
-                    when (style.animation) {
+                val look = looks[i]
+                // Shake and flicker on a single word keep going while it's on screen.
+                val ownMotion = look?.effect == WordEffect.SHAKE || look?.effect == WordEffect.FLICKER
+                if (isActive || ownMotion) {
+                    when (if (isActive) animationOf(i) else look?.effect?.animation) {
                         CaptionAnimation.SLIDE_UP -> {
                             dy = base * 0.45f * (1f - easeOut(p))
                             alpha = easeOut(p)
                         }
                         CaptionAnimation.TYPEWRITER -> word = word.take(maxOf(1, (word.length * p).toInt() + 1).coerceAtMost(word.length))
-                        CaptionAnimation.FLICKER -> alpha = flicker(p, timeMs)
+                        CaptionAnimation.FLICKER -> alpha = flicker(if (isActive) p else 1f, timeMs)
                         CaptionAnimation.SHAKE -> {
                             dx = base * 0.035f * kotlin.math.sin(timeMs / 23.0).toFloat()
                             dy = base * 0.035f * kotlin.math.cos(timeMs / 31.0).toFloat()
@@ -395,8 +457,8 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
                 canvas.scale(scale, scale, x + w / 2f, baseline - base * 0.35f)
                 // The word's natural width is w / scale; centre it on the scaled slot.
                 val drawX = x + (w - w / scale) / 2f
-                val glitch = isActive && style.animation == CaptionAnimation.GLITCH && p < 1f
-                drawWord(canvas, word, drawX, baseline, isActive, base, alpha, if (glitch) (1f - p) else 0f, timeMs)
+                val glitch = isActive && animationOf(i) == CaptionAnimation.GLITCH && p < 1f
+                drawWord(canvas, word, drawX, baseline, isActive, base, alpha, if (glitch) (1f - p) else 0f, timeMs, look)
                 canvas.restore()
                 x += w + space * fit
             }
@@ -420,6 +482,7 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
         alpha: Float,
         glitch: Float,
         timeMs: Long,
+        look: WordLook?,
     ) {
         val w = text.measureText(word)
         val pad = base * 0.16f
@@ -432,14 +495,18 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
             fill.color = withAlpha(style.backgroundColor)
             canvas.drawRoundRect(RectF(x - pad, baseline - base, x + w + pad, baseline + base * 0.28f), pad, pad, fill)
         }
-        if (active && style.highlight == CaptionHighlight.BOX) {
+        if (look?.effect == WordEffect.BOX) {
+            fill.color = withAlpha(style.highlightColor)
+            canvas.drawRoundRect(RectF(x - pad, baseline - base, x + w + pad, baseline + base * 0.28f), pad, pad, fill)
+        } else if (active && style.highlight == CaptionHighlight.BOX) {
             fill.color = withAlpha(style.highlightColor)
             canvas.drawRoundRect(RectF(x - pad, baseline - base, x + w + pad, baseline + base * 0.28f), pad, pad, fill)
         }
         // Glow: the spoken word, or every word for neon.
-        if ((active && style.glow) || style.effect == CaptionEffect.NEON) {
+        val ownGlow = look?.effect == WordEffect.GLOW || look?.effect == WordEffect.NEON
+        if ((active && style.glow) || style.effect == CaptionEffect.NEON || ownGlow) {
             text.style = Paint.Style.FILL
-            text.color = withAlpha(style.highlightColor)
+            text.color = withAlpha(if (ownGlow) look?.color ?: style.highlightColor else style.highlightColor)
             text.maskFilter = BlurMaskFilter(base * (if (style.effect == CaptionEffect.NEON) 0.25f else 0.35f), BlurMaskFilter.Blur.NORMAL)
             text.clearShadowLayer()
             canvas.drawText(word, x, baseline, text)
@@ -484,8 +551,12 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
         }
 
         val highlighted = active && style.highlight in setOf(CaptionHighlight.COLOR, CaptionHighlight.POP)
-        val color = if (highlighted) style.highlightColor else style.textColor
+        // A word's own colour always wins (neon words stay white-hot with a coloured glow).
+        val own = look?.color?.takeIf { look.effect != WordEffect.NEON }
+        val color = own ?: if (highlighted) style.highlightColor else style.textColor
         when {
+            own != null -> text.color = withAlpha(own)
+            look?.effect == WordEffect.NEON -> text.color = withAlpha(Color.WHITE)
             style.effect == CaptionEffect.GRADIENT && !highlighted -> {
                 text.color = Color.WHITE
                 text.alpha = a
@@ -501,7 +572,7 @@ class CaptionRenderer(private val style: CaptionStyle, typeface: Typeface, varia
         text.shader = null
         text.clearShadowLayer()
 
-        if (active && style.highlight == CaptionHighlight.UNDERLINE) {
+        if ((active && style.highlight == CaptionHighlight.UNDERLINE) || look?.effect == WordEffect.UNDERLINE) {
             fill.color = withAlpha(style.highlightColor)
             val y = baseline + base * 0.14f
             canvas.drawRoundRect(RectF(x, y, x + w, y + base * 0.1f), base * 0.05f, base * 0.05f, fill)
