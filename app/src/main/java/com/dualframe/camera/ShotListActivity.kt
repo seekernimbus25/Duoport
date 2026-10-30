@@ -251,7 +251,7 @@ class ShotListActivity : AppCompatActivity() {
         }
     }
 
-    private fun takeMenu(p: ShotProject, shot: Shot, take: Take) {
+    private fun takeMenu(p: ShotProject, shot: Shot, take: ShotTake) {
         val options = mutableListOf(getString(R.string.shots_take_play), getString(R.string.shots_take_use))
         options += getString(R.string.shots_take_good)
         options += getString(R.string.shots_take_no_good)
@@ -277,7 +277,7 @@ class ShotListActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun playTake(take: Take) {
+    private fun playTake(take: ShotTake) {
         val (label, uri) = take.videos.firstOrNull() ?: return
         startActivity(Intent(this, PlayerActivity::class.java).setData(uri).putExtra(PlayerActivity.EXTRA_TITLE, "T${take.number} · $label"))
     }

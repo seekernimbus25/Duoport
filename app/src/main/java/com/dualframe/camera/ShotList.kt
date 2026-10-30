@@ -32,7 +32,7 @@ enum class ShotType(val code: String, val label: String, val aliases: List<Strin
 }
 
 /** One take of a shot: the videos it made (one per shape, e.g. 9:16 and 16:9). */
-class Take(
+class ShotTake(
     val number: Int,
     val videos: MutableList<Pair<String, Uri>> = mutableListOf(),
     val createdAt: Long = System.currentTimeMillis(),
@@ -50,14 +50,14 @@ class Shot(
     var script: String = "",
     var notes: String = "",
 ) {
-    val takes = mutableListOf<Take>()
+    val takes = mutableListOf<ShotTake>()
     /** The take that goes in the edit; null = the best guess ([pick]). */
     var chosen: Int? = null
     /** Take numbers already handed out, including takes still being saved. */
     var takesStarted = 0
 
     /** The chosen take, else the latest good one, else the latest unrated one. */
-    fun pick(): Take? = takes.firstOrNull { it.number == chosen }
+    fun pick(): ShotShotTake? = takes.firstOrNull { it.number == chosen }
         ?: takes.lastOrNull { it.good == true }
         ?: takes.lastOrNull { it.good != false }
 
@@ -158,7 +158,7 @@ object ShotLists {
         if (videos.isEmpty()) return
         val project = load(context, entry.getString("project")) ?: return
         val shot = project.shots.firstOrNull { it.id == entry.getLong("shot") } ?: return
-        val take = Take(entry.getInt("take"), videos.toMutableList())
+        val take = ShotTake(entry.getInt("take"), videos.toMutableList())
         if (entry.has("good")) take.good = entry.getBoolean("good")
         shot.takes.removeAll { it.number == take.number }
         shot.takes += take
@@ -290,7 +290,7 @@ object ShotLists {
                 for (j in 0 until takes.length()) {
                     val t = takes.getJSONObject(j)
                     val videos = t.optJSONArray("videos") ?: JSONArray()
-                    this.takes += Take(
+                    this.takes += ShotTake(
                         t.getInt("number"),
                         (0 until videos.length()).map { k ->
                             videos.getJSONObject(k).let { v -> v.optString("label") to Uri.parse(v.getString("uri")) }
