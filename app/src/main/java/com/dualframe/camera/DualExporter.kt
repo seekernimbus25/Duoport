@@ -229,10 +229,13 @@ object DualExporter {
                     withContext(Dispatchers.IO) { file.delete() }
                 }
                 if (current.keepOriginal) saveOriginals(app, job)
+                // A shot-list take: file it under its shot.
+                runCatching { ShotLists.onSaved(app, job.baseName, saved.map { it.format.label to it.uri }) }
                 _state.value = ExportState.Done(saved, note)
             } catch (e: Exception) {
                 // Never lose the take: if cutting fails, keep the original recording instead.
                 val original = runCatching { saveOriginals(app, job) }.getOrNull()
+                runCatching { ShotLists.onSaved(app, job.baseName, listOfNotNull(original?.let { "Original" to it })) }
                 _state.value = ExportState.Failed(e.message ?: e.javaClass.simpleName, original)
             } finally {
                 withContext(Dispatchers.IO) {

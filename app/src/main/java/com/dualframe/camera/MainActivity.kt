@@ -138,6 +138,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private lateinit var recordButton: ImageButton
     private lateinit var flipButton: ImageButton
     private lateinit var scriptButton: ImageButton
+
+    // Shot list mode: the shot list being shot, and the take just recorded (shot id, take).
+    private lateinit var shotBanner: ShotBanner
+    private var shotProject: ShotProject? = null
+    private var recordingShotTake: Pair<Long, Int>? = null
+    private var lastShotTake: Pair<Long, Int>? = null
+    private var shownShotId: Long? = null
     private lateinit var dualButton: ImageButton
     private lateinit var settingsButton: ImageButton
     private lateinit var formatScroller: View
@@ -459,6 +466,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
         findViewById<View>(R.id.capture_video).setOnClickListener { setPhotoMode(false) }
         findViewById<View>(R.id.capture_photo).setOnClickListener { setPhotoMode(true) }
+        setupShots()
         modeAuto.setOnClickListener { setMode(CaptureMode.AUTO) }
         modePro.setOnClickListener { setMode(CaptureMode.PRO) }
         findViewById<View>(R.id.gallery_button).setOnClickListener { openLibrary() }
@@ -493,6 +501,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         stallRecoveries = 0
         statusHandler.postDelayed(stallWatch, 1000)
         if (orientationListener.canDetectOrientation()) orientationListener.enable()
+        refreshShots()
     }
 
     override fun onPause() {
@@ -1656,8 +1665,18 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun shutterIcon() = if (settings.photoMode) R.drawable.ic_shutter else R.drawable.ic_record
 
-    /** Slate-style names: Interview_T007_20261030_141502 */
+    /** Slate-style names: Interview_T007_20261030_141502, or Kitchen_S03_T02_MS_… for a shot list. */
     private fun slateName(): String {
+        val project = shotProject
+        recordingShotTake = null
+        if (project != null && !settings.photoMode) {
+            val shot = project.currentShot
+            val begun = ShotLists.beginTake(this, project)
+            if (shot != null && begun != null) {
+                recordingShotTake = shot.id to begun.second
+                return begun.first
+            }
+        }
         val safeName = settings.clipName.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().replace(' ', '_').ifEmpty { "DualFrame" }
         val take = SettingsStore.nextTake(this)
         return String.format(Locale.US, "%s_T%03d_", safeName, take) +
@@ -1739,6 +1758,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             teleprompter.restart()
             teleprompter.play()
         }
+        lastShotTake = null
+        refreshShots()
     }
 
     private fun stopRecording() {
@@ -1751,6 +1772,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         insetRecording = null
         setRecordingUi(false)
         teleprompter.pause()
+        lastShotTake = if (mainTake != null) recordingShotTake else null
+        refreshShots()
 
         val main = mainTake
         if (main == null) {
@@ -2587,6 +2610,99 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     // endregion
 
+    // region Shot list
+
+    private fun setupShots() {
+        shotBanner = ShotBanner(this).apply { visibility = View.GONE }
+        findViewById<LinearLayout>(R.id.top_bar).addView(
+            shotBanner,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12f).toInt(), dp(8f).toInt(), dp(12f).toInt(), 0)
+            },
+        )
+        findViewById<View>(R.id.capture_shots).setOnClickListener {
+            if (isRecording || countdownRunning) return@setOnClickListener
+            ShotListActivity.open(this, ShotLists.activeId(this))
+        }
+        shotBanner.onPrev = { moveShot(-1) }
+        shotBanner.onNext = { moveShot(1) }
+        shotBanner.onList = { shotProject?.let { ShotListActivity.open(this, it.id) } }
+        shotBanner.onExit = {
+            ShotLists.setActive(this, null)
+            lastShotTake = null
+            refreshShots()
+        }
+        shotBanner.onGood = { rateLastTake(good = true, next = true) }
+        shotBanner.onGoodAgain = { rateLastTake(good = true, next = false) }
+        shotBanner.onRetake = { rateLastTake(good = false, next = false) }
+    }
+
+    private fun moveShot(by: Int) {
+        val p = shotProject ?: return
+        if (isRecording) return
+        val target = p.current + by
+        if (target !in p.shots.indices) {
+            if (by > 0) Toast.makeText(this, R.string.shots_last_done, Toast.LENGTH_LONG).show()
+            return
+        }
+        p.current = target
+        ShotLists.save(this, p)
+        lastShotTake = null
+        refreshShots()
+    }
+
+    private fun rateLastTake(good: Boolean, next: Boolean) {
+        val p = shotProject ?: return
+        val (shotId, take) = lastShotTake ?: return
+        ShotLists.rate(this, p.id, shotId, take, good)
+        lastShotTake = null
+        val message = when {
+            !good -> getString(R.string.shots_rated_retake, take)
+            next -> getString(R.string.shots_rated_good, take)
+            else -> getString(R.string.shots_rated_good_again, take)
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        shotProject = ShotLists.active(this)
+        if (next) moveShot(1) else refreshShots()
+    }
+
+    /** Shows or hides the shot card and puts the current shot's lines on the teleprompter. */
+    private fun refreshShots() {
+        if (!::shotBanner.isInitialized) return
+        val p = ShotLists.active(this)
+        shotProject = p
+        if (p != null && settings.photoMode && !isRecording) setPhotoMode(false)
+        findViewById<TextView>(R.id.capture_shots).setTextColor(
+            ContextCompat.getColor(this, if (p != null) R.color.accent else R.color.text_secondary)
+        )
+        if (p == null) {
+            Glass.show(shotBanner, false)
+            if (shownShotId != null) {
+                shownShotId = null
+                teleprompter.useShotScript(null, null)
+            }
+            return
+        }
+        shotBanner.bind(p, isRecording, lastShotTake?.takeIf { it.first == p.currentShot?.id }?.second)
+        Glass.show(shotBanner, true)
+        val shot = p.currentShot
+        if (shot?.id != shownShotId && !isRecording) {
+            shownShotId = shot?.id
+            teleprompter.useShotScript(shot?.script) { edited ->
+                ShotLists.load(this, p.id)?.let { fresh ->
+                    fresh.shots.firstOrNull { it.id == shot?.id }?.script = edited
+                    ShotLists.save(this, fresh)
+                }
+            }
+            if (shot?.script?.isNotBlank() == true && !teleprompter.isVisible) {
+                Glass.show(teleprompter, true)
+                scriptButton.isSelected = true
+            }
+        }
+    }
+
+    // endregion
+
     // region Export results
 
     private fun render(state: ExportState) {
@@ -2610,6 +2726,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             is ExportState.Done -> if (shownResult != state) {
                 shownResult = state
                 bindResults(state)
+                refreshShots()
                 state.note?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
                 refreshGalleryThumb()
             }

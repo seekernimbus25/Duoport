@@ -43,6 +43,18 @@ class TeleprompterView @JvmOverloads constructor(
     var isScrolling = false
         private set
 
+    /** A shot's own lines (shot list), shown instead of your script while that shot is up. */
+    private var shotScript: String? = null
+    private var onShotScriptEdited: ((String) -> Unit)? = null
+
+    /** Shows [lines] for the current shot (null = back to your own script); edits go to [onEdited]. */
+    fun useShotScript(lines: String?, onEdited: ((String) -> Unit)?) {
+        shotScript = lines?.takeIf { it.isNotBlank() }
+        onShotScriptEdited = if (shotScript != null) onEdited else null
+        text.text = shotScript ?: script
+        restart()
+    }
+
     /** Status bar height, so eye-contact mode can sit right under the front camera. */
     var topInset = 0
 
@@ -252,7 +264,7 @@ class TeleprompterView @JvmOverloads constructor(
     private fun editScript() {
         pause()
         val input = EditText(context).apply {
-            setText(script)
+            setText(shotScript ?: script)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             minLines = 6
@@ -267,9 +279,16 @@ class TeleprompterView @JvmOverloads constructor(
             .setTitle("Your script")
             .setView(container)
             .setPositiveButton("Save") { _, _ ->
-                script = input.text.toString()
-                text.text = script
-                prefs.edit().putString("script", script).apply()
+                val edited = input.text.toString()
+                if (shotScript != null) {
+                    shotScript = edited
+                    onShotScriptEdited?.invoke(edited)
+                    text.text = edited
+                } else {
+                    script = edited
+                    text.text = script
+                    prefs.edit().putString("script", script).apply()
+                }
                 restart()
             }
             .setNegativeButton("Cancel", null)
