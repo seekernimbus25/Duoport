@@ -26,10 +26,13 @@ its pill and drag to move it.
 
 **Recording profiles (Pro).**
 - *Standard*: your phone's own colour processing.
-- *DF-Log*: a log-style tone curve sent to the camera, keeping highlight and shadow
-  detail for grading. Needs a phone that allows custom tone curves (Pixels do).
-- *HLG HDR*: 10-bit HEVC HDR. The original is kept as HDR. The cut videos are
-  tone-mapped to standard range so LUTs and the inset compositor work.
+- *DF-Log*: a log curve applied by the camera's image processor to the sensor data, before
+  compression (the same place Apple Log or S-Log are applied), but 8-bit. Needs a phone that
+  allows custom tone curves. *Save DF-Log → Rec.709 LUT* writes the conversion `.cube` to
+  Downloads for your editor.
+- *HLG 10-bit*: 10-bit HEVC, Rec.2020 wide colour, log-type highlights. This is the widest
+  range Android gives apps. The cut videos stay 10-bit HDR by default (toggle under Profile);
+  phones that can't encode edited HDR fall back to standard range automatically.
 
 Log and HDR originals are always kept, since they are the "negative".
 
@@ -49,6 +52,16 @@ second camera appears in that same corner of every video.
 **Teleprompter.** Floating glass script that starts with the recording. **◎** eye-contact
 mode is a narrow column right under the front camera so your eyes barely move.
 
+**Slow motion.** Settings → Speed. 60 fps (2×) on most phones; 120 fps (4×) and 240 fps
+(8×) where the phone opens its high-speed mode to apps. The camera records real-time high
+frame rate; the cut videos are slowed to play at 30 fps, without sound.
+
+**Lens lock (Pro).** Lock any lens the phone exposes (ultra-wide, main, tele, or a USB camera
+where supported), so the phone never switches lenses mid-shot.
+
+**This phone.** Settings lists what this phone's cameras can do. The app only offers what
+works on it.
+
 **Export.** Quality (Standard / High / Max) and codec (H.264 / HEVC). If making the videos
 ever fails, the original recording is saved instead.
 
@@ -58,6 +71,12 @@ The camera records one master clip (plus a second clip in Front + Back mode). Wh
 Media3 Transformer cuts out each chosen frame, scales it to the chosen resolution, applies
 the look, lays in the second camera where needed, and encodes H.264 on the phone's
 hardware encoder.
+
+## Google Play
+
+See [docs/PLAY_STORE.md](docs/PLAY_STORE.md): upload key, privacy policy
+([docs/privacy-policy.html](docs/privacy-policy.html)), listing text
+([docs/store-listing.md](docs/store-listing.md)) and graphics (`docs/play/`).
 
 ## Build it yourself
 
