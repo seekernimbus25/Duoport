@@ -57,8 +57,9 @@ object CinematicBlur {
         val mw = mask.width
         val mh = mask.height
         val maskValues = FloatArray(mw * mh)
-        mask.buffer.rewind()
-        mask.buffer.asFloatBuffer().get(maskValues)
+        val maskBuffer = mask.buffer
+        maskBuffer.rewind()
+        maskBuffer.order(ByteOrder.nativeOrder()).asFloatBuffer().get(maskValues)
         if (small != src) small.recycle()
 
         // Blur: shrink hard, then scale back up in two smooth steps.
