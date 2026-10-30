@@ -314,6 +314,28 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             refreshPermissionState()
         }
 
+    private var captionStyleSheet: CaptionStyleSheet? = null
+    private val importFont = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                    CaptionFonts.import(this@MainActivity, uri, name)
+                }
+            }
+            result.onSuccess { id -> captionStyleSheet?.onFontImported(id) }
+                .onFailure { Toast.makeText(this@MainActivity, it.message ?: "Couldn't import that font", Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    private fun openCaptionStyle() {
+        captionStyleSheet = CaptionStyleSheet(this) {
+            importFont.launch(arrayOf("font/*", "application/x-font-ttf", "application/x-font-otf", "application/octet-stream"))
+        }.also { it.show() }
+    }
+
     private val importLut = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importLutFrom(uri)
     }
@@ -1753,6 +1775,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 timecodeStartMs = recordingStartMs,
                 timecodeRate = settings.fpsLabel,
                 captions = settings.captions,
+                captionStyle = CaptionStyle.load(this),
                 track = if (settings.activeAutoReframe && dualKind == DualKind.NONE) {
                     synchronized(trackSamples) { trackSamples.toList() }
                 } else {
@@ -2498,6 +2521,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         if (isRecording) return
         SettingsSheet(
             this, settings, inFrontAndBack = settings.dual, slowRates, phoneSummary(), encoderMaxMbps, micName(),
+            onCaptionStyle = { openCaptionStyle() },
         ) { draft ->
             val old = settings
             if (draft == old) return@SettingsSheet

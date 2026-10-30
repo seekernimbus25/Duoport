@@ -29,6 +29,8 @@ class SettingsSheet(
     private val encoderMaxMbps: Int,
     /** Which microphone recording will use right now ("USB mic"…). */
     private val micName: String,
+    /** Opens the caption style editor. */
+    private val onCaptionStyle: () -> Unit,
     private val onDone: (CaptureSettings) -> Unit,
 ) {
     private var draft = initial
@@ -339,6 +341,14 @@ class SettingsSheet(
         val available = Transcriber.isAvailable(context)
         choices(CaptionLanguage.entries, draft.captions, { it.label }, enabled = { available || it == CaptionLanguage.OFF }) {
             draft = draft.copy(captions = it)
+        }
+        if (available) {
+            root.addView(Glass.pill(context, "Caption style…  font, colours, effects") { onCaptionStyle() }.apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(10f) }
+            })
         }
         root.addView(Glass.caption(
             context,

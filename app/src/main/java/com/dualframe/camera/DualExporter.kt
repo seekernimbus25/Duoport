@@ -112,6 +112,7 @@ data class ExportJob(
     val track: List<SubjectSample>? = null,
     /** Burn in captions in this language (real-time videos only). */
     val captions: CaptionLanguage = CaptionLanguage.OFF,
+    val captionStyle: CaptionStyle = CaptionStyle(),
 )
 
 /** One still photo to cut into every chosen shape. */
@@ -398,8 +399,10 @@ object DualExporter {
         mainEffects += lutEffects()
         // Captions go on last so the LUT doesn't tint them. Tall videos get shorter lines.
         if (words.isNotEmpty()) {
-            val lines = Transcriber.lines(words, if (height > width) 24 else 40)
-            mainEffects += OverlayEffect(listOf<TextureOverlay>(CaptionOverlay(lines)))
+            val style = job.captionStyle
+            val lines = Transcriber.lines(words, if (height > width) 24 else 40, style.wordsPerLine)
+            val renderer = CaptionRenderer(style, CaptionFonts.typeface(context, style.font), CaptionFonts.variation(style.font))
+            mainEffects += OverlayEffect(listOf<TextureOverlay>(CaptionOverlay(lines, renderer)))
         }
 
         if (inset == null) {

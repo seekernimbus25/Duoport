@@ -235,8 +235,11 @@ object Transcriber {
         cont.invokeOnCancellation { android.os.Handler(context.mainLooper).post { finish() } }
     }
 
-    /** Words grouped into short lines: a few words at a time, broken at pauses and sentence ends. */
-    fun lines(words: List<CaptionWord>, maxChars: Int): List<CaptionLine> {
+    /**
+     * Words grouped into short lines: a few words at a time, broken at pauses and sentence
+     * ends. [maxWords] > 0 caps the words per line (1 = one word at a time).
+     */
+    fun lines(words: List<CaptionWord>, maxChars: Int, maxWords: Int = 0): List<CaptionLine> {
         val lines = mutableListOf<CaptionLine>()
         var current = mutableListOf<CaptionWord>()
         var chars = 0
@@ -248,7 +251,8 @@ object Transcriber {
         }
         for (word in words) {
             val pause = current.lastOrNull()?.let { word.startMs - it.endMs > 700 } ?: false
-            if (current.isNotEmpty() && (chars + word.text.length + 1 > maxChars || pause)) flush()
+            val full = maxWords > 0 && current.size >= maxWords
+            if (current.isNotEmpty() && (chars + word.text.length + 1 > maxChars || pause || full)) flush()
             current += word
             chars += word.text.length + 1
             if (word.text.endsWith(".") || word.text.endsWith("?") || word.text.endsWith("!")) flush()
@@ -293,24 +297,20 @@ object Transcriber {
 }
 
 /**
- * Word-by-word captions burned into a video: the current line in bold white on a soft dark
- * pill, the word being spoken in champagne. Sits low in wide videos and higher in tall ones,
- * clear of the buttons apps put along the bottom of Reels and Shorts.
+ * Captions burned into a video in the chosen [CaptionStyle]. A new picture is only drawn
+ * when the spoken word changes, or every few frames while a word animates in.
  */
 @OptIn(UnstableApi::class)
-class CaptionOverlay(private val lines: List<CaptionLine>) : BitmapOverlay() {
+class CaptionOverlay(
+    private val lines: List<CaptionLine>,
+    private val renderer: CaptionRenderer,
+) : BitmapOverlay() {
     private var videoW = 1080
     private var videoH = 1920
     private val empty = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
     private var cachedKey = -1L
     private var cached: Bitmap = empty
     private var lineIndex = 0
-
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create("sans-serif", Typeface.BOLD)
-        color = Color.WHITE
-    }
-    private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(140, 10, 10, 12) }
 
     private val vertical get() = videoH > videoW
 
@@ -323,7 +323,7 @@ class CaptionOverlay(private val lines: List<CaptionLine>) : BitmapOverlay() {
 
     override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings =
         OverlaySettings.Builder()
-            .setBackgroundFrameAnchor(0f, if (vertical) -0.38f else -0.72f)
+            .setBackgroundFrameAnchor(0f, renderer.anchorY(vertical))
             .build()
 
     override fun getBitmap(presentationTimeUs: Long): Bitmap {
@@ -335,52 +335,19 @@ class CaptionOverlay(private val lines: List<CaptionLine>) : BitmapOverlay() {
         val line = lines[lineIndex]
         if (ms < line.startMs || ms >= line.endMs) return empty
         val wordIndex = line.words.indexOfLast { it.startMs <= ms }.coerceAtLeast(0)
-        val key = lineIndex * 1000L + wordIndex
+        val sinceWord = ms - line.words[wordIndex].startMs
+        val phase = (sinceWord.toFloat() / CaptionRenderer.ENTRANCE_MS).coerceIn(0f, 1f)
+        // While a word animates in (or the style keeps moving), redraw ~25 times a second.
+        val tick = when {
+            renderer.animatesContinuously -> ms / 40
+            phase < 1f -> sinceWord / 40
+            else -> 999L
+        }
+        val key = (lineIndex * 1000L + wordIndex) * 10_000L + tick
         if (key == cachedKey) return cached
         cachedKey = key
         // Old bitmaps aren't recycled: Media3 may still be reading the previous one.
-        cached = draw(line, wordIndex)
+        cached = renderer.render(line.words.map { it.text }, wordIndex, phase, ms, videoW, videoH)
         return cached
-    }
-
-    private fun draw(line: CaptionLine, active: Int): Bitmap {
-        val short = minOf(videoW, videoH).toFloat()
-        textPaint.textSize = short * if (vertical) 0.066f else 0.052f
-        val space = textPaint.measureText(" ")
-        val maxWidth = videoW * 0.84f
-        // Wrap into at most two rows.
-        val rows = mutableListOf(mutableListOf<Int>())
-        var rowWidth = 0f
-        line.words.forEachIndexed { i, w ->
-            val width = textPaint.measureText(w.text)
-            if (rows.last().isNotEmpty() && rowWidth + space + width > maxWidth && rows.size < 2) {
-                rows += mutableListOf<Int>()
-                rowWidth = 0f
-            }
-            rowWidth += (if (rows.last().isEmpty()) 0f else space) + width
-            rows.last() += i
-        }
-        val lineHeight = textPaint.textSize * 1.25f
-        val padX = textPaint.textSize * 0.55f
-        val padY = textPaint.textSize * 0.32f
-        val widths = rows.map { row -> row.sumOf { textPaint.measureText(line.words[it].text).toDouble() }.toFloat() + space * (row.size - 1) }
-        val boxW = (widths.maxOrNull() ?: 0f) + padX * 2
-        val boxH = lineHeight * rows.size + padY * 2
-        val bitmap = Bitmap.createBitmap(videoW and 1.inv(), (boxH.toInt() + 2) and 1.inv(), Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        val left = (bitmap.width - boxW) / 2f
-        canvas.drawRoundRect(RectF(left, 0f, left + boxW, boxH), boxH * 0.22f, boxH * 0.22f, boxPaint)
-        rows.forEachIndexed { r, row ->
-            var x = (bitmap.width - widths[r]) / 2f
-            val baseline = padY + lineHeight * r + textPaint.textSize
-            for (i in row) {
-                val word = line.words[i].text
-                textPaint.color = if (i == active) Color.rgb(232, 200, 140) else Color.WHITE
-                textPaint.setShadowLayer(textPaint.textSize * 0.08f, 0f, textPaint.textSize * 0.04f, Color.argb(160, 0, 0, 0))
-                canvas.drawText(word, x, baseline, textPaint)
-                x += textPaint.measureText(word) + space
-            }
-        }
-        return bitmap
     }
 }
