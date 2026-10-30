@@ -188,8 +188,6 @@ data class CaptureSettings(
     val monitoring: Monitoring = Monitoring(),
     /** Show and set shutter as an angle (180°) instead of a time (1/60). */
     val shutterAngle: Boolean = false,
-    /** Colour correction and grading (Pro). */
-    val grade: ColorGrade = ColorGrade(),
     /** False: the LUT is only for viewing; the videos stay as recorded. */
     val bakeLut: Boolean = true,
     /** Camera recording bitrate in Mbps; 0 = the phone's default. */
@@ -283,7 +281,8 @@ data class CaptureSettings(
     /** Auto mode always records the phone's own look, whatever Pro is set to. */
     val activeProfile get() = if (isPro) profile else RecordProfile.STANDARD
     val activeLutId get() = if (isPro) lutId else Luts.NONE
-    val activeGrade get() = if (isPro) grade else ColorGrade()
+    /** Grading happens afterwards, in the library (Grade), so the camera records without one. */
+    val activeGrade get() = ColorGrade()
     val activeMonitoring get() = if (isPro) monitoring else Monitoring(histogram = false)
 
     /** Formats in a fixed, predictable order. */
@@ -330,7 +329,6 @@ object SettingsStore {
             ),
             shutterAngle = p.getBoolean("shutterAngle", d.shutterAngle),
             bakeLut = p.getBoolean("bakeLut", d.bakeLut),
-            grade = ColorGrade.decode(p.getString("grade", null)),
             recordMbps = p.getInt("recordMbps", d.recordMbps),
             volumeKeysRecord = p.getBoolean("volumeKeysRecord", d.volumeKeysRecord),
             mirrorFront = p.getBoolean("mirrorFront", d.mirrorFront),
@@ -382,7 +380,6 @@ object SettingsStore {
             .putInt("scope", s.monitoring.scope)
             .putBoolean("shutterAngle", s.shutterAngle)
             .putBoolean("bakeLut", s.bakeLut)
-            .putString("grade", s.grade.encode())
             .putInt("recordMbps", s.recordMbps)
             .putBoolean("volumeKeysRecord", s.volumeKeysRecord)
             .putBoolean("mirrorFront", s.mirrorFront)

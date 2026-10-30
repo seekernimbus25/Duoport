@@ -102,9 +102,12 @@ class GradeActivity : AppCompatActivity() {
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
+        header.addView(Glass.pill(this, getString(R.string.grade_save_look)) { saveAsLook() })
         header.addView(MaterialButton(this).apply {
             text = getString(R.string.editor_save)
             setOnClickListener { save() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = dp(8f)
         })
         column.addView(header)
 
@@ -211,6 +214,36 @@ class GradeActivity : AppCompatActivity() {
             }
             runCatching { player?.setVideoEffects(effects()) }
         }
+    }
+
+    /** Keeps this grade as a look of its own: it shows under Look here and can be exported as a .cube. */
+    private fun saveAsLook() {
+        val input = android.widget.EditText(this).apply {
+            setText(getString(R.string.grade_default_name))
+            setSelection(text.length)
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.grade_save_look)
+            .setView(input)
+            .setPositiveButton(R.string.grade_save) { _, _ ->
+                val g = grade
+                val id = lutId
+                lifecycleScope.launch {
+                    val saved = withContext(Dispatchers.Default) {
+                        runCatching {
+                            val cube = Luts.cube(this@GradeActivity, id, RecordProfile.STANDARD, g) ?: LutCube.bake(33) { it }
+                            Luts.saveCustom(this@GradeActivity, input.text.toString(), cube)
+                        }.getOrNull()
+                    }
+                    Toast.makeText(
+                        this@GradeActivity,
+                        if (saved != null) R.string.grade_look_saved else R.string.grade_look_failed,
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun save() {

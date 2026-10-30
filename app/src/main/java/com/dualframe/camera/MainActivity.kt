@@ -124,7 +124,6 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         WB("WB", "White balance"),
         FOCUS("Focus", "Focus"),
         EV("Exp", "Exposure"),
-        GRADE("Grade", "Colour grade"),
         MONITOR("Assist", "Monitoring"),
     }
 
@@ -1968,7 +1967,6 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             "FC".takeIf { mon.falseColor },
         )
         set(Param.MONITOR, active.joinToString(" ").ifEmpty { "Off" }, active.isNotEmpty())
-        set(Param.GRADE, if (settings.grade.isNeutral) "Off" else "On", !settings.grade.isNeutral)
 
         autoCell?.isSelected = manual.isAllAuto
     }
@@ -2254,15 +2252,6 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     }
                 })
             }
-            Param.GRADE -> {
-                val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                controlPanel.addView(box)
-                GradeControls(this, box, settings.grade) { setGrade(it) }.build()
-                controlPanel.addView(panelPills().apply {
-                    addView(Glass.pill(context, getString(R.string.grade_save_look)) { saveGradeAsLook() })
-                })
-                note(getString(R.string.grade_note))
-            }
             Param.LENS -> {
                 val pills = panelPills()
                 pills.addView(Glass.pill(this, getString(R.string.lens_auto), settings.lensKey == null) {
@@ -2308,49 +2297,6 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }
             }
         }
-    }
-
-    /**
-     * A grade change from the sliders: re-bake the look without rebuilding the panel (which
-     * would drop the slider mid-drag).
-     */
-    private fun setGrade(grade: ColorGrade) {
-        val wasEffect = wantsPreviewEffect()
-        settings = settings.copy(grade = grade)
-        SettingsStore.save(this, settings)
-        refreshLut(forceRebind = false)
-        updateReadouts()
-        if (bound && wantsPreviewEffect() != wasEffect && wantsPreviewEffect() != effectAttached) bindCamera()
-    }
-
-    /** Saves the current grade as a look of its own (it then appears under LUT, and as a .cube). */
-    private fun saveGradeAsLook() {
-        val input = android.widget.EditText(this).apply {
-            setText(getString(R.string.grade_default_name))
-            setSelection(text.length)
-        }
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.grade_save_look)
-            .setView(input)
-            .setPositiveButton(R.string.grade_save) { _, _ ->
-                val grade = settings.grade
-                lifecycleScope.launch {
-                    val id = withContext(Dispatchers.Default) {
-                        runCatching {
-                            Luts.saveCustom(this@MainActivity, input.text.toString(), LutCube.bake(33) { grade.apply(it) })
-                        }.getOrNull()
-                    }
-                    if (id == null) return@launch
-                    // The look now carries the colour; keep only vignette / grain / sharpen in the grade.
-                    updateSettings(
-                        settings.copy(lutId = id, grade = ColorGrade(vignette = grade.vignette, grain = grade.grain, sharpen = grade.sharpen)),
-                        rebind = false,
-                    )
-                    Toast.makeText(this@MainActivity, R.string.grade_saved, Toast.LENGTH_LONG).show()
-                }
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
     }
 
     /** Writes the DF-Log → Rec.709 LUT to Downloads for Resolve, Premiere, Final Cut, LumaFusion… */
