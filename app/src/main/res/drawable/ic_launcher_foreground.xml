@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A tall 9:16 frame overlapping a wide 16:9 frame, inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.5"
+        android:pathData="M28,43 h52 a4,4 0 0 1 4,4 v18 a4,4 0 0 1 -4,4 h-52 a4,4 0 0 1 -4,-4 v-18 a4,4 0 0 1 4,-4 z" />
+    <path
+        android:strokeColor="#FFC42E"
+        android:strokeWidth="3.5"
+        android:pathData="M46,28 h16 a4,4 0 0 1 4,4 v44 a4,4 0 0 1 -4,4 h-16 a4,4 0 0 1 -4,-4 v-44 a4,4 0 0 1 4,-4 z" />
+    <path
+        android:fillColor="#FF3B30"
+        android:pathData="M54,50 m-4,0 a4,4 0 1 0 8,0 a4,4 0 1 0 -8,0" />
+</vector>
