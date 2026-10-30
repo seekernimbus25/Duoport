@@ -353,6 +353,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (intent.hasExtra(TestHooks.EXTRA_IMPORT_MEDIA)) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val added = runCatching { TestHooks.importMedia(this@MainActivity) }.getOrDefault(-1)
+                android.util.Log.i("DualFrameTest", "imported $added")
+            }
+        }
 
         settings = SettingsStore.load(this)
         askedForPermission = savedInstanceState?.getBoolean(KEY_ASKED, false) ?: false

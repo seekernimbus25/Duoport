@@ -89,7 +89,7 @@ data class CaptionLine(val startMs: Long, val endMs: Long, val words: List<Capti
  */
 object Transcriber {
 
-    fun isAvailable(context: Context) =
+    fun isAvailable(context: Context) = TestHooks.hasTranscript(context) ||
         Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
 
     enum class PackStatus { READY, DOWNLOADING, UNSUPPORTED, UNKNOWN }
@@ -135,7 +135,9 @@ object Transcriber {
         language: CaptionLanguage,
         onProgress: (Int) -> Unit,
     ): List<CaptionWord> {
-        if (language == CaptionLanguage.OFF || !isAvailable(context) || Build.VERSION.SDK_INT < 33) return emptyList()
+        if (language == CaptionLanguage.OFF) return emptyList()
+        TestHooks.transcript(context)?.let { onProgress(100); return it }
+        if (!isAvailable(context) || Build.VERSION.SDK_INT < 33) return emptyList()
         val pcm = withContext(Dispatchers.IO) {
             runCatching { AudioScan.mono16k(context, video, MAX_BYTES) }.getOrNull()
         } ?: return emptyList()
