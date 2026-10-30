@@ -239,7 +239,7 @@
     <string name="design_pick_video">Choose a background video…</string>
     <string name="design_change_video">Change background video…</string>
     <string name="design_bg_video_blur">Soft blur</string>
-    <string name="design_bg_video_note">Plays behind your video on a loop, filling the canvas. Its sound isn't used; your video's sound is kept.</string>
+    <string name="design_bg_video_note">Plays behind your video on a loop, filling the canvas. Its sound isn\'t used; your video\'s sound is kept.</string>
     <string name="design_templates">Templates</string>
     <string name="design_templates_note">Tap one to use it with this video; everything stays editable. Long-press one of yours to delete it.</string>
     <string name="design_save_template">Save this design as a template</string>
