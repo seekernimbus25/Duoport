@@ -50,6 +50,7 @@ class SettingsSheet(
         formats()
         export()
         camera()
+        captions()
         sound()
         extras()
         phone()
@@ -331,6 +332,24 @@ class SettingsSheet(
                 )
             })
         }
+    }
+
+    private fun captions() {
+        root.addView(Glass.section(context, "Captions"))
+        val available = Transcriber.isAvailable(context)
+        choices(CaptionLanguage.entries, draft.captions, { it.label }, enabled = { available || it == CaptionLanguage.OFF }) {
+            draft = draft.copy(captions = it)
+        }
+        root.addView(Glass.caption(
+            context,
+            if (available) {
+                "Word-by-word captions burned into your videos, plus an .srt file in Download/DualFrame for YouTube. " +
+                    "Hinglish writes Hindi words in Roman letters. Free and private: Android's own speech engine " +
+                    "runs on the phone, nothing is uploaded. Not added to time-lapse or slow motion."
+            } else {
+                "Captions need Android 13 or newer with on-device speech recognition, which this phone doesn't offer."
+            },
+        ).apply { setPadding(0, dp(6f), 0, 0) })
     }
 
     private fun sound() {

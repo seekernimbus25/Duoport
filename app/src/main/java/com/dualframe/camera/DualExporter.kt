@@ -17,7 +17,9 @@ import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.container.XmpData
 import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.OverlaySettings
+import androidx.media3.effect.TextureOverlay
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.SingleColorLut
 import androidx.media3.effect.SpeedChangeEffect
@@ -51,7 +53,14 @@ import kotlin.math.pow
 
 sealed interface ExportState {
     data object Idle : ExportState
-    data class Running(val step: Int, val total: Int, val format: OutputFormat, val progress: Int) : ExportState
+    data class Running(
+        val step: Int,
+        val total: Int,
+        val format: OutputFormat,
+        val progress: Int,
+        /** Shown instead of "Making 9:16…" for steps that aren't a video (captions). */
+        val label: String? = null,
+    ) : ExportState
     data class Done(val videos: List<SavedVideo>, val note: String? = null) : ExportState
     data class Failed(val message: String, val savedOriginal: Uri?) : ExportState
 }
@@ -101,6 +110,8 @@ data class ExportJob(
     val timecodeRate: String = "30",
     /** Face positions through the take for auto-reframe; null = frames stay where they were placed. */
     val track: List<SubjectSample>? = null,
+    /** Burn in captions in this language (real-time videos only). */
+    val captions: CaptionLanguage = CaptionLanguage.OFF,
 )
 
 /** One still photo to cut into every chosen shape. */
@@ -127,6 +138,10 @@ object DualExporter {
 
     private const val ALBUM = "DualFrame"
     private const val INSET_SEQUENCE = 1
+    private const val CAPTIONS_LABEL = "Writing captions…"
+    private const val NO_CAPTIONS_NOTE =
+        "No captions: no speech was recognized, or this phone's speech pack isn't downloaded yet " +
+            "(Settings → Captions starts the free download)."
     private const val CINEMATIC_FALLBACK_NOTE =
         "Cinematic blur couldn't run on this phone, so the videos were made without it."
     private const val HDR_FALLBACK_NOTE =
@@ -153,6 +168,22 @@ object DualExporter {
                 val saved = mutableListOf<SavedVideo>()
                 var current = job
                 var note: String? = null
+
+                // Captions first: one transcription serves every format, plus an .srt file.
+                var words: List<CaptionWord> = emptyList()
+                if (job.captions != CaptionLanguage.OFF && job.speed == 1f) {
+                    _state.value = ExportState.Running(0, job.outputs.size, first.first, 0, CAPTIONS_LABEL)
+                    words = Transcriber.transcribe(app, job.main.file, job.captions) { p ->
+                        _state.value = ExportState.Running(0, job.outputs.size, first.first, p, CAPTIONS_LABEL)
+                    }
+                    if (words.isEmpty()) {
+                        note = NO_CAPTIONS_NOTE
+                    } else {
+                        withContext(Dispatchers.IO) {
+                            runCatching { Transcriber.saveSrt(app, "${job.baseName}.srt", Transcriber.srt(words)) }
+                        }
+                    }
+                }
                 job.outputs.forEachIndexed { index, (format, resolution) ->
                     val name = "${job.baseName}_${format.label.replace(':', 'x')}_${resolution.label}.mp4"
                     val file = File(app.cacheDir, name).also { made += it }
@@ -165,7 +196,7 @@ object DualExporter {
                     // rather than failing the whole take.
                     while (true) {
                         try {
-                            export(app, current, file, w, h, crop, path, progress)
+                            export(app, current, file, w, h, crop, path, words, progress)
                             break
                         } catch (e: ExportException) {
                             current = when {
@@ -338,6 +369,7 @@ object DualExporter {
         height: Int,
         crop: NormRect,
         path: CropPath?,
+        words: List<CaptionWord>,
         onProgress: (Int) -> Unit,
     ) {
         output.delete()
@@ -364,6 +396,11 @@ object DualExporter {
         )
         if (job.cinematic > 0) mainEffects += CinematicBlurEffect(job.cinematic)
         mainEffects += lutEffects()
+        // Captions go on last so the LUT doesn't tint them. Tall videos get shorter lines.
+        if (words.isNotEmpty()) {
+            val lines = Transcriber.lines(words, if (height > width) 24 else 40)
+            mainEffects += OverlayEffect(listOf<TextureOverlay>(CaptionOverlay(lines)))
+        }
 
         if (inset == null) {
             val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(job.main.file)))

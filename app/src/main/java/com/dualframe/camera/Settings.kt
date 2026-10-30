@@ -156,6 +156,8 @@ data class Monitoring(
     val level: Boolean = false,
     val centerMark: Boolean = false,
     val safeArea: Boolean = false,
+    /** Pro scope: 0 = histogram, 1 = waveform, 2 = vectorscope. */
+    val scope: Int = 0,
 ) {
     /** Anything that needs the GPU preview pass. */
     val needsShader get() = zebra > 0 || peaking > 0 || falseColor
@@ -220,6 +222,8 @@ data class CaptureSettings(
     val cinematic: Int = 0,
     /** Anamorphic lens squeeze to undo (1 = none, 1.33, 1.55, 2…). */
     val anamorphic: Float = 1f,
+    /** Burned-in captions (and an .srt) in this language; off by default. */
+    val captions: CaptionLanguage = CaptionLanguage.OFF,
     /** Auto-reframe: every frame follows the main face, live and in the finished videos. */
     val autoReframe: Boolean = false,
     /** Record a landscape video when the phone is turned sideways. */
@@ -317,6 +321,7 @@ object SettingsStore {
                 level = p.getBoolean("level", d.monitoring.level),
                 centerMark = p.getBoolean("centerMark", d.monitoring.centerMark),
                 safeArea = p.getBoolean("safeArea", d.monitoring.safeArea),
+                scope = p.getInt("scope", d.monitoring.scope),
             ),
             shutterAngle = p.getBoolean("shutterAngle", d.shutterAngle),
             bakeLut = p.getBoolean("bakeLut", d.bakeLut),
@@ -341,6 +346,7 @@ object SettingsStore {
             anamorphic = p.getFloat("anamorphic", d.anamorphic),
             followRotation = p.getBoolean("followRotation", d.followRotation),
             autoReframe = p.getBoolean("autoReframe", d.autoReframe),
+            captions = enumOr(p.getString("captions", null), d.captions),
             insetCorner = enumOr(p.getString("insetCorner", null), d.insetCorner),
             lensFacing = p.getInt("lensFacing", d.lensFacing),
         )
@@ -366,6 +372,7 @@ object SettingsStore {
             .putBoolean("level", s.monitoring.level)
             .putBoolean("centerMark", s.monitoring.centerMark)
             .putBoolean("safeArea", s.monitoring.safeArea)
+            .putInt("scope", s.monitoring.scope)
             .putBoolean("shutterAngle", s.shutterAngle)
             .putBoolean("bakeLut", s.bakeLut)
             .putInt("recordMbps", s.recordMbps)
@@ -389,6 +396,7 @@ object SettingsStore {
             .putFloat("anamorphic", s.anamorphic)
             .putBoolean("followRotation", s.followRotation)
             .putBoolean("autoReframe", s.autoReframe)
+            .putString("captions", s.captions.name)
             .putString("insetCorner", s.insetCorner.name)
             .putInt("lensFacing", s.lensFacing)
             .apply()

@@ -142,4 +142,9 @@
     <string name="follow_on">Follow me on: the frames follow the main face, in the preview and in your videos.</string>
     <string name="follow_off">Follow me off: frames stay where you put them.</string>
     <string name="follow_unavailable">This camera setup can\'t run face tracking alongside recording, so Follow me is paused. Try a lower resolution or turn off stabilization.</string>
+    <string name="captions_step">Captions</string>
+    <string name="captions_unavailable">Captions need Android 13+ with on-device speech recognition, which this phone doesn\'t have.</string>
+    <string name="captions_ready">%1$s captions are ready.</string>
+    <string name="captions_downloading">Downloading Android\'s free %1$s speech pack for captions. It finishes in the background.</string>
+    <string name="captions_unsupported">This phone\'s speech engine doesn\'t offer %1$s on the device.</string>
 </resources>

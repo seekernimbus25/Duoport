@@ -554,6 +554,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         frameOverlay.centerMark = monitoring.centerMark
         frameOverlay.safeArea = monitoring.safeArea
         lutProcessor.setMonitoring(monitoring)
+        exposureAnalyzer.scope = if (settings.isPro) monitoring.scope else 0
+        // The waveform needs a wider box than the histogram; the vectorscope a square-ish one.
+        histogramView.layoutParams = histogramView.layoutParams.apply {
+            width = dp(if (monitoring.scope == 1) 150f else 112f).toInt()
+            height = dp(if (monitoring.scope == 2) 76f else 52f).toInt()
+        }
         Glass.show(monitorRow, monitoring.histogram && settings.isPro)
         updateLevelSensor()
         timerButton.setImageResource(
@@ -1746,6 +1752,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 anamorphic = settings.activeAnamorphic,
                 timecodeStartMs = recordingStartMs,
                 timecodeRate = settings.fpsLabel,
+                captions = settings.captions,
                 track = if (settings.activeAutoReframe && dualKind == DualKind.NONE) {
                     synchronized(trackSamples) { trackSamples.toList() }
                 } else {
@@ -2093,6 +2100,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 controlPanel.addView(peaking)
                 panelSwitch(getString(R.string.false_color), mon.falseColor) { setMon(mon.copy(falseColor = it)) }
                 panelSwitch(getString(R.string.histogram), mon.histogram) { setMon(mon.copy(histogram = it)) }
+                val scopes = panelPills()
+                listOf("Histogram", "Waveform", "Vectorscope").forEachIndexed { i, label ->
+                    scopes.addView(Glass.pill(this, label, i == mon.scope) { setMon(mon.copy(scope = i, histogram = true)) })
+                }
+                controlPanel.addView(scopes)
                 panelSwitch(getString(R.string.level), mon.level) { setMon(mon.copy(level = it)) }
                 panelSwitch(getString(R.string.center_mark), mon.centerMark) { setMon(mon.copy(centerMark = it)) }
                 panelSwitch(getString(R.string.safe_area), mon.safeArea) { setMon(mon.copy(safeArea = it)) }
@@ -2499,7 +2511,26 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 draft.activeAutoReframe != old.activeAutoReframe ||
                 (draft.dual && draft.orderedFormats != old.orderedFormats)
             updateSettings(draft, rebind = cameraChanged)
+            if (draft.captions != old.captions) prepareCaptions(draft.captions)
         }.show()
+    }
+
+    /** Captions use Android's free on-device speech pack: make sure it's downloaded. */
+    private fun prepareCaptions(language: CaptionLanguage) {
+        if (language == CaptionLanguage.OFF) return
+        if (!Transcriber.isAvailable(this)) {
+            Toast.makeText(this, R.string.captions_unavailable, Toast.LENGTH_LONG).show()
+            return
+        }
+        Transcriber.prepare(this, language) { status ->
+            val message = when (status) {
+                Transcriber.PackStatus.READY -> getString(R.string.captions_ready, language.label)
+                Transcriber.PackStatus.DOWNLOADING -> getString(R.string.captions_downloading, language.label)
+                Transcriber.PackStatus.UNSUPPORTED -> getString(R.string.captions_unsupported, language.label)
+                Transcriber.PackStatus.UNKNOWN -> null
+            }
+            message?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+        }
     }
 
     private fun openLibrary() {
@@ -2534,7 +2565,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             is ExportState.Idle -> shownResult = null
             is ExportState.Running -> {
                 exportStep.text = getString(R.string.exporting_step, state.step, state.total)
-                exportTitle.text = getString(R.string.exporting, state.format.label)
+                exportTitle.text = state.label ?: getString(R.string.exporting, state.format.label)
+                if (state.label != null) exportStep.text = getString(R.string.captions_step)
                 exportProgress.setProgressCompat(state.progress, true)
                 exportPercent.text = getString(R.string.percent, state.progress)
             }
