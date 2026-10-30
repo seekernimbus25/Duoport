@@ -574,7 +574,7 @@ object DualExporter {
         }
     }
 
-    private suspend fun saveToGallery(context: Context, file: File, displayName: String): Uri =
+    suspend fun saveToGallery(context: Context, file: File, displayName: String): Uri =
         withContext(Dispatchers.IO) {
             val resolver = context.contentResolver
             val values = ContentValues().apply {

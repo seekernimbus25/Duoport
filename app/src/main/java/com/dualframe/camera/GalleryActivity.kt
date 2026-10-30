@@ -13,9 +13,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
@@ -151,6 +153,11 @@ class GalleryActivity : AppCompatActivity() {
     private lateinit var countText: TextView
     private val adapter = VideoAdapter { openVideo(it) }
 
+    /** Videos picked for trim / join, in the order they were tapped (the join order). */
+    private val picked = mutableListOf<GalleryVideo>()
+    private lateinit var actionBar: LinearLayout
+    private lateinit var actionText: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -163,11 +170,13 @@ class GalleryActivity : AppCompatActivity() {
 
         grid.layoutManager = GridLayoutManager(this, 3)
         grid.adapter = adapter
+        buildActionBar()
 
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root)) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             findViewById<View>(R.id.header).updatePadding(top = bars.top)
-            grid.updatePadding(bottom = bars.bottom)
+            grid.updatePadding(bottom = bars.bottom + Glass.dp(this, 80f).toInt())
+            actionBar.updatePadding(bottom = bars.bottom + Glass.dp(this, 12f).toInt())
             insets
         }
     }
@@ -186,7 +195,56 @@ class GalleryActivity : AppCompatActivity() {
         }
     }
 
+    /** Long-press picks videos; a glass bar at the bottom then offers Trim & join. */
+    private fun buildActionBar() {
+        val d = { v: Float -> Glass.dp(this, v).toInt() }
+        actionBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            background = ContextCompat.getDrawable(context, R.drawable.bg_glass_panel)
+            setPadding(d(20f), d(12f), d(12f), d(12f))
+            visibility = View.GONE
+        }
+        actionText = Glass.body(this, "")
+        actionBar.addView(actionText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        actionBar.addView(Glass.pill(this, getString(android.R.string.cancel)) {
+            picked.clear()
+            refreshPicked()
+        })
+        actionBar.addView(Glass.pill(this, getString(R.string.trim_and_join), selected = true) {
+            if (picked.isNotEmpty()) EditorActivity.open(this, picked.map { it.uri })
+            picked.clear()
+            refreshPicked()
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = d(8f)
+        })
+        findViewById<android.widget.FrameLayout>(R.id.root).addView(
+            actionBar,
+            android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM,
+            ),
+        )
+    }
+
+    private fun togglePicked(video: GalleryVideo) {
+        if (video.photo) return
+        if (!picked.remove(video)) picked += video
+        refreshPicked()
+    }
+
+    private fun refreshPicked() {
+        Glass.show(actionBar, picked.isNotEmpty())
+        actionText.text = resources.getQuantityString(R.plurals.picked_count, picked.size, picked.size)
+        adapter.notifyDataSetChanged()
+    }
+
     private fun openVideo(video: GalleryVideo) {
+        if (picked.isNotEmpty()) {
+            togglePicked(video)
+            return
+        }
         startActivity(
             Intent(this, PlayerActivity::class.java)
                 .setData(video.uri)
@@ -220,9 +278,15 @@ class GalleryActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val video = items[position]
-            holder.shape.text = video.shapeLabel
+            val order = picked.indexOf(video)
+            holder.shape.text = if (order >= 0) "✓ ${order + 1}" else video.shapeLabel
+            holder.thumb.alpha = if (order >= 0) 0.55f else 1f
             holder.duration.text = if (video.photo) getString(R.string.photo) else VideoLibrary.formatDuration(video.durationMs)
             holder.itemView.setOnClickListener { onClick(video) }
+            holder.itemView.setOnLongClickListener {
+                togglePicked(video)
+                true
+            }
             holder.job?.cancel()
             val cached = thumbs.get(video.uri)
             holder.thumb.setImageBitmap(cached)

@@ -53,6 +53,10 @@ class PlayerActivity : AppCompatActivity() {
         findViewById<View>(R.id.share).setOnClickListener { share() }
         findViewById<View>(R.id.open_with).setOnClickListener { openWith() }
         findViewById<View>(R.id.delete).setOnClickListener { confirmDelete() }
+        findViewById<View>(R.id.edit).apply {
+            visibility = if (isPhoto) View.GONE else View.VISIBLE
+            setOnClickListener { EditorActivity.open(this@PlayerActivity, listOf(uri)) }
+        }
 
         findViewById<PlayerView>(R.id.player_view).apply {
             setShowNextButton(false)

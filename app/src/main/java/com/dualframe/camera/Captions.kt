@@ -106,7 +106,9 @@ object Transcriber {
         onProgress: (Int) -> Unit,
     ): List<CaptionWord> {
         if (language == CaptionLanguage.OFF || !isAvailable(context) || Build.VERSION.SDK_INT < 33) return emptyList()
-        val pcm = withContext(Dispatchers.IO) { runCatching { decodeMono16k(file) }.getOrNull() } ?: return emptyList()
+        val pcm = withContext(Dispatchers.IO) {
+            runCatching { AudioScan.mono16k(context, android.net.Uri.fromFile(file), MAX_BYTES) }.getOrNull()
+        } ?: return emptyList()
         if (pcm.isEmpty()) return emptyList()
         return recognize33(context, pcm, language, onProgress)
     }
@@ -231,81 +233,6 @@ object Transcriber {
         }.start()
 
         cont.invokeOnCancellation { android.os.Handler(context.mainLooper).post { finish() } }
-    }
-
-    /** The recording's sound as 16 kHz mono 16-bit PCM (what speech recognizers expect). */
-    private fun decodeMono16k(file: File): ByteArray? {
-        val extractor = MediaExtractor()
-        try {
-            extractor.setDataSource(file.absolutePath)
-            val track = (0 until extractor.trackCount).firstOrNull {
-                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-            } ?: return null
-            extractor.selectTrack(track)
-            val format = extractor.getTrackFormat(track)
-            val codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
-            codec.configure(format, null, null, 0)
-            codec.start()
-            var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            val out = ByteArrayOutputStream()
-            val info = MediaCodec.BufferInfo()
-            var inputDone = false
-            var outputDone = false
-            var position = 0.0 // fractional input frame for the next output sample
-            while (!outputDone) {
-                if (!inputDone) {
-                    val i = codec.dequeueInputBuffer(10_000)
-                    if (i >= 0) {
-                        val buffer = codec.getInputBuffer(i)!!
-                        val n = extractor.readSampleData(buffer, 0)
-                        if (n < 0) {
-                            codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            codec.queueInputBuffer(i, 0, n, extractor.sampleTime, 0)
-                            extractor.advance()
-                        }
-                    }
-                }
-                val o = codec.dequeueOutputBuffer(info, 10_000)
-                if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    sampleRate = codec.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    channels = codec.outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                } else if (o >= 0) {
-                    val buffer = codec.getOutputBuffer(o)!!
-                    buffer.position(info.offset)
-                    buffer.limit(info.offset + info.size)
-                    val shorts = buffer.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                    val frames = shorts.remaining() / channels.coerceAtLeast(1)
-                    val step = sampleRate / SAMPLE_RATE.toDouble()
-                    while (position < frames) {
-                        // Average the input samples this output sample covers (mono, low-passed).
-                        val from = position.toInt()
-                        val to = minOf(frames, maxOf(from + 1, (position + step).toInt()))
-                        var sum = 0L
-                        var count = 0
-                        for (f in from until to) for (c in 0 until channels) {
-                            sum += shorts.get(f * channels + c)
-                            count++
-                        }
-                        val sample = (sum / count.coerceAtLeast(1)).toInt()
-                        out.write(sample and 0xFF)
-                        out.write((sample shr 8) and 0xFF)
-                        position += step
-                    }
-                    position -= frames
-                    codec.releaseOutputBuffer(o, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
-                    if (out.size() > MAX_BYTES) outputDone = true
-                }
-            }
-            codec.stop()
-            codec.release()
-            return out.toByteArray()
-        } finally {
-            extractor.release()
-        }
     }
 
     /** Words grouped into short lines: a few words at a time, broken at pauses and sentence ends. */
