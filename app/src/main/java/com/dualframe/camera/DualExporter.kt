@@ -9,12 +9,12 @@ import android.provider.MediaStore
 import androidx.annotation.OptIn
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.SingleColorLut
 import androidx.media3.effect.VideoCompositorSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
@@ -58,7 +58,11 @@ data class ExportJob(
     val insetCorner: Corner,
     val outputs: List<Pair<OutputFormat, OutputResolution>>,
     val placement: FramePlacement,
-    val look: Look,
+    /** Colour LUT to bake into every video, or null. */
+    val lut: LutCube?,
+    /** The recording is HLG HDR: tone-map to standard range (LUTs and compositing are SDR). */
+    val hdrSource: Boolean,
+    val codec: VideoCodec,
     val quality: ExportQuality,
     val keepOriginal: Boolean,
     val baseName: String,
@@ -168,20 +172,25 @@ object DualExporter {
         onProgress: (Int) -> Unit,
     ) {
         output.delete()
-        val lookEffects = Looks.exportEffects(job.look)
+        // A fresh effect per input: SingleColorLut owns a GL texture tied to one export.
+        fun lutEffects(): List<Effect> =
+            job.lut?.let { listOf<Effect>(SingleColorLut.createFromCube(it.toArgbCube())) } ?: emptyList()
         val inset = job.inset
 
         val mainEffects = mutableListOf<Effect>(
             crop.toMedia3Crop(),
             Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT),
         )
-        mainEffects += lookEffects
+        mainEffects += lutEffects()
 
         if (inset == null) {
             val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(job.main.file)))
                 .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
                 .build()
-            runTransformer(context, bitrateFor(job.quality, width, height), output, onProgress) { it.start(item, output.absolutePath) }
+            val composition = Composition.Builder(EditedMediaItemSequence(item))
+                .setHdrMode(hdrMode(job))
+                .build()
+            runTransformer(context, job, width, height, output, onProgress) { it.start(composition, output.absolutePath) }
             return
         }
 
@@ -198,7 +207,7 @@ object DualExporter {
         val insetEffects = mutableListOf<Effect>(
             Presentation.createForWidthAndHeight(insetW, insetH, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP),
         )
-        insetEffects += lookEffects
+        insetEffects += lutEffects()
         val insetItem = EditedMediaItem.Builder(clippedItem(inset, job.main.durationNs))
             .setRemoveAudio(true)
             .setEffects(Effects(emptyList<AudioProcessor>(), insetEffects))
@@ -228,26 +237,32 @@ object DualExporter {
             )
         )
             .setVideoCompositorSettings(compositorSettings)
+            .setHdrMode(hdrMode(job))
             .build()
-        runTransformer(context, bitrateFor(job.quality, width, height), output, onProgress) { it.start(composition, output.absolutePath) }
+        runTransformer(context, job, width, height, output, onProgress) { it.start(composition, output.absolutePath) }
     }
+
+    private fun hdrMode(job: ExportJob) =
+        if (job.hdrSource) Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL else Composition.HDR_MODE_KEEP_HDR
 
     private suspend fun runTransformer(
         context: Context,
-        bitrate: Int,
+        job: ExportJob,
+        width: Int,
+        height: Int,
         output: File,
         onProgress: (Int) -> Unit,
         start: (Transformer) -> Unit,
     ) = coroutineScope {
         val encoderFactory = DefaultEncoderFactory.Builder(context)
             .setRequestedVideoEncoderSettings(
-                VideoEncoderSettings.Builder().setBitrate(bitrate).build()
+                VideoEncoderSettings.Builder().setBitrate(bitrateFor(job.quality, width, height)).build()
             )
             .build()
 
         val finished = CompletableDeferred<Unit>()
         val transformer = Transformer.Builder(context)
-            .setVideoMimeType(MimeTypes.VIDEO_H264)
+            .setVideoMimeType(job.codec.mimeType)
             .setEncoderFactory(encoderFactory)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {

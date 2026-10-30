@@ -7,13 +7,13 @@ import androidx.camera.video.Quality
 
 /** A finished video shape. Every format the user ticks is cut from the same recording. */
 enum class OutputFormat(val label: String, val ratioW: Int, val ratioH: Int, val use: String, val color: Int) {
-    PORTRAIT_9_16("9:16", 9, 16, "Reels · Shorts · Stories", 0xFFFFC42E.toInt()),
-    LANDSCAPE_16_9("16:9", 16, 9, "YouTube · TV", 0xFFFFFFFF.toInt()),
-    PORTRAIT_4_5("4:5", 4, 5, "Instagram feed", 0xFF4FC3F7.toInt()),
-    SQUARE("1:1", 1, 1, "Square posts", 0xFFAED581.toInt()),
-    PORTRAIT_3_4("3:4", 3, 4, "Tall photo-style", 0xFFF48FB1.toInt()),
-    LANDSCAPE_4_3("4:3", 4, 3, "Classic TV", 0xFFCE93D8.toInt()),
-    CINEMA_21_9("21:9", 21, 9, "Cinematic widescreen", 0xFFFF8A65.toInt());
+    PORTRAIT_9_16("9:16", 9, 16, "Reels · Shorts · Stories", 0xFFD8B98A.toInt()),
+    LANDSCAPE_16_9("16:9", 16, 9, "YouTube · TV", 0xFFF4F1EA.toInt()),
+    PORTRAIT_4_5("4:5", 4, 5, "Instagram feed", 0xFF8EC5E8.toInt()),
+    SQUARE("1:1", 1, 1, "Square posts", 0xFFA8C9A0.toInt()),
+    PORTRAIT_3_4("3:4", 3, 4, "Tall photo-style", 0xFFE3A6B4.toInt()),
+    LANDSCAPE_4_3("4:3", 4, 3, "Classic TV", 0xFFB9A7E0.toInt()),
+    CINEMA_21_9("21:9", 21, 9, "Cinematic widescreen", 0xFFE8A87C.toInt());
 
     /** width / height */
     val aspect: Float get() = ratioW.toFloat() / ratioH
@@ -96,11 +96,19 @@ enum class Corner(val label: String, val isLeft: Boolean, val isTop: Boolean) {
     BOTTOM_RIGHT("↘", isLeft = false, isTop = false),
 }
 
-/** Colour treatment. See [Looks]. */
-enum class Look(val label: String, val description: String) {
-    NATURAL("Natural", "Your phone's own colour processing, untouched"),
-    VIVID("Vivid", "Richer colour and contrast, ready to post"),
-    FLAT("Flat", "Low-contrast log-style picture for colour grading later"),
+/** Auto: the phone decides everything, like its own camera app. Pro: you do. */
+enum class CaptureMode { AUTO, PRO }
+
+/** How the camera itself encodes the picture (Pro only). */
+enum class RecordProfile(val label: String, val description: String) {
+    STANDARD("Standard", "Your phone's own colour processing. Ready to post."),
+    LOG("DF-Log", "Flat log curve that keeps shadow and highlight detail for grading. Pair it with a LUT."),
+    HLG("HLG HDR", "10-bit HDR (HEVC). The original is kept as HDR; your cut videos are converted to standard range."),
+}
+
+enum class VideoCodec(val label: String, val mimeType: String) {
+    H264("H.264", "video/avc"),
+    HEVC("HEVC", "video/hevc"),
 }
 
 data class CaptureSettings(
@@ -113,7 +121,11 @@ data class CaptureSettings(
     val cameraFrame: CameraFrame = CameraFrame.FULL_4_3,
     val cameraResolution: CameraResolution = CameraResolution.UHD,
     val fps: Int = 30,
-    val look: Look = Look.NATURAL,
+    val mode: CaptureMode = CaptureMode.AUTO,
+    val profile: RecordProfile = RecordProfile.STANDARD,
+    /** See [Luts]: "none", a built-in id, or "custom:<file name>". */
+    val lutId: String = Luts.NONE,
+    val codec: VideoCodec = VideoCodec.H264,
     val stabilization: Boolean = false,
     val grid: Boolean = false,
     val keepOriginal: Boolean = false,
@@ -121,12 +133,18 @@ data class CaptureSettings(
     val insetCorner: Corner = Corner.TOP_RIGHT,
     val lensFacing: Int = CameraSelector.LENS_FACING_BACK,
 ) {
+    val isPro get() = mode == CaptureMode.PRO
+
+    /** Auto mode always records the phone's own look, whatever Pro is set to. */
+    val activeProfile get() = if (isPro) profile else RecordProfile.STANDARD
+    val activeLutId get() = if (isPro) lutId else Luts.NONE
+
     /** Formats in a fixed, predictable order. */
     val orderedFormats: List<OutputFormat> get() = OutputFormat.entries.filter { it in outputs }
 }
 
 object SettingsStore {
-    private const val PREFS = "capture_settings_v2"
+    private const val PREFS = "capture_settings_v3"
 
     fun load(context: Context): CaptureSettings {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -147,7 +165,10 @@ object SettingsStore {
             cameraFrame = enumOr(p.getString("cameraFrame", null), d.cameraFrame),
             cameraResolution = enumOr(p.getString("cameraResolution", null), d.cameraResolution),
             fps = p.getInt("fps", d.fps),
-            look = enumOr(p.getString("look", null), d.look),
+            mode = enumOr(p.getString("mode", null), d.mode),
+            profile = enumOr(p.getString("profile", null), d.profile),
+            lutId = p.getString("lutId", null) ?: d.lutId,
+            codec = enumOr(p.getString("codec", null), d.codec),
             stabilization = p.getBoolean("stabilization", d.stabilization),
             grid = p.getBoolean("grid", d.grid),
             keepOriginal = p.getBoolean("keepOriginal", d.keepOriginal),
@@ -164,7 +185,10 @@ object SettingsStore {
             .putString("cameraFrame", s.cameraFrame.name)
             .putString("cameraResolution", s.cameraResolution.name)
             .putInt("fps", s.fps)
-            .putString("look", s.look.name)
+            .putString("mode", s.mode.name)
+            .putString("profile", s.profile.name)
+            .putString("lutId", s.lutId)
+            .putString("codec", s.codec.name)
             .putBoolean("stabilization", s.stabilization)
             .putBoolean("grid", s.grid)
             .putBoolean("keepOriginal", s.keepOriginal)

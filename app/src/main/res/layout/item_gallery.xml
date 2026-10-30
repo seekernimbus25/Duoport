@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.dualframe.camera.SquareFrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="2dp"
+    android:background="@color/ink_raised"
+    android:foreground="?android:attr/selectableItemBackground">
+
+    <ImageView
+        android:id="@+id/thumb"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:scaleType="centerCrop" />
+
+    <TextView
+        android:id="@+id/shape"
+        style="@style/DF.Text.Label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="6dp"
+        android:background="@drawable/bg_glass_pill"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="3dp"
+        android:textColor="@color/text_primary" />
+
+    <TextView
+        android:id="@+id/duration"
+        style="@style/DF.Text.Value"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="6dp"
+        android:shadowColor="#CC000000"
+        android:shadowRadius="4"
+        android:textSize="12sp" />
+</com.dualframe.camera.SquareFrameLayout>

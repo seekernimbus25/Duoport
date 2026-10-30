@@ -58,7 +58,7 @@ class TeleprompterView @JvmOverloads constructor(
         isFillViewport = true
     }
     private val text = TextView(context).apply {
-        setTextColor(Color.WHITE)
+        setTextColor(Color.rgb(244, 241, 234))
         setLineSpacing(0f, 1.2f)
         gravity = Gravity.CENTER_HORIZONTAL
         setShadowLayer(3f * density, 0f, 1f * density, Color.BLACK)
@@ -66,7 +66,7 @@ class TeleprompterView @JvmOverloads constructor(
     private val playButton = smallButton("▶") { if (isScrolling) pause() else play() }
     private var eyeButton: MaterialButton? = null
     private val speedLabel = TextView(context).apply {
-        setTextColor(Color.WHITE)
+        setTextColor(Color.rgb(244, 241, 234))
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         gravity = Gravity.CENTER
         minWidth = (44 * density).toInt()
@@ -75,8 +75,9 @@ class TeleprompterView @JvmOverloads constructor(
     init {
         orientation = VERTICAL
         background = GradientDrawable().apply {
-            cornerRadius = 16f * density
-            setColor(Color.argb(150, 0, 0, 0))
+            cornerRadius = 22f * density
+            setColor(Color.argb(150, 14, 14, 18))
+            setStroke((1 * density).toInt(), Color.argb(46, 255, 255, 255))
         }
         val pad = (8 * density).toInt()
         setPadding(pad, pad / 2, pad, pad)
@@ -130,7 +131,7 @@ class TeleprompterView @JvmOverloads constructor(
         val lp = layoutParams as? FrameLayout.LayoutParams ?: return
         eyeContact = on
         prefs.edit().putBoolean("eyeContact", on).apply()
-        eyeButton?.setTextColor(if (on) Color.rgb(255, 196, 46) else Color.WHITE)
+        eyeButton?.setTextColor(if (on) Color.rgb(216, 185, 138) else Color.WHITE)
         if (on) {
             if (savedParams == null) savedParams = FrameLayout.LayoutParams(lp)
             lp.width = (parentView.width * 0.5f).toInt().coerceAtLeast((240 * density).toInt())
@@ -237,7 +238,7 @@ class TeleprompterView @JvmOverloads constructor(
         MaterialButton(context).apply {
             text = label
             backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
-            setTextColor(Color.WHITE)
+            setTextColor(Color.rgb(244, 241, 234))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             minWidth = (44 * density).toInt()
             minimumWidth = (44 * density).toInt()

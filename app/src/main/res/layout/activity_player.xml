@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/player_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:show_buffering="when_playing"
+        app:shutter_background_color="@android:color/black" />
+
+    <LinearLayout
+        android:id="@+id/header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="@drawable/bg_scrim_top"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp"
+        android:paddingBottom="12dp">
+
+        <ImageButton
+            android:id="@+id/back"
+            style="@style/DF.IconButton"
+            android:layout_marginTop="8dp"
+            android:contentDescription="@string/back"
+            android:src="@drawable/ic_arrow_back" />
+
+        <TextView
+            android:id="@+id/title"
+            style="@style/DF.Text.Mode"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="14dp"
+            android:layout_marginTop="8dp"
+            android:layout_weight="1"
+            android:textColor="@color/text_primary" />
+
+        <ImageButton
+            android:id="@+id/share"
+            style="@style/DF.IconButton"
+            android:layout_marginTop="8dp"
+            android:contentDescription="@string/share"
+            android:src="@drawable/ic_share" />
+
+        <ImageButton
+            android:id="@+id/open_with"
+            style="@style/DF.IconButton"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:contentDescription="@string/open_with"
+            android:src="@drawable/ic_open_in_new" />
+
+        <ImageButton
+            android:id="@+id/delete"
+            style="@style/DF.IconButton"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:contentDescription="@string/delete"
+            android:src="@drawable/ic_delete"
+            android:tint="@color/record_red" />
+    </LinearLayout>
+</FrameLayout>

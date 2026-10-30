@@ -1,8 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="accent">#FFC42E</color>
-    <color name="record_red">#FF3B30</color>
-    <color name="scrim">#E6000000</color>
-    <color name="chip_bg">#40FFFFFF</color>
-    <color name="launcher_bg">#121212</color>
+    <!-- Ink & champagne: warm near-black, warm white text, one restrained metallic accent. -->
+    <color name="ink">#0A0A0C</color>
+    <color name="ink_raised">#141417</color>
+    <color name="text_primary">#F4F1EA</color>
+    <color name="text_secondary">#A8F4F1EA</color>
+    <color name="text_tertiary">#66F4F1EA</color>
+    <color name="accent">#D8B98A</color>
+    <color name="accent_soft">#33D8B98A</color>
+    <color name="record_red">#FF453A</color>
+
+    <!-- Glass: a dark tint so it reads over any scene, a hairline edge, a soft top sheen. -->
+    <color name="glass_fill">#4D0E0E12</color>
+    <color name="glass_fill_strong">#B30E0E12</color>
+    <color name="glass_edge">#2EFFFFFF</color>
+    <color name="glass_sheen_top">#1AFFFFFF</color>
+    <color name="glass_sheen_bottom">#00FFFFFF</color>
+    <color name="glass_selected">#EBF4F1EA</color>
+
+    <color name="scrim">#D90A0A0C</color>
+    <color name="launcher_bg">#0A0A0C</color>
 </resources>

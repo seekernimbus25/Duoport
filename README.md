@@ -15,33 +15,42 @@ Requires Android 10 or newer.
 
 ## Features
 
-**Many formats from one take.** In **Settings → Videos to make**, tick any shapes and pick a
-resolution for each. Every chosen shape is drawn as a coloured frame on the preview. Tap a
-format chip at the top and drag on the picture to move that frame. Double-tap re-centers.
+**Two screens.** *Auto* is the phone's own camera behaviour with a minimal UI: frame, zoom,
+record. *Pro* adds a glass control strip: profile, LUT, frame rate, shutter, ISO, white balance
+(+ lock), manual focus and exposure. It always shows what the camera is really doing; tap
+any value to take control, tap **A** to hand everything back.
 
-**Pro camera controls** (top strip, tap any value to change it):
-FPS (24/25/30/60) · shutter speed · ISO · white balance presets + lock · manual focus ·
-exposure compensation · zoom stops (0.5×, 1×, 2×…) with 35mm-equivalent focal length.
-The strip always shows what the camera is actually using. **AUTO** puts everything back
-to how your phone's camera behaves.
+**Many formats from one take.** Settings → *Videos to make*: 9:16, 16:9, 4:5, 1:1, 3:4,
+4:3, 21:9, each at its own resolution (720p to 4K). Each shows as a coloured frame; tap
+its pill and drag to move it.
 
-**Looks.** *Natural* is your phone's own processing, untouched. *Vivid* adds colour and
-contrast (previewed live). *Flat* is a log-style curve for colour grading, on phones that allow it.
+**Recording profiles (Pro).**
+- *Standard*: your phone's own colour processing.
+- *DF-Log*: a log-style tone curve sent to the camera, keeping highlight and shadow
+  detail for grading. Needs a phone that allows custom tone curves (Pixels do).
+- *HLG HDR*: 10-bit HEVC HDR. The original is kept as HDR. The cut videos are
+  tone-mapped to standard range so LUTs and the inset compositor work.
 
-**Camera recording.** Full sensor 4:3 (most room to cut several shapes) or Widescreen 16:9
-(sharpest for a single 9:16/16:9), at 4K / 1080p / 720p, optional stabilization.
+Log and HDR originals are always kept, since they are the "negative".
 
-**Front + Back.** Both cameras record at the same time on phones that support it. Pick a
-corner (↖ ↗ ↙ ↘): the second camera appears in that same corner of every video. The two
-cameras are recorded separately and combined per format, so the inset is never cropped off.
-On phones that only offer a combined stream, a fallback bakes the inset in and keeps the frames centered.
+**LUTs (Pro).** Built-in: Vivid, Teal & Orange, Film, Golden Hour, Moody, Bleach Bypass,
+Noir, and Rec.709 for DF-Log. Import any **.cube** 3D LUT (Resolve/Adobe format, up to 65
+points); long-press an imported LUT to delete it. LUTs preview live on the GPU and are baked
+into every video. The uncut original stays clean, so you can always re-grade it. With
+DF-Log, every LUT is applied after a Log→Rec.709 conversion, so LUTs made for normal
+footage just work.
 
-**Teleprompter.** A floating, see-through script you can drag anywhere. It starts scrolling
-when you press record. Speed and text size are adjustable. **◎ eye-contact mode** narrows
-it into a short column right under the front camera so your eyes barely move while reading.
+**Library.** The thumbnail next to the shutter opens an in-app library of everything in
+Movies › DualFrame, with a full-screen player, share, open in another app, and delete.
 
-**Safety net.** If making the videos fails, the original recording is saved instead.
-Optionally keep the uncut original every time.
+**Front + Back.** Both cameras at once on phones that support it. Pick a corner and the
+second camera appears in that same corner of every video.
+
+**Teleprompter.** Floating glass script that starts with the recording. **◎** eye-contact
+mode is a narrow column right under the front camera so your eyes barely move.
+
+**Export.** Quality (Standard / High / Max) and codec (H.264 / HEVC). If making the videos
+ever fails, the original recording is saved instead.
 
 ## How it works
 
@@ -66,7 +75,10 @@ app/src/main/java/com/dualframe/camera/
   MainActivity.kt        camera setup (single / front+back), pro controls UI, settings, results
   Settings.kt            formats, resolutions, camera options, persisted settings
   ProControls.kt         ISO / shutter / WB / focus via Camera2 interop, live readouts
-  Looks.kt               Natural / Vivid / Flat
+  Luts.kt                built-in looks, DF-Log curve, .cube import
+  LutPreviewProcessor.kt live LUT preview on the GPU (CameraX effect)
+  Glass.kt, SettingsSheet.kt  glass UI building blocks, settings sheet
+  GalleryActivity.kt, PlayerActivity.kt  library and player
   FrameOverlayView.kt    format frames, inset markers, drag / tap-to-focus / pinch
   CropMath.kt            frame + inset geometry shared by preview and export
   DualExporter.kt        recordings -> one video per format -> gallery

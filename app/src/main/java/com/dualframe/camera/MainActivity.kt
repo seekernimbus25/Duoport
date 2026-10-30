@@ -4,20 +4,16 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Typeface
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Range
 import android.util.Size
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.Surface
 import android.view.View
@@ -40,6 +36,7 @@ import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.CompositionSettings
 import androidx.camera.core.ConcurrentCamera
+import androidx.camera.core.DynamicRange
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
@@ -62,16 +59,12 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
-import androidx.core.widget.NestedScrollView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.checkbox.MaterialCheckBox
-import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.imageview.ShapeableImageView
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.slider.Slider
@@ -90,15 +83,17 @@ import kotlin.math.roundToInt
 class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private enum class Param(val caption: String, val title: String) {
+        PROFILE("Profile", "Recording profile"),
+        LUT("LUT", "Look (LUT)"),
         FPS("FPS", "Frame rate"),
-        SHUTTER("SHUTTER", "Shutter speed"),
+        SHUTTER("Shutter", "Shutter speed"),
         ISO("ISO", "ISO"),
         WB("WB", "White balance"),
-        FOCUS("FOCUS", "Focus"),
-        EV("EXP", "Exposure"),
+        FOCUS("Focus", "Focus"),
+        EV("Exp", "Exposure"),
     }
 
-    /** How the second camera is being captured in front + back mode. */
+    /** How the second camera is being captured in Front + Back. */
     private enum class DualKind { NONE, SEPARATE, COMPOSITED }
 
     private lateinit var previewView: PreviewView
@@ -108,9 +103,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private lateinit var teleprompter: TeleprompterView
     private lateinit var recordButton: ImageButton
     private lateinit var flipButton: ImageButton
-    private lateinit var autoButton: TextView
+    private lateinit var scriptButton: ImageButton
+    private lateinit var dualButton: ImageButton
+    private lateinit var settingsButton: ImageButton
+    private lateinit var formatScroller: View
+    private lateinit var formatChips: LinearLayout
+    private lateinit var proStrip: View
     private lateinit var readoutRow: LinearLayout
-    private lateinit var formatChips: ChipGroup
+    private lateinit var meterRow: View
     private lateinit var timerRow: View
     private lateinit var timerText: TextView
     private lateinit var audioMeter: LinearProgressIndicator
@@ -118,14 +118,16 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private lateinit var hintText: TextView
     private lateinit var controlPanel: LinearLayout
     private lateinit var cornerRow: View
-    private lateinit var cornerChips: ChipGroup
-    private lateinit var zoomChips: ChipGroup
+    private lateinit var cornerChips: LinearLayout
+    private lateinit var zoomCapsule: LinearLayout
     private lateinit var zoomLabel: TextView
-    private lateinit var dualButton: MaterialButton
-    private lateinit var scriptButton: MaterialButton
-    private lateinit var settingsButton: MaterialButton
+    private lateinit var modeAuto: View
+    private lateinit var modePro: View
+    private lateinit var galleryThumb: ShapeableImageView
+    private lateinit var galleryIcon: ImageView
     private lateinit var permissionPanel: View
     private lateinit var exportPanel: View
+    private lateinit var exportStep: TextView
     private lateinit var exportTitle: TextView
     private lateinit var exportPercent: TextView
     private lateinit var exportProgress: LinearProgressIndicator
@@ -133,12 +135,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private lateinit var resultList: LinearLayout
 
     private var settings = CaptureSettings()
+    /** Pro's manual values. Auto ignores them but they are kept for when you come back to Pro. */
     private var manual = ManualState()
+    private val activeManual get() = if (settings.isPro) manual else ManualState()
     private var caps: CameraCaps? = null
     private var lastReadout: Readout? = null
     @Volatile private var lastReadoutAt = 0L
     private var openParam: Param? = null
     private val readoutValues = mutableMapOf<Param, TextView>()
+    private var autoCell: TextView? = null
 
     private var provider: ProcessCameraProvider? = null
     private var camera: Camera? = null
@@ -149,6 +154,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var bound = false
     private var askedForPermission = false
     private var shownResult: ExportState? = null
+
+    private val lutProcessor by lazy { LutPreviewProcessor() }
+    /** The LUT for the current profile + choice, or null for none. */
+    private var activeLut: LutCube? = null
+    private var effectAttached = false
+    private var livePreviewBroken = false
+    private var hlgSupported = false
 
     private var mainRecording: Recording? = null
     private var insetRecording: Recording? = null
@@ -162,6 +174,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             refreshPermissionState()
         }
+
+    private val importLut = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importLutFrom(uri)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -179,9 +195,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         teleprompter = findViewById(R.id.teleprompter)
         recordButton = findViewById(R.id.record_button)
         flipButton = findViewById(R.id.flip_button)
-        autoButton = findViewById(R.id.auto_button)
-        readoutRow = findViewById(R.id.readouts)
+        scriptButton = findViewById(R.id.script_button)
+        dualButton = findViewById(R.id.dual_button)
+        settingsButton = findViewById(R.id.settings_button)
+        formatScroller = findViewById(R.id.format_scroller)
         formatChips = findViewById(R.id.format_chips)
+        proStrip = findViewById(R.id.pro_strip)
+        readoutRow = findViewById(R.id.readouts)
+        meterRow = findViewById(R.id.meter_row)
         timerRow = findViewById(R.id.timer_row)
         timerText = findViewById(R.id.timer)
         audioMeter = findViewById(R.id.audio_meter)
@@ -190,13 +211,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         controlPanel = findViewById(R.id.control_panel)
         cornerRow = findViewById(R.id.corner_row)
         cornerChips = findViewById(R.id.corner_chips)
-        zoomChips = findViewById(R.id.zoom_chips)
+        zoomCapsule = findViewById(R.id.zoom_capsule)
         zoomLabel = findViewById(R.id.zoom_label)
-        dualButton = findViewById(R.id.dual_button)
-        scriptButton = findViewById(R.id.script_button)
-        settingsButton = findViewById(R.id.settings_button)
+        modeAuto = findViewById(R.id.mode_auto)
+        modePro = findViewById(R.id.mode_pro)
+        galleryThumb = findViewById(R.id.gallery_thumb)
+        galleryIcon = findViewById(R.id.gallery_icon)
         permissionPanel = findViewById(R.id.permission_panel)
         exportPanel = findViewById(R.id.export_panel)
+        exportStep = findViewById(R.id.export_step)
         exportTitle = findViewById(R.id.export_title)
         exportPercent = findViewById(R.id.export_percent)
         exportProgress = findViewById(R.id.export_progress)
@@ -215,12 +238,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             } else {
                 CameraSelector.LENS_FACING_BACK
             }
+            flipButton.animate().rotationBy(180f).setDuration(260).start()
             updateSettings(settings.copy(lensFacing = facing), rebind = true)
         }
         dualButton.setOnClickListener {
             val turningOn = !settings.dual
             if (turningOn && !supportsFrontAndBack()) {
-                dualButton.isChecked = false
                 Toast.makeText(this, R.string.dual_unsupported, Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
@@ -228,21 +251,24 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             updateSettings(settings.copy(dual = turningOn), rebind = true)
         }
         scriptButton.setOnClickListener {
-            teleprompter.isVisible = !teleprompter.isVisible
-            if (!teleprompter.isVisible) teleprompter.pause()
-            scriptButton.isChecked = teleprompter.isVisible
+            val show = !teleprompter.isVisible
+            Glass.show(teleprompter, show)
+            if (!show) teleprompter.pause()
+            scriptButton.isSelected = show
         }
         settingsButton.setOnClickListener { showSettings() }
-        autoButton.setOnClickListener {
-            manual = ManualState()
-            closeControlPanel()
-            applyManual()
-            Toast.makeText(this, R.string.all_auto, Toast.LENGTH_SHORT).show()
-        }
+        modeAuto.setOnClickListener { setMode(CaptureMode.AUTO) }
+        modePro.setOnClickListener { setMode(CaptureMode.PRO) }
+        findViewById<View>(R.id.gallery_button).setOnClickListener { openLibrary() }
         findViewById<View>(R.id.grant_button).setOnClickListener { requestOrOpenSettings() }
         findViewById<View>(R.id.record_again).setOnClickListener { DualExporter.acknowledge() }
+        findViewById<View>(R.id.open_library).setOnClickListener {
+            DualExporter.acknowledge()
+            openLibrary()
+        }
 
         applyInsets()
+        refreshLut(forceRebind = false)
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -259,6 +285,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     override fun onResume() {
         super.onResume()
         refreshPermissionState()
+        refreshGalleryThumb()
     }
 
     override fun onStop() {
@@ -267,32 +294,89 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         bound = false
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        lutProcessor.release()
+    }
+
     private fun updateSettings(new: CaptureSettings, rebind: Boolean) {
+        val lutChanged = new.activeLutId != settings.activeLutId || new.activeProfile != settings.activeProfile
         settings = new
         SettingsStore.save(this, new)
         applySettingsToUi()
-        if (rebind) bindCamera() else applyManual()
+        // A new LUT can mean adding or removing the live-preview effect, which needs a rebind;
+        // refreshLut decides once the LUT is baked.
+        if (lutChanged) refreshLut(forceRebind = rebind) else if (rebind) bindCamera()
+        if (!rebind) applyManual()
+    }
+
+    private fun setMode(mode: CaptureMode) {
+        if (mode == settings.mode || isRecording) return
+        closeControlPanel()
+        // The profile (HLG needs a different camera stream) and LUT can differ between modes.
+        updateSettings(settings.copy(mode = mode), rebind = true)
     }
 
     /** Everything on screen that depends on [settings] but not on the camera being open. */
     private fun applySettingsToUi() {
-        dualButton.isChecked = settings.dual
-        cornerRow.isVisible = settings.dual
-        (cornerChips.getChildAt(settings.insetCorner.ordinal) as? Chip)?.isChecked = true
+        dualButton.isSelected = settings.dual
+        Glass.show(cornerRow, settings.dual)
+        for (i in 0 until cornerChips.childCount) {
+            cornerChips.getChildAt(i).isSelected = i == settings.insetCorner.ordinal
+        }
         frameOverlay.grid = settings.grid
         frameOverlay.formats = settings.orderedFormats
         buildFormatChips()
 
-        val filter = Looks.previewFilter(settings.look)
-        listOf(previewView, insetPreview).forEach { view ->
-            if (filter == null) {
-                view.setLayerType(View.LAYER_TYPE_NONE, null)
-            } else {
-                view.setLayerType(View.LAYER_TYPE_HARDWARE, Paint().apply { colorFilter = filter })
-            }
-        }
+        val pro = settings.isPro
+        Glass.show(proStrip, pro)
+        val accent = ContextCompat.getColor(this, R.color.accent)
+        val dim = ContextCompat.getColor(this, R.color.text_tertiary)
+        findViewById<TextView>(R.id.mode_auto_text).setTextColor(if (pro) dim else accent)
+        findViewById<TextView>(R.id.mode_pro_text).setTextColor(if (pro) accent else dim)
+        findViewById<View>(R.id.mode_auto_dot).visibility = if (pro) View.INVISIBLE else View.VISIBLE
+        findViewById<View>(R.id.mode_pro_dot).visibility = if (pro) View.VISIBLE else View.INVISIBLE
         updateReadouts()
     }
+
+    // region LUT
+
+    /** Bakes the LUT for the current choice off the main thread, then updates the live preview. */
+    private fun refreshLut(forceRebind: Boolean) {
+        val id = settings.activeLutId
+        val profile = settings.activeProfile
+        lifecycleScope.launch {
+            val cube = withContext(Dispatchers.Default) { runCatching { Luts.cube(this@MainActivity, id, profile) }.getOrNull() }
+            if (id != settings.activeLutId || profile != settings.activeProfile) return@launch
+            activeLut = cube
+            cube?.let { lutProcessor.setLut(it) }
+            updateReadouts()
+            if (forceRebind || (bound && wantsPreviewEffect() != effectAttached)) bindCamera()
+        }
+    }
+
+    private fun wantsPreviewEffect() =
+        activeLut != null && !livePreviewBroken && settings.activeProfile != RecordProfile.HLG && !settings.dual
+
+    private fun importLutFrom(uri: Uri) {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                    Luts.import(this@MainActivity, uri, name)
+                }
+            }
+            result.onSuccess { id ->
+                updateSettings(settings.copy(lutId = id), rebind = false)
+                Toast.makeText(this@MainActivity, R.string.lut_imported, Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                Toast.makeText(this@MainActivity, getString(R.string.lut_import_failed, it.message), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // endregion
 
     // region Permissions
 
@@ -335,12 +419,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     private fun bindWith(provider: ProcessCameraProvider) {
+        if (isRecording) return
         this.provider = provider
         provider.unbindAll()
         camera = null
         mainCapture = null
         insetCapture = null
         dualKind = DualKind.NONE
+        effectAttached = false
         flipButton.isVisible =
             provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) && provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)
 
@@ -379,6 +465,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         frame: CameraFrame,
         fps: Int?,
         stabilization: Boolean,
+        hdr: Boolean = false,
     ): VideoCapture<Recorder> {
         val recorder = Recorder.Builder()
             .setAspectRatio(frame.cameraRatio)
@@ -389,36 +476,63 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val builder = VideoCapture.Builder(recorder).setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
         if (fps != null) builder.setTargetFrameRate(Range(fps, fps))
         if (stabilization) builder.setVideoStabilizationEnabled(true)
+        if (hdr) builder.setDynamicRange(DynamicRange.HLG_10_BIT)
         return builder.build()
     }
 
-    /** One camera. If the chosen frame rate or stabilization can't be combined, back off gracefully. */
+    /** One camera. If the chosen frame rate, stabilization or HDR can't be combined, back off gracefully. */
     private fun bindSingle(provider: ProcessCameraProvider): Boolean {
         var selector = CameraSelector.Builder().requireLensFacing(settings.lensFacing).build()
         if (!provider.hasCamera(selector)) selector = CameraSelector.DEFAULT_BACK_CAMERA
         val info = provider.getCameraInfo(selector)
+        val capabilities = Recorder.getVideoCapabilities(info)
 
-        val fpsOk = info.supportedFrameRateRanges.any { settings.fps in it.lower..it.upper }
-        val stabilizationOk = settings.stabilization &&
-            Recorder.getVideoCapabilities(info).isStabilizationSupported
+        hlgSupported = DynamicRange.HLG_10_BIT in capabilities.supportedDynamicRanges
+        val wantHdr = settings.activeProfile == RecordProfile.HLG
+        if (wantHdr && !hlgSupported) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
+        val hdr = wantHdr && hlgSupported
+
+        val fps = if (settings.isPro) settings.fps else 30
+        val fpsOk = info.supportedFrameRateRanges.any { fps in it.lower..it.upper }
+        val stabilizationOk = settings.stabilization && capabilities.isStabilizationSupported
         if (settings.stabilization && !stabilizationOk) {
             Toast.makeText(this, R.string.stabilization_unsupported, Toast.LENGTH_SHORT).show()
         }
-
-        val attempts = listOf(
-            Triple(if (fpsOk) settings.fps else null, stabilizationOk, settings.cameraResolution),
-            Triple(null, false, settings.cameraResolution),
-            Triple(null, false, CameraResolution.FHD),
-        )
-        for ((fps, stabilize, resolution) in attempts) {
-            try {
-                val preview = buildPreview(settings.cameraFrame, fps, previewView, readouts = true)
-                val capture = buildCapture(qualitiesFrom(resolution), settings.cameraFrame, fps, stabilize)
-                camera = provider.bindToLifecycle(this, selector, preview, capture)
-                mainCapture = capture
-                if (fps != settings.fps && settings.fps != 30) {
-                    Toast.makeText(this, getString(R.string.fps_fallback, settings.fps), Toast.LENGTH_LONG).show()
+        val effect = if (wantsPreviewEffect() && !hdr) {
+            LutPreviewEffect(lutProcessor) {
+                // The live LUT preview failed on this phone; carry on without it (export still applies it).
+                runOnUiThread {
+                    livePreviewBroken = true
+                    Toast.makeText(this, R.string.lut_preview_unavailable, Toast.LENGTH_LONG).show()
+                    bindCamera()
                 }
+            }
+        } else {
+            null
+        }
+
+        data class Attempt(val fps: Int?, val stabilize: Boolean, val resolution: CameraResolution, val hdr: Boolean, val effect: Boolean)
+        val attempts = listOf(
+            Attempt(if (fpsOk) fps else null, stabilizationOk, settings.cameraResolution, hdr, effect != null),
+            Attempt(null, false, settings.cameraResolution, hdr, effect != null),
+            Attempt(null, false, settings.cameraResolution, false, effect != null),
+            Attempt(null, false, CameraResolution.FHD, false, false),
+        )
+        for (attempt in attempts) {
+            try {
+                val preview = buildPreview(settings.cameraFrame, attempt.fps, previewView, readouts = true)
+                val capture = buildCapture(
+                    qualitiesFrom(attempt.resolution), settings.cameraFrame, attempt.fps, attempt.stabilize, attempt.hdr,
+                )
+                val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(capture)
+                if (attempt.effect && effect != null) group.addEffect(effect)
+                camera = provider.bindToLifecycle(this, selector, group.build())
+                mainCapture = capture
+                effectAttached = attempt.effect && effect != null
+                if (attempt.fps != fps && fps != 30) {
+                    Toast.makeText(this, getString(R.string.fps_fallback, fps), Toast.LENGTH_LONG).show()
+                }
+                if (hdr && !attempt.hdr) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
                 return true
             } catch (e: Exception) {
                 provider.unbindAll()
@@ -445,7 +559,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     /**
-     * Front + back as two separate recordings. The inset is laid into each video afterwards,
+     * Front + Back as two separate recordings. The inset is laid into each video afterwards,
      * so it lands in the chosen corner of every format. Phones that support concurrent
      * cameras guarantee about 1440p per camera, so this records 1080p / 720p.
      */
@@ -546,7 +660,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         observedCamera?.cameraInfo?.zoomState?.removeObservers(this)
         observedCamera = cam
         zoomStopsShown = emptyList()
-        cam.cameraInfo.zoomState.observe(this) { updateZoomChips(it) }
+        cam.cameraInfo.zoomState.observe(this) { updateZoom(it) }
 
         // Manual values this camera can't do are dropped rather than silently ignored.
         manual = manual.copy(
@@ -563,7 +677,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun applyManual() {
         val cam = camera ?: return
         val c = caps ?: return
-        ProControls.apply(cam, c, manual, settings.look, settings.fps, lastReadout)
+        val fps = if (settings.isPro) settings.fps else 30
+        ProControls.apply(cam, c, activeManual, settings.activeProfile, fps, lastReadout)
         updateReadouts()
         openParam?.let { buildControlPanel(it) }
     }
@@ -599,8 +714,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         var h = if (crop.isEmpty) info.resolution.height else crop.height()
         if (info.rotationDegrees % 180 != 0) w = h.also { h = w }
         frameOverlay.sourceAspect = w.toFloat() / h
-        val label = if (dualKind == DualKind.NONE) settings.cameraFrame.label else getString(R.string.front_and_back)
-        infoText.text = getString(R.string.recording_size, w, h, label)
+        val parts = mutableListOf("$w × $h")
+        if (dualKind != DualKind.NONE) parts += getString(R.string.front_and_back)
+        if (settings.isPro) {
+            parts += "${settings.fps} fps"
+            parts += settings.activeProfile.label
+        }
+        infoText.text = parts.joinToString("  ·  ")
     }
 
     // endregion
@@ -682,6 +802,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             Toast.makeText(this, getString(R.string.record_failed, lastError), Toast.LENGTH_LONG).show()
             return
         }
+        val hdr = settings.activeProfile == RecordProfile.HLG && dualKind == DualKind.NONE && hlgSupported
         DualExporter.start(
             this,
             ExportJob(
@@ -690,9 +811,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 insetCorner = settings.insetCorner,
                 outputs = settings.orderedFormats.map { it to settings.outputs.getValue(it) },
                 placement = frameOverlay.placement,
-                look = settings.look,
+                lut = activeLut,
+                hdrSource = hdr,
+                codec = settings.codec,
                 quality = settings.exportQuality,
-                keepOriginal = settings.keepOriginal,
+                // Log and HDR originals are the "negative": always keep them.
+                keepOriginal = settings.keepOriginal || settings.activeProfile != RecordProfile.STANDARD,
                 baseName = baseName,
             ),
         )
@@ -701,9 +825,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun setRecordingUi(recording: Boolean) {
         recordButton.setImageResource(if (recording) R.drawable.ic_stop else R.drawable.ic_record)
         recordButton.contentDescription = getString(if (recording) R.string.stop_recording else R.string.start_recording)
-        timerRow.isVisible = recording
+        Glass.show(timerRow, recording)
+        Glass.show(meterRow, recording && settings.isPro)
+        formatScroller.isVisible = !recording
         if (recording) timerText.text = formatDuration(0)
-        listOf<View>(flipButton, dualButton, settingsButton).forEach { it.isEnabled = !recording }
+        listOf<View>(flipButton, dualButton, settingsButton, modeAuto, modePro).forEach {
+            it.isEnabled = !recording
+            it.animate().alpha(if (recording) 0.35f else 1f).setDuration(160).start()
+        }
         for (i in 0 until cornerChips.childCount) cornerChips.getChildAt(i).isEnabled = !recording
         hintText.isVisible = !recording
         frameOverlay.locked = recording
@@ -724,7 +853,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             return
         }
         val cam = camera ?: return
-        if (manual.focusDiopters != null) return // manual focus wins
+        if (activeManual.focusDiopters != null) return // manual focus wins
         val point = previewView.meteringPointFactory.createPoint(x, y)
         cam.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
     }
@@ -738,8 +867,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     override fun onFramesChanged() {
         positionInsetPreview()
         for (i in 0 until formatChips.childCount) {
-            val chip = formatChips.getChildAt(i) as? Chip ?: continue
-            if (chip.tag is OutputFormat) chip.isChecked = chip.tag == frameOverlay.selected
+            val pill = formatChips.getChildAt(i)
+            if (pill.tag is OutputFormat) pill.isSelected = pill.tag == frameOverlay.selected
         }
     }
 
@@ -759,42 +888,53 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     // endregion
 
-    // region Pro controls (readouts + control panel)
+    // region Pro strip (readouts) and control panel
 
-    private fun dp(value: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics)
+    private fun dp(value: Float) = Glass.dp(this, value)
 
     private fun buildReadouts() {
+        // First cell: one tap back to everything automatic.
+        autoCell = Glass.pill(this, "A") {
+            manual = ManualState()
+            closeControlPanel()
+            applyManual()
+            Toast.makeText(this, R.string.all_auto, Toast.LENGTH_SHORT).show()
+        }.apply {
+            contentDescription = getString(R.string.all_auto)
+            minHeight = dp(52f).toInt()
+            minWidth = dp(52f).toInt()
+            minimumHeight = dp(52f).toInt()
+        }
+        readoutRow.addView(
+            autoCell,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { marginEnd = dp(6f).toInt() },
+        )
+
         Param.entries.forEach { param ->
             val cell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                minimumWidth = dp(56f).toInt()
-                minimumHeight = dp(48f).toInt()
-                setPadding(dp(6f).toInt(), dp(2f).toInt(), dp(6f).toInt(), dp(2f).toInt())
+                minimumWidth = dp(64f).toInt()
+                minimumHeight = dp(52f).toInt()
+                setPadding(dp(10f).toInt(), dp(4f).toInt(), dp(10f).toInt(), dp(4f).toInt())
                 isClickable = true
                 isFocusable = true
-                background = ContextCompat.getDrawable(context, R.drawable.bg_readout)
+                background = ContextCompat.getDrawable(context, R.drawable.bg_glass_tile)
                 contentDescription = param.title
                 setOnClickListener { toggleControlPanel(param) }
             }
-            cell.addView(TextView(this).apply {
-                text = param.caption
-                setTextColor(Color.argb(170, 255, 255, 255))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-                letterSpacing = 0.08f
-            })
+            cell.addView(Glass.label(this, param.caption))
             val value = TextView(this).apply {
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-                setTypeface(typeface, Typeface.BOLD)
-                fontFeatureSettings = "tnum"
+                setTextAppearance(R.style.DF_Text_Value)
+                maxLines = 1
             }
             cell.addView(value)
             readoutValues[param] = value
             readoutRow.addView(
                 cell,
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    .apply { marginEnd = dp(4f).toInt() },
+                    .apply { marginEnd = dp(6f).toInt() },
             )
         }
     }
@@ -802,32 +942,36 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun updateReadouts() {
         if (readoutValues.isEmpty()) return
         val r = lastReadout
+        val m = activeManual
         val accent = ContextCompat.getColor(this, R.color.accent)
+        val normal = ContextCompat.getColor(this, R.color.text_primary)
         fun set(param: Param, text: String, isManual: Boolean) {
             readoutValues[param]?.apply {
                 this.text = text
-                setTextColor(if (isManual) accent else Color.WHITE)
+                setTextColor(if (isManual) accent else normal)
             }
         }
-        set(Param.FPS, "${settings.fps}", false)
-        set(Param.SHUTTER, Labels.shutter(manual.shutterNs ?: r?.shutterNs), manual.shutterNs != null)
-        set(Param.ISO, Labels.iso(manual.iso ?: r?.iso), manual.iso != null)
-        val wb = if (manual.whiteBalance == WhiteBalance.AUTO) "AWB" else manual.whiteBalance.label
         set(
-            Param.WB,
-            if (manual.whiteBalanceLocked) "$wb 🔒" else wb,
-            manual.whiteBalance != WhiteBalance.AUTO || manual.whiteBalanceLocked,
+            Param.PROFILE,
+            when (settings.profile) {
+                RecordProfile.STANDARD -> "STD"
+                RecordProfile.LOG -> "LOG"
+                RecordProfile.HLG -> "HLG"
+            },
+            settings.profile != RecordProfile.STANDARD,
         )
-        set(
-            Param.FOCUS,
-            if (manual.focusDiopters != null) Labels.focus(manual.focusDiopters) else "AF",
-            manual.focusDiopters != null,
-        )
+        val lutName = Luts.displayName(this, settings.lutId, settings.profile)
+        set(Param.LUT, if (lutName.length > 10) lutName.take(9) + "…" else lutName, settings.lutId != Luts.NONE)
+        set(Param.FPS, "${settings.fps}", settings.fps != 30)
+        set(Param.SHUTTER, Labels.shutter(m.shutterNs ?: r?.shutterNs), m.shutterNs != null)
+        set(Param.ISO, Labels.iso(m.iso ?: r?.iso), m.iso != null)
+        val wb = if (m.whiteBalance == WhiteBalance.AUTO) "AWB" else m.whiteBalance.label
+        set(Param.WB, if (m.whiteBalanceLocked) "$wb ·L" else wb, m.whiteBalance != WhiteBalance.AUTO || m.whiteBalanceLocked)
+        set(Param.FOCUS, if (m.focusDiopters != null) Labels.focus(m.focusDiopters) else "AF", m.focusDiopters != null)
         val step = camera?.cameraInfo?.exposureState?.exposureCompensationStep?.toFloat() ?: 0f
-        set(Param.EV, if (manual.manualExposure) "M" else Labels.ev(manual.evIndex, step), manual.evIndex != 0)
+        set(Param.EV, if (m.manualExposure) "M" else Labels.ev(m.evIndex, step), m.evIndex != 0)
 
-        autoButton.isSelected = manual.isAllAuto
-        autoButton.setTextColor(if (manual.isAllAuto) Color.BLACK else Color.WHITE)
+        autoCell?.isSelected = manual.isAllAuto
     }
 
     private fun toggleControlPanel(param: Param) {
@@ -836,30 +980,32 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun closeControlPanel() {
         openParam = null
-        controlPanel.removeAllViews()
-        controlPanel.isVisible = false
+        Glass.show(controlPanel, false)
+    }
+
+    private fun panelPills(): ChipGroup = ChipGroup(this).apply {
+        chipSpacingHorizontal = dp(8f).toInt()
+        chipSpacingVertical = dp(8f).toInt()
+        setPadding(0, dp(10f).toInt(), 0, 0)
     }
 
     private fun buildControlPanel(param: Param) {
         val c = caps ?: return
+        val firstOpen = openParam == null
         openParam = param
         controlPanel.removeAllViews()
-        controlPanel.isVisible = true
+        if (firstOpen) Glass.show(controlPanel, true) else controlPanel.isVisible = true
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(
-            TextView(this).apply {
-                text = param.title
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-                setTypeface(typeface, Typeface.BOLD)
-            },
+            Glass.section(this, param.title).apply { setPadding(0, 0, 0, 0) },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
-        if (param != Param.FPS) {
+        val autoable = param in setOf(Param.SHUTTER, Param.ISO, Param.WB, Param.FOCUS, Param.EV)
+        if (autoable) {
             val isAuto = when (param) {
                 Param.SHUTTER -> manual.shutterNs == null
                 Param.ISO -> manual.iso == null
@@ -867,7 +1013,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 Param.FOCUS -> manual.focusDiopters == null
                 else -> manual.evIndex == 0
             }
-            header.addView(chip("Auto", checked = isAuto) {
+            header.addView(Glass.pill(this, "Auto", isAuto) {
                 manual = when (param) {
                     Param.SHUTTER -> manual.copy(shutterNs = null)
                     Param.ISO -> manual.copy(iso = null)
@@ -878,30 +1024,79 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 applyManual()
             })
         }
-        header.addView(MaterialButton(this).apply {
-            text = "✕"
-            backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
-            setTextColor(Color.WHITE)
-            minWidth = dp(44f).toInt()
+        header.addView(ImageButton(this).apply {
+            setImageResource(R.drawable.ic_close)
+            imageTintList = ContextCompat.getColorStateList(context, R.color.text_secondary)
+            background = null
+            contentDescription = getString(R.string.close)
             minimumWidth = dp(44f).toInt()
-            contentDescription = "Close"
+            minimumHeight = dp(44f).toInt()
             setOnClickListener { closeControlPanel() }
         })
         controlPanel.addView(header)
 
         when (param) {
+            Param.PROFILE -> {
+                val pills = panelPills()
+                RecordProfile.entries.forEach { profile ->
+                    val enabled = when (profile) {
+                        RecordProfile.STANDARD -> true
+                        RecordProfile.LOG -> c.logSupported
+                        RecordProfile.HLG -> hlgSupported && !settings.dual
+                    }
+                    pills.addView(Glass.pill(this, profile.label, profile == settings.profile) {
+                        if (profile != settings.profile) {
+                            // Log changes what LUTs mean, so start from a sensible look.
+                            val lut = if (profile == RecordProfile.LOG && settings.lutId == Luts.NONE) Luts.REC709 else settings.lutId
+                            val keptLut = if (profile != RecordProfile.LOG && lut == Luts.REC709) Luts.NONE else lut
+                            updateSettings(
+                                settings.copy(profile = profile, lutId = keptLut),
+                                rebind = profile == RecordProfile.HLG || settings.profile == RecordProfile.HLG,
+                            )
+                        }
+                    }.apply { isEnabled = enabled })
+                }
+                controlPanel.addView(pills)
+                note(settings.profile.description)
+                if (!c.logSupported) note(getString(R.string.log_unsupported))
+                if (!hlgSupported) note(getString(R.string.hlg_unsupported))
+            }
+            Param.LUT -> {
+                val pills = panelPills()
+                Luts.available(this, settings.profile).forEach { lut ->
+                    pills.addView(Glass.pill(this, lut.name, lut.id == settings.lutId) {
+                        if (lut.id != settings.lutId) updateSettings(settings.copy(lutId = lut.id), rebind = false)
+                    }.apply {
+                        if (lut.id.startsWith("custom:")) {
+                            setOnLongClickListener {
+                                confirmDeleteLut(lut)
+                                true
+                            }
+                        }
+                    })
+                }
+                pills.addView(Glass.pill(this, getString(R.string.import_lut)) {
+                    importLut.launch(arrayOf("*/*"))
+                })
+                controlPanel.addView(pills)
+                val info = Luts.available(this, settings.profile).firstOrNull { it.id == settings.lutId }
+                note(info?.description ?: "")
+                if (settings.profile == RecordProfile.HLG) note(getString(R.string.lut_hlg_note))
+                else if (!effectAttached && activeLut != null) note(getString(R.string.lut_export_only))
+            }
             Param.FPS -> {
                 val supported = camera?.cameraInfo?.supportedFrameRateRanges.orEmpty()
-                val group = chipGroup()
+                val pills = panelPills()
                 listOf(24, 25, 30, 60)
                     .filter { fps -> supported.isEmpty() || supported.any { fps in it.lower..it.upper } }
                     .forEach { fps ->
-                        group.addView(chip("$fps", checked = fps == settings.fps) {
+                        pills.addView(Glass.pill(this, "$fps", fps == settings.fps) {
                             if (fps != settings.fps) updateSettings(settings.copy(fps = fps), rebind = true)
                         })
                     }
-                controlPanel.addView(group)
-                if (dualKind != DualKind.NONE) note("Front + back records at the camera's standard rate.")
+                controlPanel.addView(pills)
+                note("24 for a film feel, 30 for everyday, 60 for smooth motion or slow-mo later.")
+                if (dualKind != DualKind.NONE) note("Front + Back records at the camera's standard rate.")
             }
             Param.SHUTTER -> {
                 val stops = c.shutterStops(settings.fps)
@@ -914,7 +1109,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                         manual = manual.copy(shutterNs = 1_000_000_000L / stops[i])
                         applyManual()
                     }
-                    note("Tip: 1/${settings.fps * 2} gives the most natural motion at ${settings.fps} fps. Setting shutter or ISO fixes both.")
+                    note("1/${settings.fps * 2} gives the most natural motion at ${settings.fps} fps. Setting shutter or ISO fixes both.")
                 }
             }
             Param.ISO -> {
@@ -928,23 +1123,24 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                         manual = manual.copy(iso = stops[i])
                         applyManual()
                     }
-                    note("Lower ISO = cleaner picture, higher = brighter but grainier.")
+                    note("Lower is cleaner, higher is brighter but grainier.")
                 }
             }
             Param.WB -> {
-                val group = chipGroup()
+                val pills = panelPills()
                 c.whiteBalances.forEach { wb ->
-                    val label = if (wb == WhiteBalance.AUTO) "Auto" else "${wb.label} ${wbName(wb)}"
-                    group.addView(chip(label, checked = wb == manual.whiteBalance) {
+                    val label = if (wb == WhiteBalance.AUTO) "Auto" else "${wb.label} · ${wbName(wb)}"
+                    pills.addView(Glass.pill(this, label, wb == manual.whiteBalance) {
                         manual = manual.copy(whiteBalance = wb)
                         applyManual()
                     })
                 }
-                controlPanel.addView(group)
+                controlPanel.addView(pills)
                 controlPanel.addView(MaterialSwitch(this).apply {
-                    text = "Lock white balance (stops colour shifting mid-shot)"
-                    setTextColor(Color.WHITE)
+                    text = getString(R.string.wb_lock)
+                    setTextColor(ContextCompat.getColor(context, R.color.text_primary))
                     isChecked = manual.whiteBalanceLocked
+                    minHeight = dp(48f).toInt()
                     setOnCheckedChangeListener { _, checked ->
                         manual = manual.copy(whiteBalanceLocked = checked)
                         applyManual()
@@ -962,7 +1158,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                         manual = manual.copy(focusDiopters = c.minFocusDiopters * i / steps)
                         applyManual()
                     }
-                    note("Left = far (∞), right = close.")
+                    note("Left is far (∞), right is close.")
                 }
             }
             Param.EV -> {
@@ -984,32 +1180,44 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
     }
 
+    private fun confirmDeleteLut(lut: LutInfo) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.delete_lut_title, lut.name))
+            .setPositiveButton(R.string.delete) { _, _ ->
+                Luts.delete(this, lut.id)
+                val next = if (settings.lutId == lut.id) Luts.NONE else settings.lutId
+                updateSettings(settings.copy(lutId = next), rebind = false)
+                openParam?.let { buildControlPanel(it) }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun wbName(wb: WhiteBalance) = when (wb) {
         WhiteBalance.AUTO -> ""
-        WhiteBalance.TUNGSTEN -> "Indoor bulb"
+        WhiteBalance.TUNGSTEN -> "Indoor"
         WhiteBalance.FLUORESCENT -> "Tube light"
-        WhiteBalance.DAYLIGHT -> "Sunny"
+        WhiteBalance.DAYLIGHT -> "Sun"
         WhiteBalance.CLOUDY -> "Cloudy"
         WhiteBalance.SHADE -> "Shade"
     }
 
     private fun note(text: String) {
-        controlPanel.addView(TextView(this).apply {
-            this.text = text
-            setTextColor(Color.argb(190, 255, 255, 255))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(0, dp(4f).toInt(), 0, 0)
+        if (text.isEmpty()) return
+        controlPanel.addView(Glass.caption(this, text).apply {
+            textSize = 12f
+            setPadding(0, dp(8f).toInt(), 0, 0)
         })
     }
 
-    /** A stepped slider over [count] positions with a live value label. */
+    /** A stepped slider over [count] positions with a large live value. */
     private fun slider(count: Int, index: Int, label: (Int) -> String, onChange: (Int) -> Unit) {
         val start = index.coerceIn(0, count - 1)
         val valueText = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            setTextAppearance(R.style.DF_Text_Title)
             gravity = Gravity.CENTER
             text = label(start)
+            setPadding(0, dp(4f).toInt(), 0, 0)
         }
         val slider = Slider(this).apply {
             valueFrom = 0f
@@ -1017,6 +1225,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             stepSize = 1f
             value = start.toFloat()
             setLabelFormatter { label(it.roundToInt()) }
+            trackActiveTintList = ContextCompat.getColorStateList(context, R.color.accent)!!
+            trackInactiveTintList = android.content.res.ColorStateList.valueOf(0x26FFFFFF)
+            thumbTintList = ContextCompat.getColorStateList(context, R.color.text_primary)!!
+            setTickVisible(false)
             addOnChangeListener { _, v, fromUser ->
                 val i = v.roundToInt()
                 valueText.text = label(i)
@@ -1027,59 +1239,48 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         controlPanel.addView(slider)
     }
 
-    private fun chipGroup() = ChipGroup(this).apply {
-        isSingleSelection = true
-        isSelectionRequired = true
-    }
-
-    private fun chip(label: String, checked: Boolean, onClick: () -> Unit) = Chip(this).apply {
-        text = label
-        isCheckable = true
-        isChecked = checked
-        isCheckedIconVisible = false
-        setOnClickListener { onClick() }
-    }
-
     // endregion
 
-    // region Format chips, corner chips, zoom chips
+    // region Format pills, corner pills, zoom capsule
 
     private fun buildFormatChips() {
         formatChips.removeAllViews()
         settings.orderedFormats.forEach { format ->
-            formatChips.addView(Chip(this).apply {
-                text = "${format.label} · ${settings.outputs[format]?.label}"
-                tag = format
-                isCheckable = true
-                isCheckedIconVisible = false
-                isChecked = format == frameOverlay.selected
-                chipStrokeWidth = dp(1.5f)
-                chipStrokeColor = ColorStateList.valueOf(format.color)
-                setOnClickListener { frameOverlay.selected = format }
-            })
+            val pill = Glass.pill(this, "●  ${format.label}  ${settings.outputs[format]?.label}") {
+                frameOverlay.selected = format
+            }
+            pill.tag = format
+            pill.isSelected = format == frameOverlay.selected
+            // The dot carries the frame's colour so pills and frames match at a glance.
+            pill.text = android.text.SpannableString(pill.text).apply {
+                setSpan(android.text.style.ForegroundColorSpan(format.color), 0, 1, 0)
+            }
+            formatChips.addView(pill, spacedParams())
         }
-        formatChips.addView(Chip(this).apply {
-            text = getString(R.string.edit_formats)
-            setOnClickListener { showSettings() }
-        })
+        formatChips.addView(Glass.pill(this, "+") { showSettings() }.apply {
+            contentDescription = getString(R.string.edit_formats)
+        }, spacedParams())
     }
+
+    private fun spacedParams() =
+        LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { marginEnd = dp(8f).toInt() }
 
     private fun buildCornerChips() {
         Corner.entries.forEach { corner ->
-            cornerChips.addView(Chip(this).apply {
-                text = corner.label
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-                isCheckable = true
-                isCheckedIconVisible = false
-                contentDescription = corner.name.lowercase().replace('_', ' ')
-                setOnClickListener {
-                    if (corner != settings.insetCorner) {
-                        // The fallback mode bakes the inset in, so it needs the camera reopened.
-                        updateSettings(settings.copy(insetCorner = corner), rebind = dualKind == DualKind.COMPOSITED)
-                        if (dualKind == DualKind.SEPARATE) frameOverlay.insetCorner = corner
-                    }
+            cornerChips.addView(Glass.pill(this, corner.label) {
+                if (corner != settings.insetCorner && !isRecording) {
+                    // The fallback mode bakes the inset in, so it needs the camera reopened.
+                    updateSettings(settings.copy(insetCorner = corner), rebind = dualKind == DualKind.COMPOSITED)
+                    if (dualKind == DualKind.SEPARATE) frameOverlay.insetCorner = corner
                 }
-            })
+            }.apply {
+                textSize = 16f
+                background = null
+                minWidth = dp(44f).toInt()
+                contentDescription = corner.name.lowercase().replace('_', ' ')
+                setBackgroundResource(R.drawable.bg_glass_circle)
+            }, LinearLayout.LayoutParams(dp(44f).toInt(), dp(44f).toInt()).apply { marginStart = dp(4f).toInt() })
         }
     }
 
@@ -1092,178 +1293,73 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         return stops
     }
 
-    private fun updateZoomChips(state: ZoomState) {
+    private fun updateZoom(state: ZoomState) {
         val stops = zoomStops(state)
         if (stops != zoomStopsShown) {
             zoomStopsShown = stops
-            zoomChips.removeAllViews()
+            zoomCapsule.removeAllViews()
             stops.forEach { ratio ->
-                zoomChips.addView(Chip(this).apply {
-                    text = if (ratio % 1f == 0f) "${ratio.toInt()}×" else "$ratio×"
-                    isCheckable = true
-                    isCheckedIconVisible = false
+                zoomCapsule.addView(Glass.pill(this, zoomText(ratio)) {
+                    camera?.cameraControl?.setZoomRatio(ratio.coerceAtLeast(state.minZoomRatio))
+                }.apply {
                     tag = ratio
-                    setOnClickListener {
-                        camera?.cameraControl?.setZoomRatio(ratio.coerceAtLeast(state.minZoomRatio))
-                    }
-                })
+                    background = ContextCompat.getDrawable(context, R.drawable.bg_glass_circle)
+                    textSize = 12f
+                }, LinearLayout.LayoutParams(dp(42f).toInt(), dp(42f).toInt()).apply { marginStart = dp(2f).toInt(); marginEnd = dp(2f).toInt() })
             }
         }
-        for (i in 0 until zoomChips.childCount) {
-            val chip = zoomChips.getChildAt(i) as Chip
-            chip.isChecked = abs((chip.tag as Float) - state.zoomRatio) < 0.05f
+        // The nearest stop lights up and shows the exact zoom, like a lens ring.
+        val nearest = stops.minByOrNull { abs(it - state.zoomRatio) }
+        for (i in 0 until zoomCapsule.childCount) {
+            val pill = zoomCapsule.getChildAt(i) as TextView
+            val ratio = pill.tag as Float
+            val active = ratio == nearest
+            pill.isSelected = active
+            pill.text = if (active) zoomText(state.zoomRatio) else zoomText(ratio)
         }
         val focal = caps?.equivalentFocalMm
-        zoomLabel.text = String.format(Locale.US, "%.1f×", state.zoomRatio) +
-            (focal?.let { " · ${(it * state.zoomRatio).roundToInt()}mm" } ?: "")
+        zoomLabel.text = focal?.let { "${(it * state.zoomRatio).roundToInt()} mm" } ?: ""
+    }
+
+    private fun zoomText(ratio: Float): String {
+        val rounded = (ratio * 10).roundToInt() / 10f
+        return if (rounded % 1f == 0f) "${rounded.toInt()}×" else "$rounded×"
     }
 
     // endregion
 
-    // region Settings sheet
+    // region Settings, library
 
     private fun showSettings() {
         if (isRecording) return
-        val c = caps
-        var draft = settings
-        val sheet = BottomSheetDialog(this)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val p = dp(20f).toInt()
-            setPadding(p, p / 2, p, p * 2)
-        }
-
-        fun section(title: String, subtitle: String? = null) {
-            root.addView(TextView(this).apply {
-                text = title
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-                setTypeface(typeface, Typeface.BOLD)
-                setPadding(0, dp(18f).toInt(), 0, dp(4f).toInt())
-            })
-            if (subtitle != null) {
-                root.addView(TextView(this).apply {
-                    text = subtitle
-                    setTextColor(Color.argb(170, 255, 255, 255))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                })
-            }
-        }
-
-        fun noteView(initial: String) = TextView(this).apply {
-            setTextColor(Color.argb(170, 255, 255, 255))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            text = initial
-        }
-
-        fun <T> choices(
-            options: List<T>,
-            selected: T,
-            label: (T) -> String,
-            enabled: (T) -> Boolean = { true },
-            onPick: (T) -> Unit,
-        ) {
-            val group = chipGroup()
-            options.forEach { option ->
-                group.addView(chip(label(option), checked = option == selected) { onPick(option) }.apply {
-                    isEnabled = enabled(option)
-                })
-            }
-            root.addView(group)
-        }
-
-        fun toggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
-            root.addView(MaterialSwitch(this).apply {
-                text = label
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-                isChecked = value
-                minHeight = dp(48f).toInt()
-                setOnCheckedChangeListener { _, checked -> onChange(checked) }
-            })
-        }
-
-        section("Videos to make", "Every ticked shape becomes its own video from the same recording. Pick a resolution for each.")
-        OutputFormat.entries.forEach { format ->
-            var chosenResolution = draft.outputs[format] ?: OutputResolution.FHD
-            val resolutions = chipGroup()
-            OutputResolution.entries.forEach { res ->
-                val (w, h) = format.sizePx(res)
-                resolutions.addView(chip(res.label, checked = chosenResolution == res) {
-                    chosenResolution = res
-                    if (format in draft.outputs) draft = draft.copy(outputs = draft.outputs + (format to res))
-                }.apply { contentDescription = "${res.label}, $w by $h" })
-            }
-            val check = MaterialCheckBox(this).apply {
-                text = "${format.label}   ${format.use}"
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-                buttonTintList = ColorStateList.valueOf(format.color)
-                isChecked = format in draft.outputs
-            }
-            resolutions.isVisible = check.isChecked
-            check.setOnCheckedChangeListener { box, checked ->
-                if (!checked && draft.outputs.keys == setOf(format)) {
-                    box.isChecked = true
-                    Toast.makeText(this, R.string.keep_one_format, Toast.LENGTH_SHORT).show()
-                    return@setOnCheckedChangeListener
-                }
-                draft = draft.copy(
-                    outputs = if (checked) draft.outputs + (format to chosenResolution) else draft.outputs - format
-                )
-                resolutions.isVisible = checked
-            }
-            root.addView(check)
-            root.addView(resolutions)
-        }
-
-        section("Video quality", "Higher keeps more detail but makes bigger files.")
-        choices(ExportQuality.entries, draft.exportQuality, { it.label }) { draft = draft.copy(exportQuality = it) }
-
-        section("Camera recording", "What the camera captures before your videos are cut from it.")
-        val frameNote = noteView(draft.cameraFrame.description)
-        choices(CameraFrame.entries, draft.cameraFrame, { it.label }) {
-            draft = draft.copy(cameraFrame = it)
-            frameNote.text = it.description
-        }
-        root.addView(frameNote)
-        choices(CameraResolution.entries, draft.cameraResolution, { it.label }) {
-            draft = draft.copy(cameraResolution = it)
-        }
-        toggle("Stabilization (smoother handheld video, slightly tighter picture)", draft.stabilization) {
-            draft = draft.copy(stabilization = it)
-        }
-        if (draft.dual) root.addView(noteView("Front + back always records full sensor 4:3 at up to 1080p."))
-
-        section("Look", "Natural is your phone's own colour processing.")
-        val lookNote = noteView(draft.look.description)
-        choices(
-            Look.entries,
-            draft.look,
-            { it.label },
-            enabled = { it != Look.FLAT || c?.flatLookSupported != false },
-        ) {
-            draft = draft.copy(look = it)
-            lookNote.text = it.description
-        }
-        root.addView(lookNote)
-
-        section("Extras")
-        toggle("Grid lines", draft.grid) { draft = draft.copy(grid = it) }
-        toggle("Also keep the original uncut recording", draft.keepOriginal) { draft = draft.copy(keepOriginal = it) }
-
-        sheet.setContentView(NestedScrollView(this).apply { addView(root) })
-        sheet.setOnDismissListener {
+        SettingsSheet(this, settings, inFrontAndBack = settings.dual) { draft ->
             val old = settings
-            if (draft == old) return@setOnDismissListener
+            if (draft == old) return@SettingsSheet
             val cameraChanged = draft.cameraFrame != old.cameraFrame ||
                 draft.cameraResolution != old.cameraResolution ||
                 draft.stabilization != old.stabilization ||
                 (draft.dual && draft.orderedFormats != old.orderedFormats)
             updateSettings(draft, rebind = cameraChanged)
+        }.show()
+    }
+
+    private fun openLibrary() {
+        startActivity(Intent(this, GalleryActivity::class.java))
+    }
+
+    private fun refreshGalleryThumb() {
+        lifecycleScope.launch {
+            val bitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    VideoLibrary.query(this@MainActivity).firstOrNull()?.let {
+                        contentResolver.loadThumbnail(it.uri, Size(160, 160), null)
+                    }
+                }.getOrNull()
+            }
+            galleryThumb.setImageBitmap(bitmap)
+            galleryThumb.isVisible = bitmap != null
+            galleryIcon.isVisible = bitmap == null
         }
-        sheet.behavior.peekHeight = (resources.displayMetrics.heightPixels * 0.7f).toInt()
-        sheet.show()
     }
 
     // endregion
@@ -1271,20 +1367,22 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     // region Export results
 
     private fun render(state: ExportState) {
-        exportPanel.isVisible = state is ExportState.Running
-        resultPanel.isVisible = state is ExportState.Done
+        Glass.show(exportPanel, state is ExportState.Running)
+        Glass.show(resultPanel, state is ExportState.Done)
         recordButton.isEnabled = state is ExportState.Idle
 
         when (state) {
             is ExportState.Idle -> shownResult = null
             is ExportState.Running -> {
-                exportTitle.text = getString(R.string.exporting, state.step, state.total, state.format.label)
+                exportStep.text = getString(R.string.exporting_step, state.step, state.total)
+                exportTitle.text = getString(R.string.exporting, state.format.label)
                 exportProgress.setProgressCompat(state.progress, true)
                 exportPercent.text = getString(R.string.percent, state.progress)
             }
             is ExportState.Done -> if (shownResult != state) {
                 shownResult = state
                 bindResults(state)
+                refreshGalleryThumb()
             }
             is ExportState.Failed -> if (shownResult != state) {
                 shownResult = state
@@ -1297,6 +1395,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     .setPositiveButton(android.R.string.ok, null)
                     .setOnDismissListener { DualExporter.acknowledge() }
                     .show()
+                refreshGalleryThumb()
             }
         }
     }
@@ -1320,8 +1419,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             val (w, h) = video.format.sizePx(video.resolution)
             row.findViewById<TextView>(R.id.title).text = getString(R.string.result_title_row, video.format.label, video.resolution.label)
             row.findViewById<TextView>(R.id.subtitle).text = getString(R.string.result_subtitle_row, video.format.use, w, h)
-            row.findViewById<View>(R.id.play).setOnClickListener { play(video.uri) }
-            thumb.setOnClickListener { play(video.uri) }
+            row.findViewById<View>(R.id.play).setOnClickListener { play(video) }
+            thumb.setOnClickListener { play(video) }
             row.findViewById<View>(R.id.share).setOnClickListener { share(video.uri, video.format.label) }
             resultList.addView(row)
         }
@@ -1337,12 +1436,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
     }
 
-    private fun play(uri: Uri) {
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, "video/mp4")
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        runCatching { startActivity(intent) }
-            .onFailure { Toast.makeText(this, R.string.no_player, Toast.LENGTH_SHORT).show() }
+    private fun play(video: SavedVideo) {
+        startActivity(
+            Intent(this, PlayerActivity::class.java)
+                .setData(video.uri)
+                .putExtra(PlayerActivity.EXTRA_TITLE, "${video.format.label} · ${video.resolution.label}")
+        )
     }
 
     private fun share(uri: Uri, label: String) {
@@ -1359,7 +1458,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root)) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             findViewById<View>(R.id.top_bar).updatePadding(top = bars.top)
-            findViewById<View>(R.id.bottom_bar).updatePadding(bottom = bars.bottom)
+            findViewById<View>(R.id.bottom_bar).updatePadding(bottom = bars.bottom + dp(8f).toInt())
             teleprompter.topInset = bars.top
             listOf(exportPanel, resultPanel, permissionPanel).forEach {
                 it.updatePadding(top = bars.top, bottom = bars.bottom)

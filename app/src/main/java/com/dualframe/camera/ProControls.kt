@@ -64,7 +64,7 @@ class CameraCaps(camera: Camera) {
         WhiteBalance.entries.filter { it == WhiteBalance.AUTO || it.awbMode in modes }
     }
 
-    val flatLookSupported: Boolean =
+    val logSupported: Boolean =
         (info.getCameraCharacteristic(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: IntArray(0))
             .contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
 
@@ -105,7 +105,7 @@ class CameraCaps(camera: Camera) {
     }
 }
 
-/** Sends the manual settings and the camera-side part of the look to the camera. */
+/** Sends the manual settings and the recording profile's tone curve to the camera. */
 @OptIn(ExperimentalCamera2Interop::class)
 object ProControls {
 
@@ -113,7 +113,7 @@ object ProControls {
         camera: Camera,
         caps: CameraCaps,
         state: ManualState,
-        look: Look,
+        profile: RecordProfile,
         fps: Int,
         lastReadout: Readout?,
     ) {
@@ -149,9 +149,9 @@ object ProControls {
             options.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focus.coerceIn(0f, caps.minFocusDiopters))
         }
 
-        if (look == Look.FLAT && caps.flatLookSupported) {
+        if (profile == RecordProfile.LOG && caps.logSupported) {
             options.setCaptureRequestOption(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
-            options.setCaptureRequestOption(CaptureRequest.TONEMAP_CURVE, Looks.flatCurve)
+            options.setCaptureRequestOption(CaptureRequest.TONEMAP_CURVE, Luts.logCurve)
         }
 
         Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options.build())
