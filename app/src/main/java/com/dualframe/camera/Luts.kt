@@ -303,24 +303,36 @@ object Luts {
         available(context, profile).firstOrNull { it.id == id }?.name ?: "None"
 
     /**
-     * The single cube to apply for [id] on footage recorded with [profile], or null for "no change".
-     * With DF-Log every look first converts log to Rec.709, so LUTs made for normal footage just work.
+     * The single cube to apply for [id] on footage recorded with [profile], plus the colour part of
+     * [grade], or null for "no change". Order: DF-Log to Rec.709 (when a look is chosen), then the
+     * grade (correction), then the look. With DF-Log every look first converts log to Rec.709, so
+     * LUTs made for normal footage just work.
      */
-    fun cube(context: Context, id: String, profile: RecordProfile): LutCube? {
+    fun cube(context: Context, id: String, profile: RecordProfile, grade: ColorGrade = ColorGrade()): LutCube? {
         val fromLog = profile == RecordProfile.LOG
-        if (id == NONE) return null
-        if (id == REC709) return if (fromLog) LutCube.bake(BAKE_SIZE, logTo709) else null
-
-        builtIns.firstOrNull { it.info.id == id }?.let { b ->
-            return LutCube.bake(BAKE_SIZE, if (fromLog) chain(logTo709, b.grade) else b.grade)
+        val toDisplay: Grade? = if (fromLog && id != NONE) logTo709 else null
+        val custom: LutCube? = if (id.startsWith(CUSTOM_PREFIX)) {
+            runCatching { parseCube(File(lutDir(context), id.removePrefix(CUSTOM_PREFIX)).readText()) }.getOrNull()
+        } else {
+            null
         }
+        val look: Grade? = builtIns.firstOrNull { it.info.id == id }?.grade ?: custom?.let { c -> { p: FloatArray -> c.sample(p) } }
+        val correction: Grade? = if (grade.colourIsNeutral) null else { p -> grade.apply(p) }
+        // An imported LUT on its own is used exactly as it is.
+        if (custom != null && toDisplay == null && correction == null) return custom
+        val parts = listOfNotNull(toDisplay, correction, look)
+        if (parts.isEmpty()) return null
+        return LutCube.bake(BAKE_SIZE, chain(*parts.toTypedArray()))
+    }
 
-        if (id.startsWith(CUSTOM_PREFIX)) {
-            val file = File(lutDir(context), id.removePrefix(CUSTOM_PREFIX))
-            val custom = runCatching { parseCube(file.readText()) }.getOrNull() ?: return null
-            return if (fromLog) LutCube.bake(BAKE_SIZE) { custom.sample(logTo709(it)) } else custom
-        }
-        return null
+    /** Saves [cube] as a custom look (it then shows up with the imported LUTs). Returns its id. */
+    fun saveCustom(context: Context, name: String, cube: LutCube): String {
+        val base = name.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifEmpty { "My grade" }
+        var file = File(lutDir(context), "$base.cube")
+        var n = 2
+        while (file.exists()) file = File(lutDir(context), "$base $n.cube").also { n++ }
+        file.writeText(cube.toCubeText(base))
+        return CUSTOM_PREFIX + file.name
     }
 
     // region Imported .cube files

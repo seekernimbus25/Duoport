@@ -99,6 +99,12 @@ class LutPreviewProcessor : SurfaceProcessor {
     private var uBlur = 0
     private var uOutSize = 0
 
+    @Volatile private var finish = ColorGrade()
+    private var uVignette = 0
+    private var uGrain = 0
+    private var uSharpen = 0
+    private var uSeed = 0
+
     @Volatile private var pendingLut: LutCube? = null
     @Volatile private var monitoring = Monitoring(histogram = false)
     private var released = false
@@ -110,6 +116,11 @@ class LutPreviewProcessor : SurfaceProcessor {
     /** Swap the LUT; takes effect on the next frame. */
     fun setLut(cube: LutCube) {
         pendingLut = cube
+    }
+
+    /** Vignette, grain and sharpening from the colour grade. */
+    fun setFinish(grade: ColorGrade) {
+        finish = grade
     }
 
     /** Cinematic background blur strength for the live picture, 0 = off. */
@@ -245,6 +256,11 @@ class LutPreviewProcessor : SurfaceProcessor {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, maskTexture)
             GLES30.glUniform1f(uBlur, blur)
+            val f = finish
+            GLES30.glUniform1f(uVignette, f.vignette / 100f)
+            GLES30.glUniform1f(uGrain, f.grain / 100f)
+            GLES30.glUniform1f(uSharpen, f.sharpen / 100f)
+            GLES30.glUniform1f(uSeed, (texture.timestamp / 1_000_000L % 1000L) / 1000f)
             GLES30.glUniform2f(uOutSize, output.size.width.toFloat(), output.size.height.toFloat())
             GLES30.glUniformMatrix4fv(uTexMatrix, 1, false, textureMatrix, 0)
             // Sample LUT texel centres so the ends of the range map exactly.
@@ -407,6 +423,10 @@ class LutPreviewProcessor : SurfaceProcessor {
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uMask"), 2)
         uBlur = GLES30.glGetUniformLocation(program, "uBlur")
         uOutSize = GLES30.glGetUniformLocation(program, "uOutSize")
+        uVignette = GLES30.glGetUniformLocation(program, "uVignette")
+        uGrain = GLES30.glGetUniformLocation(program, "uGrain")
+        uSharpen = GLES30.glGetUniformLocation(program, "uSharpen")
+        uSeed = GLES30.glGetUniformLocation(program, "uSeed")
 
         // Small read-back target and the person mask (starts as "all subject": no blur).
         copyProgram = buildProgram(COPY_VERTEX_SHADER, COPY_FRAGMENT_SHADER)
@@ -532,6 +552,10 @@ uniform float uFalseColor;
 uniform sampler2D uMask;
 uniform float uBlur;
 uniform vec2 uOutSize;
+uniform float uVignette;
+uniform float uGrain;
+uniform float uSharpen;
+uniform float uSeed;
 in vec2 vTexCoord;
 out vec4 outColor;
 
@@ -567,7 +591,26 @@ void main() {
       cam = mix(sum / 17.0, cam, subject);
     }
   }
+  // Sharpening (from the grade) works on the camera picture before the look.
+  if (uSharpen > 0.0) {
+    vec3 blurred = (clamp(texture(uCamera, vTexCoord + vec2(uTexel.x, 0.0)).rgb, 0.0, 1.0)
+      + clamp(texture(uCamera, vTexCoord - vec2(uTexel.x, 0.0)).rgb, 0.0, 1.0)
+      + clamp(texture(uCamera, vTexCoord + vec2(0.0, uTexel.y)).rgb, 0.0, 1.0)
+      + clamp(texture(uCamera, vTexCoord - vec2(0.0, uTexel.y)).rgb, 0.0, 1.0)) * 0.25;
+    cam = clamp(cam + (cam - blurred) * uSharpen * 1.5, 0.0, 1.0);
+  }
   vec3 c = uFalseColor > 0.5 ? falseColor(y) : texture(uLut, cam * uLutScale + uLutOffset).rgb;
+  if (uFalseColor < 0.5) {
+    vec2 screen = gl_FragCoord.xy / uOutSize;
+    if (uVignette != 0.0) {
+      float v = smoothstep(0.85, 0.25, length(screen - 0.5));
+      c = mix(c, c * v, uVignette);
+    }
+    if (uGrain > 0.0) {
+      float n = fract(sin(dot(gl_FragCoord.xy + uSeed * 1000.0, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+      c = clamp(c + n * uGrain * 0.12, 0.0, 1.0);
+    }
+  }
 
   if (uPeak > 0.0) {
     float tl = lumaAt(vec2(-1.0, -1.0)); float t = lumaAt(vec2(0.0, -1.0)); float tr = lumaAt(vec2(1.0, -1.0));

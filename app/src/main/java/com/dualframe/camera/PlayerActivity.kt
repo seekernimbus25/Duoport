@@ -51,16 +51,8 @@ class PlayerActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.title).text = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         findViewById<View>(R.id.back).setOnClickListener { finish() }
         findViewById<View>(R.id.share).setOnClickListener { share() }
-        findViewById<View>(R.id.open_with).setOnClickListener { openWith() }
         findViewById<View>(R.id.delete).setOnClickListener { confirmDelete() }
-        findViewById<View>(R.id.add_captions).apply {
-            visibility = if (isPhoto) View.GONE else View.VISIBLE
-            setOnClickListener { CaptionEditorActivity.addTo(this@PlayerActivity, uri) }
-        }
-        findViewById<View>(R.id.edit).apply {
-            visibility = if (isPhoto) View.GONE else View.VISIBLE
-            setOnClickListener { EditorActivity.open(this@PlayerActivity, listOf(uri)) }
-        }
+        findViewById<View>(R.id.more).setOnClickListener { showMore(it) }
 
         findViewById<PlayerView>(R.id.player_view).apply {
             setShowNextButton(false)
@@ -108,6 +100,27 @@ class PlayerActivity : AppCompatActivity() {
         findViewById<PlayerView>(R.id.player_view).player = null
         player?.release()
         player = null
+    }
+
+    /** Grade, captions, trim and "open in" live in one menu so the top bar stays tidy on small phones. */
+    private fun showMore(anchor: View) {
+        val menu = android.widget.PopupMenu(this, anchor)
+        if (!isPhoto) {
+            menu.menu.add(0, 1, 0, R.string.grade)
+            menu.menu.add(0, 2, 1, R.string.add_captions)
+            menu.menu.add(0, 3, 2, R.string.edit)
+        }
+        menu.menu.add(0, 4, 3, R.string.open_with)
+        menu.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> GradeActivity.open(this, uri)
+                2 -> CaptionEditorActivity.addTo(this, uri)
+                3 -> EditorActivity.open(this, listOf(uri))
+                else -> openWith()
+            }
+            true
+        }
+        menu.show()
     }
 
     private fun share() {

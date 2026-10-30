@@ -117,6 +117,8 @@ data class ExportJob(
     val captionStyle: CaptionStyle = CaptionStyle(),
     /** Open the caption editor before making the videos. */
     val captionReview: Boolean = false,
+    /** The grade's vignette / grain / sharpening (its colour part is already in [lut]). */
+    val grade: ColorGrade = ColorGrade(),
 )
 
 /** One still photo to cut into every chosen shape. */
@@ -405,6 +407,7 @@ object DualExporter {
         )
         if (job.cinematic > 0) mainEffects += CinematicBlurEffect(job.cinematic)
         mainEffects += lutEffects()
+        if (job.grade.hasFinish && !keepsHdr(job)) mainEffects += GradeFinishEffect(job.grade)
         // Captions go on last so the LUT doesn't tint them. Tall videos get shorter lines.
         if (words.isNotEmpty()) {
             val style = job.captionStyle

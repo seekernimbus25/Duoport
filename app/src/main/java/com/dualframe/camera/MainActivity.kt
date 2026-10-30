@@ -124,6 +124,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         WB("WB", "White balance"),
         FOCUS("Focus", "Focus"),
         EV("Exp", "Exposure"),
+        GRADE("Grade", "Colour grade"),
         MONITOR("Assist", "Monitoring"),
     }
 
@@ -535,7 +536,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun updateSettings(new: CaptureSettings, rebind: Boolean) {
         stallRecoveries = 0
-        val lutChanged = new.activeLutId != settings.activeLutId || new.activeProfile != settings.activeProfile
+        val lutChanged = new.activeLutId != settings.activeLutId || new.activeProfile != settings.activeProfile ||
+            new.activeGrade != settings.activeGrade
         settings = new
         SettingsStore.save(this, new)
         applySettingsToUi()
@@ -623,9 +625,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun refreshLut(forceRebind: Boolean) {
         val id = settings.activeLutId
         val profile = settings.activeProfile
+        val grade = settings.activeGrade
+        lutProcessor.setFinish(grade)
         lifecycleScope.launch {
-            val cube = withContext(Dispatchers.Default) { runCatching { Luts.cube(this@MainActivity, id, profile) }.getOrNull() }
-            if (id != settings.activeLutId || profile != settings.activeProfile) return@launch
+            val cube = withContext(Dispatchers.Default) {
+                runCatching { Luts.cube(this@MainActivity, id, profile, grade) }.getOrNull()
+            }
+            // A newer change (e.g. the next slider step) has already started its own bake.
+            if (id != settings.activeLutId || profile != settings.activeProfile || grade != settings.activeGrade) return@launch
             activeLut = cube
             // Monitoring without a LUT still runs through the shader, with a do-nothing LUT.
             lutProcessor.setLut(cube ?: Luts.identity)
@@ -635,7 +642,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     private fun wantsPreviewEffect() =
-        (activeLut != null || settings.activeMonitoring.needsShader || settings.cinematic > 0) && !livePreviewBroken &&
+        (activeLut != null || settings.activeMonitoring.needsShader || settings.cinematic > 0 || settings.activeGrade.hasFinish) &&
+            !livePreviewBroken &&
             settings.activeProfile != RecordProfile.HLG && !settings.dual
 
     private fun updateLevelSensor() {
@@ -1772,6 +1780,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 audioGainDb = settings.audioGainDb,
                 cinematic = settings.cinematic,
                 anamorphic = settings.activeAnamorphic,
+                grade = if (settings.bakeLut) settings.activeGrade else ColorGrade(),
                 timecodeStartMs = recordingStartMs,
                 timecodeRate = settings.fpsLabel,
                 captions = settings.captions,
@@ -1959,6 +1968,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             "FC".takeIf { mon.falseColor },
         )
         set(Param.MONITOR, active.joinToString(" ").ifEmpty { "Off" }, active.isNotEmpty())
+        set(Param.GRADE, if (settings.grade.isNeutral) "Off" else "On", !settings.grade.isNeutral)
 
         autoCell?.isSelected = manual.isAllAuto
     }
@@ -2244,6 +2254,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     }
                 })
             }
+            Param.GRADE -> {
+                val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                controlPanel.addView(box)
+                GradeControls(this, box, settings.grade) { setGrade(it) }.build()
+                controlPanel.addView(panelPills().apply {
+                    addView(Glass.pill(context, getString(R.string.grade_save_look)) { saveGradeAsLook() })
+                })
+                note(getString(R.string.grade_note))
+            }
             Param.LENS -> {
                 val pills = panelPills()
                 pills.addView(Glass.pill(this, getString(R.string.lens_auto), settings.lensKey == null) {
@@ -2289,6 +2308,49 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }
             }
         }
+    }
+
+    /**
+     * A grade change from the sliders: re-bake the look without rebuilding the panel (which
+     * would drop the slider mid-drag).
+     */
+    private fun setGrade(grade: ColorGrade) {
+        val wasEffect = wantsPreviewEffect()
+        settings = settings.copy(grade = grade)
+        SettingsStore.save(this, settings)
+        refreshLut(forceRebind = false)
+        updateReadouts()
+        if (bound && wantsPreviewEffect() != wasEffect && wantsPreviewEffect() != effectAttached) bindCamera()
+    }
+
+    /** Saves the current grade as a look of its own (it then appears under LUT, and as a .cube). */
+    private fun saveGradeAsLook() {
+        val input = android.widget.EditText(this).apply {
+            setText(getString(R.string.grade_default_name))
+            setSelection(text.length)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.grade_save_look)
+            .setView(input)
+            .setPositiveButton(R.string.grade_save) { _, _ ->
+                val grade = settings.grade
+                lifecycleScope.launch {
+                    val id = withContext(Dispatchers.Default) {
+                        runCatching {
+                            Luts.saveCustom(this@MainActivity, input.text.toString(), LutCube.bake(33) { grade.apply(it) })
+                        }.getOrNull()
+                    }
+                    if (id == null) return@launch
+                    // The look now carries the colour; keep only vignette / grain / sharpen in the grade.
+                    updateSettings(
+                        settings.copy(lutId = id, grade = ColorGrade(vignette = grade.vignette, grain = grade.grain, sharpen = grade.sharpen)),
+                        rebind = false,
+                    )
+                    Toast.makeText(this@MainActivity, R.string.grade_saved, Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** Writes the DF-Log → Rec.709 LUT to Downloads for Resolve, Premiere, Final Cut, LumaFusion… */
