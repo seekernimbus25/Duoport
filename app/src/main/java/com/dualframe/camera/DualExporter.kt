@@ -277,6 +277,9 @@ object DualExporter {
                 if (blurred == null) blurFailed = true else cut = replace(cut, blurred, upright)
             }
             job.lut?.let { lut -> cut = replace(cut, lut.applyTo(cut), upright) }
+            if (BrandKit.settings(context).enabled) {
+                cut = replace(cut, BrandKit.stamp(context, if (cut === upright) cut.copy(Bitmap.Config.ARGB_8888, true) else cut), upright)
+            }
             _state.value = ExportState.Running(index + 1, job.outputs.size, format, 80)
             val name = "${job.baseName}_${format.label.replace(':', 'x')}.jpg"
             saved += SavedVideo(
@@ -415,6 +418,8 @@ object DualExporter {
             val renderer = CaptionRenderer(style, CaptionFonts.typeface(context, style.font), CaptionFonts.variation(style.font))
             mainEffects += OverlayEffect(listOf<TextureOverlay>(CaptionOverlay(lines, renderer)))
         }
+        // Your watermark, on every video (set in Design > Logo).
+        BrandKit.overlay(context)?.let { mainEffects += OverlayEffect(listOf<TextureOverlay>(it)) }
 
         if (inset == null) {
             val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(job.main.file)))

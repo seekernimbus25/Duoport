@@ -109,6 +109,7 @@ class PlayerActivity : AppCompatActivity() {
             menu.menu.add(0, 1, 0, R.string.grade)
             menu.menu.add(0, 2, 1, R.string.add_captions)
             menu.menu.add(0, 3, 2, R.string.edit)
+            menu.menu.add(0, 5, 3, R.string.design_menu)
         }
         menu.menu.add(0, 4, 3, R.string.open_with)
         menu.setOnMenuItemClickListener { item ->
@@ -116,6 +117,7 @@ class PlayerActivity : AppCompatActivity() {
                 1 -> GradeActivity.open(this, uri)
                 2 -> CaptionEditorActivity.addTo(this, uri)
                 3 -> EditorActivity.open(this, listOf(uri))
+                5 -> DesignActivity.open(this, uri)
                 else -> openWith()
             }
             true
