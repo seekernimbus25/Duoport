@@ -1,5 +1,6 @@
 package com.dualframe.camera
 
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -18,6 +19,10 @@ import androidx.camera.core.SurfaceOutput
 import androidx.camera.core.SurfaceProcessor
 import androidx.camera.core.SurfaceRequest
 import androidx.core.util.Consumer
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.segmentation.Segmentation
+import com.google.mlkit.vision.segmentation.Segmenter
+import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -72,6 +77,28 @@ class LutPreviewProcessor : SurfaceProcessor {
     private val surfaceMatrix = FloatArray(16)
     private val textureMatrix = FloatArray(16)
 
+    // Live cinematic blur: a small copy of each frame is read back and segmented off the GL
+    // thread; the newest person mask is used to blur the background as frames are drawn.
+    @Volatile private var cinematic = 0
+    private var segmenter: Segmenter? = null
+    private var copyProgram = 0
+    private var copyTexMatrix = 0
+    private var copyFlip = 0
+    private var smallFbo = 0
+    private var smallTexture = 0
+    private var maskTexture = 0
+    private var smallW = 0
+    private var smallH = 0
+    private var readBuffer: ByteBuffer? = null
+    private var segBitmap: Bitmap? = null
+    private var hasMask = false
+    private var lastSegmentAt = 0L
+    @Volatile private var segmenting = false
+    @Volatile private var pendingMask: Triple<ByteBuffer, Int, Int>? = null
+    private var uMask = 0
+    private var uBlur = 0
+    private var uOutSize = 0
+
     @Volatile private var pendingLut: LutCube? = null
     @Volatile private var monitoring = Monitoring(histogram = false)
     private var released = false
@@ -83,6 +110,11 @@ class LutPreviewProcessor : SurfaceProcessor {
     /** Swap the LUT; takes effect on the next frame. */
     fun setLut(cube: LutCube) {
         pendingLut = cube
+    }
+
+    /** Cinematic background blur strength for the live picture, 0 = off. */
+    fun setCinematic(strength: Int) {
+        cinematic = strength
     }
 
     /** Zebras / peaking / false colour; takes effect on the next frame. */
@@ -100,6 +132,7 @@ class LutPreviewProcessor : SurfaceProcessor {
             }
             outputs.clear()
             input?.release()
+            segmenter?.close()
             if (display != EGL14.EGL_NO_DISPLAY) {
                 EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                 if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, pbuffer)
@@ -181,6 +214,24 @@ class LutPreviewProcessor : SurfaceProcessor {
         // Never sit on a blank preview waiting for a LUT: draw through a do-nothing one.
         if (lutTexture == 0) uploadLut(Luts.identity)
 
+        val strength = cinematic
+        if (strength > 0) {
+            outputs.keys.firstOrNull()?.let { segmentFrame(textureId, it) }
+            pendingMask?.let { (buffer, w, h) ->
+                pendingMask = null
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, maskTexture)
+                GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+                GLES30.glTexImage2D(
+                    GLES30.GL_TEXTURE_2D, 0, GLES30.GL_LUMINANCE, w, h, 0,
+                    GLES30.GL_LUMINANCE, GLES30.GL_UNSIGNED_BYTE, buffer,
+                )
+                hasMask = true
+            }
+        } else {
+            hasMask = false
+        }
+        val blur = if (strength > 0 && hasMask) CinematicBlur.radiusFraction(strength) else 0f
+
         for ((output, eglSurface) in outputs) {
             if (!EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context)) continue
             output.updateTransformMatrix(textureMatrix, surfaceMatrix)
@@ -191,6 +242,10 @@ class LutPreviewProcessor : SurfaceProcessor {
             GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, lutTexture)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, maskTexture)
+            GLES30.glUniform1f(uBlur, blur)
+            GLES30.glUniform2f(uOutSize, output.size.width.toFloat(), output.size.height.toFloat())
             GLES30.glUniformMatrix4fv(uTexMatrix, 1, false, textureMatrix, 0)
             // Sample LUT texel centres so the ends of the range map exactly.
             GLES30.glUniform1f(uLutScale, (lutSize - 1f) / lutSize)
@@ -211,6 +266,68 @@ class LutPreviewProcessor : SurfaceProcessor {
             EGLExt.eglPresentationTimeANDROID(display, eglSurface, texture.timestamp)
             if (EGL14.eglSwapBuffers(display, eglSurface)) lastDrawAt = android.os.SystemClock.elapsedRealtime()
         }
+    }
+
+    /**
+     * Every ~70 ms (and only when the last one is done): draw the frame small and upright the
+     * way [output] shows it, read it back and hand it to the person segmentation model.
+     */
+    private fun segmentFrame(textureId: Int, output: SurfaceOutput) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (segmenting || now - lastSegmentAt < 70) return
+        lastSegmentAt = now
+        val outW = output.size.width
+        val outH = output.size.height
+        val scale = 256f / maxOf(outW, outH)
+        val w = maxOf(2, (outW * scale).toInt())
+        val h = maxOf(2, (outH * scale).toInt())
+        if (w != smallW || h != smallH) {
+            smallW = w
+            smallH = h
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, smallTexture)
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+            readBuffer = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+            segBitmap?.recycle()
+            segBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        }
+        output.updateTransformMatrix(textureMatrix, surfaceMatrix)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, smallFbo)
+        GLES30.glViewport(0, 0, w, h)
+        GLES30.glUseProgram(copyProgram)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
+        GLES30.glUniformMatrix4fv(copyTexMatrix, 1, false, textureMatrix, 0)
+        // Flipped so the read-back rows come out top first, like a Bitmap.
+        GLES30.glUniform1f(copyFlip, -1f)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 0, QUAD)
+        GLES30.glEnableVertexAttribArray(1)
+        GLES30.glVertexAttribPointer(1, 2, GLES30.GL_FLOAT, false, 0, QUAD_TEX)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        val pixels = readBuffer ?: return
+        pixels.rewind()
+        GLES30.glReadPixels(0, 0, w, h, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, pixels)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+
+        val bitmap = segBitmap ?: return
+        pixels.rewind()
+        bitmap.copyPixelsFromBuffer(pixels)
+        val model = segmenter ?: Segmentation.getClient(
+            SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.STREAM_MODE).build()
+        ).also { segmenter = it }
+        segmenting = true
+        model.process(InputImage.fromBitmap(bitmap, 0))
+            .addOnSuccessListener { mask ->
+                val mw = mask.width
+                val mh = mask.height
+                val floats = mask.buffer.order(ByteOrder.nativeOrder()).asFloatBuffer()
+                val bytes = ByteBuffer.allocateDirect(mw * mh)
+                for (i in 0 until mw * mh) bytes.put((floats.get(i).coerceIn(0f, 1f) * 255f).toInt().toByte())
+                bytes.rewind()
+                pendingMask = Triple(bytes, mw, mh)
+                segmenting = false
+            }
+            .addOnFailureListener { segmenting = false }
     }
 
     private fun createCameraTexture(): Int {
@@ -287,6 +404,43 @@ class LutPreviewProcessor : SurfaceProcessor {
         GLES30.glUseProgram(program)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uCamera"), 0)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uLut"), 1)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uMask"), 2)
+        uBlur = GLES30.glGetUniformLocation(program, "uBlur")
+        uOutSize = GLES30.glGetUniformLocation(program, "uOutSize")
+
+        // Small read-back target and the person mask (starts as "all subject": no blur).
+        copyProgram = buildProgram(COPY_VERTEX_SHADER, COPY_FRAGMENT_SHADER)
+        copyTexMatrix = GLES30.glGetUniformLocation(copyProgram, "uTexMatrix")
+        copyFlip = GLES30.glGetUniformLocation(copyProgram, "uFlip")
+        GLES30.glUseProgram(copyProgram)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(copyProgram, "uCamera"), 0)
+        val ids = IntArray(2)
+        GLES30.glGenTextures(2, ids, 0)
+        smallTexture = ids[0]
+        maskTexture = ids[1]
+        for (tex in ids) {
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        }
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, maskTexture)
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexImage2D(
+            GLES30.GL_TEXTURE_2D, 0, GLES30.GL_LUMINANCE, 1, 1, 0,
+            GLES30.GL_LUMINANCE, GLES30.GL_UNSIGNED_BYTE, ByteBuffer.allocateDirect(1).put(0, 255.toByte()),
+        )
+        val fbo = IntArray(1)
+        GLES30.glGenFramebuffers(1, fbo, 0)
+        smallFbo = fbo[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, smallTexture)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, 2, 2, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, smallFbo)
+        GLES30.glFramebufferTexture2D(
+            GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, smallTexture, 0,
+        )
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
     private fun buildProgram(vertex: String, fragment: String): Int {
@@ -326,6 +480,30 @@ class LutPreviewProcessor : SurfaceProcessor {
                 position(0)
             }
 
+        // Locations 0 and 1 are fixed so the copy pass can set them without looking them up.
+        const val COPY_VERTEX_SHADER = """#version 300 es
+layout(location = 0) in vec4 aPosition;
+layout(location = 1) in vec4 aTexCoord;
+uniform mat4 uTexMatrix;
+uniform float uFlip;
+out vec2 vTexCoord;
+void main() {
+  gl_Position = vec4(aPosition.x, aPosition.y * uFlip, 0.0, 1.0);
+  vTexCoord = (uTexMatrix * aTexCoord).xy;
+}
+"""
+
+        const val COPY_FRAGMENT_SHADER = """#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision mediump float;
+uniform samplerExternalOES uCamera;
+in vec2 vTexCoord;
+out vec4 outColor;
+void main() {
+  outColor = vec4(texture(uCamera, vTexCoord).rgb, 1.0);
+}
+"""
+
         const val VERTEX_SHADER = """#version 300 es
 in vec4 aPosition;
 in vec4 aTexCoord;
@@ -351,6 +529,9 @@ uniform float uZebra;
 uniform float uPeak;
 uniform vec3 uPeakColor;
 uniform float uFalseColor;
+uniform sampler2D uMask;
+uniform float uBlur;
+uniform vec2 uOutSize;
 in vec2 vTexCoord;
 out vec4 outColor;
 
@@ -370,6 +551,22 @@ vec3 falseColor(float y) {
 void main() {
   vec3 cam = clamp(texture(uCamera, vTexCoord).rgb, 0.0, 1.0);
   float y = luma(cam);
+
+  // Cinematic: blur what isn't a person. The mask's first row is the top of the screen.
+  if (uBlur > 0.0) {
+    vec2 maskPos = vec2(gl_FragCoord.x / uOutSize.x, 1.0 - gl_FragCoord.y / uOutSize.y);
+    float subject = smoothstep(0.35, 0.75, texture(uMask, maskPos).r);
+    if (subject < 0.99) {
+      vec3 sum = cam;
+      for (int i = 1; i <= 16; i++) {
+        float fi = float(i);
+        float r = sqrt(fi / 16.0);
+        float a = fi * 2.39996;
+        sum += clamp(texture(uCamera, vTexCoord + vec2(cos(a), sin(a)) * r * uBlur).rgb, 0.0, 1.0);
+      }
+      cam = mix(sum / 17.0, cam, subject);
+    }
+  }
   vec3 c = uFalseColor > 0.5 ? falseColor(y) : texture(uLut, cam * uLutScale + uLutOffset).rgb;
 
   if (uPeak > 0.0) {

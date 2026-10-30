@@ -216,7 +216,8 @@ class SettingsSheet(
             context,
             "Blurs the background behind people, like a big-sensor camera with a fast lens. Phones don't share depth " +
                 "with apps, so an on-device model finds the people: it works on people, not objects or pets. " +
-                "Added when your videos and photos are made, so making them takes longer.",
+                "You see it live while you shoot; it's added to your videos and photos when they're made, " +
+                "so making them takes longer.",
         ).apply { setPadding(0, dp(6f), 0, 0) })
 
         root.addView(Glass.section(context, "Stabilization"))
@@ -376,6 +377,11 @@ class SettingsSheet(
             draft = draft.copy(mirrorFront = it)
         }
         toggle("Grid lines", null, draft.grid) { draft = draft.copy(grid = it) }
+        toggle(
+            "Follow me (auto-reframe)",
+            "Every frame follows the main face, live and in the finished videos",
+            draft.autoReframe,
+        ) { draft = draft.copy(autoReframe = it) }
         toggle(
             "Record sideways when the phone is turned",
             "Hold the phone landscape for a landscape recording (one camera only)",

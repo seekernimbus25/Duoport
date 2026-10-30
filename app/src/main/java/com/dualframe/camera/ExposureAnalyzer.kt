@@ -27,47 +27,52 @@ class ExposureAnalyzer(private val onStats: (ExposureStats) -> Unit) : ImageAnal
 
     override fun analyze(image: ImageProxy) {
         try {
-            val now = System.nanoTime()
-            if (now - lastAt < 120_000_000L) return // ~8 times a second is plenty
-            lastAt = now
-
-            val plane = image.planes[0]
-            val buffer = plane.buffer
-            val rowStride = plane.rowStride
-            val pixelStride = plane.pixelStride
-            val w = image.width
-            val h = image.height
-            val bins = IntArray(BINS)
-            var sum = 0L
-            var count = 0
-            var clipped = 0
-            // Every 2nd pixel each way is accurate enough and four times cheaper.
-            var y = 0
-            while (y < h) {
-                val row = y * rowStride
-                var x = 0
-                while (x < w) {
-                    val v = buffer.get(row + x * pixelStride).toInt() and 0xFF
-                    bins[v shr 2]++
-                    sum += v
-                    if (v >= 250) clipped++
-                    count++
-                    x += 2
-                }
-                y += 2
-            }
-            if (count == 0) return
-            val max = bins.max().coerceAtLeast(1)
-            onStats(
-                ExposureStats(
-                    histogram = FloatArray(BINS) { bins[it].toFloat() / max },
-                    mean = sum.toFloat() / count / 255f,
-                    clipped = clipped.toFloat() / count,
-                )
-            )
+            measure(image)
         } finally {
             image.close()
         }
+    }
+
+    /** Reads [image] without closing it, so another analysis can use the same frame. */
+    fun measure(image: ImageProxy) {
+        val now = System.nanoTime()
+        if (now - lastAt < 120_000_000L) return // ~8 times a second is plenty
+        lastAt = now
+
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val w = image.width
+        val h = image.height
+        val bins = IntArray(BINS)
+        var sum = 0L
+        var count = 0
+        var clipped = 0
+        // Every 2nd pixel each way is accurate enough and four times cheaper.
+        var y = 0
+        while (y < h) {
+            val row = y * rowStride
+            var x = 0
+            while (x < w) {
+                val v = buffer.get(row + x * pixelStride).toInt() and 0xFF
+                bins[v shr 2]++
+                sum += v
+                if (v >= 250) clipped++
+                count++
+                x += 2
+            }
+            y += 2
+        }
+        if (count == 0) return
+        val max = bins.max().coerceAtLeast(1)
+        onStats(
+            ExposureStats(
+                histogram = FloatArray(BINS) { bins[it].toFloat() / max },
+                mean = sum.toFloat() / count / 255f,
+                clipped = clipped.toFloat() / count,
+            )
+        )
     }
 
     private companion object {

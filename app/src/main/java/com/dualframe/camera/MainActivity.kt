@@ -277,6 +277,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
     }
 
+    // Auto-reframe: face tracking on the analysis frames, and the positions during a take.
+    private var subjectTracker: SubjectTracker? = null
+    private val exposureAnalyzer = ExposureAnalyzer { stats -> runOnUiThread { onExposureStats(stats) } }
+    private var analysisUseCase: ImageAnalysis? = null
+    private val trackSamples = mutableListOf<SubjectSample>()
+    @Volatile private var recordStartNanos = 0L
+
     /** Frames in a row where the camera reported it wasn't using the DF-Log curve. */
     @Volatile private var tonemapIgnored = 0
     private var recordingStartMs = 0L
@@ -501,6 +508,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         lutProcessor.release()
         analysisExecutor.shutdown()
         photoExecutor.shutdown()
+        subjectTracker?.close()
     }
 
     private fun updateSettings(new: CaptureSettings, rebind: Boolean) {
@@ -571,6 +579,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         dualButton.isEnabled = !photo
         dualButton.alpha = if (photo) 0.35f else 1f
         frameOverlay.desqueeze = settings.activeAnamorphic
+        // Anamorphic preview: narrow the picture across the screen so it looks desqueezed.
+        previewView.scaleX = 1f / settings.activeAnamorphic
+        lutProcessor.setCinematic(settings.cinematic)
         findViewById<TextView>(R.id.mode_auto_text).setTextColor(if (pro) dim else accent)
         findViewById<TextView>(R.id.mode_pro_text).setTextColor(if (pro) accent else dim)
         findViewById<View>(R.id.mode_auto_dot).visibility = if (pro) View.INVISIBLE else View.VISIBLE
@@ -596,7 +607,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     private fun wantsPreviewEffect() =
-        (activeLut != null || settings.activeMonitoring.needsShader) && !livePreviewBroken &&
+        (activeLut != null || settings.activeMonitoring.needsShader || settings.cinematic > 0) && !livePreviewBroken &&
             settings.activeProfile != RecordProfile.HLG && !settings.dual
 
     private fun updateLevelSensor() {
@@ -686,6 +697,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         effectAttached = false
         highSpeedBound = false
         imageCapture = null
+        analysisUseCase = null
         lockedLens = null
         lenses = runCatching { Lenses.list(this, provider, settings.lensFacing) }.getOrDefault(emptyList())
         mainLensMm = runCatching { Lenses.mainMm(this, provider, settings.lensFacing) }.getOrDefault(0)
@@ -789,7 +801,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     .setTargetRotation(recordRotation)
                     .build()
                 val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(capture)
-                if (withAnalysis && settings.isPro) group.addUseCase(buildAnalysis())
+                if (withAnalysis && (settings.isPro || settings.activeAutoReframe)) group.addUseCase(buildAnalysis())
                 if (withEffect && effect != null) group.addEffect(effect)
                 camera = provider.bindToLifecycle(this, selector, group.build())
                 imageCapture = capture
@@ -911,8 +923,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     /** Small frames for the histogram, exposure meter and shutter / ISO priority. */
     private fun buildAnalysis(): ImageAnalysis =
         ImageAnalysis.Builder()
+            .setTargetRotation(recordRotation)
             .setResolutionSelector(
                 ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(
+                        AspectRatioStrategy(settings.cameraFrame.cameraRatio, AspectRatioStrategy.FALLBACK_RULE_AUTO)
+                    )
                     .setResolutionStrategy(
                         ResolutionStrategy(Size(320, 240), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
                     )
@@ -921,7 +937,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { analysis ->
-                analysis.setAnalyzer(analysisExecutor, ExposureAnalyzer { stats -> runOnUiThread { onExposureStats(stats) } })
+                analysis.setAnalyzer(analysisExecutor) { proxy -> analyzeFrame(proxy) }
+                analysisUseCase = analysis
             }
 
     /** One camera. If the chosen combination isn't possible, back off one feature at a time. */
@@ -953,7 +970,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             Toast.makeText(this, R.string.stabilization_unsupported, Toast.LENGTH_SHORT).show()
         }
         val bitrate = settings.recordMbps.takeIf { it > 0 }?.let { it * 1_000_000 }
-        val analysisWanted = settings.isPro
+        val analysisWanted = settings.isPro || settings.activeAutoReframe
 
         val effect = if (wantsPreviewEffect() && !hdr) {
             LutPreviewEffect(lutProcessor) {
@@ -1004,7 +1021,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     Toast.makeText(this, getString(R.string.fps_fallback, fps), Toast.LENGTH_LONG).show()
                 }
                 if (hdr && !attempt.hdr) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
-                if (analysisWanted && !attempt.analysis) monitorRow.isVisible = false
+                if (analysisWanted && !attempt.analysis) {
+                    monitorRow.isVisible = false
+                    if (settings.activeAutoReframe) Toast.makeText(this, R.string.follow_unavailable, Toast.LENGTH_LONG).show()
+                }
                 return true
             } catch (e: Exception) {
                 provider.unbindAll()
@@ -1229,7 +1249,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     override fun onLongPress(x: Float, y: Float) {
         val cam = camera ?: return
-        val point = previewView.meteringPointFactory.createPoint(x, y)
+        val point = previewView.meteringPointFactory.createPoint(previewX(x), y)
         cam.cameraControl.startFocusAndMetering(
             FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
                 .disableAutoCancel()
@@ -1384,6 +1404,53 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         imageCapture?.let { capture -> pollResolution(capture, { capture.resolutionInfo }, attemptsLeft = 20) }
     }
 
+    /** A screen x position in the preview's own (un-narrowed) coordinates, for focus and metering. */
+    private fun previewX(x: Float): Float {
+        val squeeze = settings.activeAnamorphic
+        if (squeeze == 1f) return x
+        val cx = previewView.width / 2f
+        return cx + (x - cx) * squeeze
+    }
+
+    /** Every analysis frame: exposure stats (Pro) and, with Follow me on, face tracking. */
+    private fun analyzeFrame(proxy: ImageProxy) {
+        if (settings.isPro) exposureAnalyzer.measure(proxy)
+        if (!settings.activeAutoReframe) {
+            proxy.close()
+            return
+        }
+        val rotated = proxy.imageInfo.rotationDegrees % 180 != 0
+        val analysisAspect = if (rotated) proxy.height.toFloat() / proxy.width else proxy.width.toFloat() / proxy.height
+        val tracker = subjectTracker ?: SubjectTracker().also { subjectTracker = it }
+        tracker.track(proxy) { x, y, found ->
+            proxy.close()
+            if (found) onSubject(x, y, analysisAspect)
+        }
+    }
+
+    /**
+     * A face at ([x], [y]) in the analysis frame. The analysis and the recording may be cut
+     * differently from the sensor (4:3 vs 16:9), so map it into the recorded picture first.
+     */
+    private fun onSubject(x: Float, y: Float, analysisAspect: Float) {
+        val recordAspect = frameOverlay.sourceAspect
+        val (rx, ry) = if (recordAspect > analysisAspect) {
+            val share = analysisAspect / recordAspect
+            x to (y - (1f - share) / 2f) / share
+        } else {
+            val share = recordAspect / analysisAspect
+            (x - (1f - share) / 2f) / share to y
+        }
+        val px = rx.coerceIn(0f, 1f)
+        val py = ry.coerceIn(0f, 1f)
+        val start = recordStartNanos
+        if (isRecording && start > 0L) {
+            val timeUs = (SystemClock.elapsedRealtimeNanos() - start) / 1000
+            synchronized(trackSamples) { trackSamples += SubjectSample(timeUs, px, py) }
+        }
+        runOnUiThread { frameOverlay.follow(px, py) }
+    }
+
     /**
      * Some phones accept the DF-Log tone curve but quietly keep their own processing. The camera
      * reports which tone mode it really used; if it isn't the curve for ~2 s, say so plainly.
@@ -1448,6 +1515,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun applyRecordRotation() {
         mainCapture?.targetRotation = recordRotation
         imageCapture?.targetRotation = recordRotation
+        analysisUseCase?.targetRotation = recordRotation
         val turn = when (recordRotation) {
             Surface.ROTATION_90 -> 90f
             Surface.ROTATION_270 -> -90f
@@ -1481,13 +1549,17 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         return pending.start(ContextCompat.getMainExecutor(this)) { event ->
             when (event) {
                 is VideoRecordEvent.Start -> {
-                    if (isMain) setRecordingUi(true)
+                    if (isMain) {
+                        recordStartNanos = SystemClock.elapsedRealtimeNanos()
+                        setRecordingUi(true)
+                    }
                 }
                 is VideoRecordEvent.Status -> {
                     if (isMain) {
                         timerText.text = formatDuration(event.recordingStats.recordedDurationNanos)
                         val level = event.recordingStats.audioStats.audioAmplitude
                         audioMeter.update(level)
+                        teleprompter.onVoiceLevel(level)
                     }
                 }
                 is VideoRecordEvent.Finalize -> {
@@ -1618,6 +1690,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val main = mainCapture ?: return
         baseName = slateName()
         recordingStartMs = System.currentTimeMillis()
+        recordStartNanos = 0L
+        synchronized(trackSamples) { trackSamples.clear() }
         mainTake = null
         insetTake = null
         pendingFinalizes = 0
@@ -1672,6 +1746,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 anamorphic = settings.activeAnamorphic,
                 timecodeStartMs = recordingStartMs,
                 timecodeRate = settings.fpsLabel,
+                track = if (settings.activeAutoReframe && dualKind == DualKind.NONE) {
+                    synchronized(trackSamples) { trackSamples.toList() }
+                } else {
+                    null
+                },
             ),
         )
     }
@@ -1712,7 +1791,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             return
         }
         if (activeManual.focusDiopters != null) return // manual focus wins
-        val point = previewView.meteringPointFactory.createPoint(x, y)
+        val point = previewView.meteringPointFactory.createPoint(previewX(x), y)
         cam.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
     }
 
@@ -2320,6 +2399,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             }
             formatChips.addView(pill, spacedParams())
         }
+        if (!settings.dual) {
+            formatChips.addView(Glass.pill(this, "◎  Follow me", settings.autoReframe) {
+                if (!isRecording) {
+                    val on = !settings.autoReframe
+                    updateSettings(settings.copy(autoReframe = on), rebind = true)
+                    Toast.makeText(this, if (on) R.string.follow_on else R.string.follow_off, Toast.LENGTH_SHORT).show()
+                }
+            }.apply { contentDescription = getString(R.string.follow_me) }, spacedParams())
+        }
         formatChips.addView(Glass.pill(this, "+") { showSettings() }.apply {
             contentDescription = getString(R.string.edit_formats)
         }, spacedParams())
@@ -2408,6 +2496,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 draft.activeFollowRotation != old.activeFollowRotation ||
                 draft.mirrorFront != old.mirrorFront ||
                 draft.activeSlowMotion != old.activeSlowMotion ||
+                draft.activeAutoReframe != old.activeAutoReframe ||
                 (draft.dual && draft.orderedFormats != old.orderedFormats)
             updateSettings(draft, rebind = cameraChanged)
         }.show()

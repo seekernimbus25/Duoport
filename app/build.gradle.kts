@@ -94,6 +94,8 @@ dependencies {
 
     // Cinematic mode: on-device person segmentation (bundled model, no network).
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
+    // Follow me (auto-reframe): on-device face detection.
+    implementation("com.google.mlkit:face-detection:16.1.7")
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")

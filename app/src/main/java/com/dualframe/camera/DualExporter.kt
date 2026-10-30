@@ -99,6 +99,8 @@ data class ExportJob(
     val timecodeStartMs: Long? = null,
     /** Frame rate label for the timecode ("23.98", "30"…). */
     val timecodeRate: String = "30",
+    /** Face positions through the take for auto-reframe; null = frames stay where they were placed. */
+    val track: List<SubjectSample>? = null,
 )
 
 /** One still photo to cut into every chosen shape. */
@@ -155,13 +157,15 @@ object DualExporter {
                     val name = "${job.baseName}_${format.label.replace(':', 'x')}_${resolution.label}.mp4"
                     val file = File(app.cacheDir, name).also { made += it }
                     val (w, h) = format.sizePx(resolution)
-                    val crop = job.placement.rect(format, desqueezed(aspect, job.anamorphic))
+                    val sceneAspect = desqueezed(aspect, job.anamorphic)
+                    val crop = job.placement.rect(format, sceneAspect)
+                    val path = job.track?.takeIf { it.isNotEmpty() }?.let { Reframe.path(it, format, sceneAspect, crop) }
                     val progress = { p: Int -> _state.value = ExportState.Running(index + 1, job.outputs.size, format, p) }
                     // If a phone can't do one of the optional extras, drop that one and try again
                     // rather than failing the whole take.
                     while (true) {
                         try {
-                            export(app, current, file, w, h, crop, progress)
+                            export(app, current, file, w, h, crop, path, progress)
                             break
                         } catch (e: ExportException) {
                             current = when {
@@ -333,6 +337,7 @@ object DualExporter {
         width: Int,
         height: Int,
         crop: NormRect,
+        path: CropPath?,
         onProgress: (Int) -> Unit,
     ) {
         output.delete()
@@ -351,8 +356,10 @@ object DualExporter {
         mainEffects += speedEffects()
         // Stretching (not fitting) the cut to the output size is what undoes an anamorphic squeeze.
         val layout = if (job.anamorphic != 1f) Presentation.LAYOUT_STRETCH_TO_FIT else Presentation.LAYOUT_SCALE_TO_FIT
+        // Auto-reframe moves the crop over time; otherwise it stays where it was placed.
+        val cropEffect: Effect = path?.let { MovingCrop(crop.width, crop.height, it, job.speed) } ?: crop.toMedia3Crop()
         mainEffects += listOf(
-            crop.toMedia3Crop(),
+            cropEffect,
             Presentation.createForWidthAndHeight(width, height, layout),
         )
         if (job.cinematic > 0) mainEffects += CinematicBlurEffect(job.cinematic)

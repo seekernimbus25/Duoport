@@ -65,6 +65,18 @@ class TeleprompterView @JvmOverloads constructor(
     }
     private val playButton = smallButton("▶") { if (isScrolling) pause() else play() }
     private var eyeButton: MaterialButton? = null
+    private var voiceButton: MaterialButton? = null
+
+    /**
+     * Voice follow: while recording, the script only moves while you're talking and waits when
+     * you pause. Driven by the recording's sound level ([onVoiceLevel]); before recording starts
+     * it scrolls normally.
+     */
+    private var voiceFollow = prefs.getBoolean("voiceFollow", true)
+    private var lastLevelAt = 0L
+    private var lastSpeechAt = 0L
+    private var noiseFloor = 0.01
+    private var pace = 1f
     private val speedLabel = TextView(context).apply {
         setTextColor(Color.rgb(244, 241, 234))
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -106,6 +118,10 @@ class TeleprompterView @JvmOverloads constructor(
         bar.addView(smallButton("✎") { editScript() })
         bar.addView(smallButton("↺") { restart() })
         eyeButton = smallButton("◎") { setEyeContact(!eyeContact) }.also { bar.addView(it) }
+        voiceButton = smallButton("🎙") { setVoiceFollow(!voiceFollow) }.also {
+            it.contentDescription = "Follow my voice"
+            bar.addView(it)
+        }
         // Narrow (eye-contact) mode can't fit every button, so the bar scrolls sideways.
         val barScroller = HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
@@ -119,6 +135,7 @@ class TeleprompterView @JvmOverloads constructor(
         text.text = script
         setTextSize(textSizeSp)
         setSpeed(speed)
+        setVoiceFollow(voiceFollow)
     }
 
     override fun onAttachedToWindow() {
@@ -155,6 +172,31 @@ class TeleprompterView @JvmOverloads constructor(
         layoutParams = lp
     }
 
+    private fun setVoiceFollow(on: Boolean) {
+        voiceFollow = on
+        prefs.edit().putBoolean("voiceFollow", on).apply()
+        voiceButton?.setTextColor(if (on) Color.rgb(216, 185, 138) else Color.WHITE)
+    }
+
+    /**
+     * The microphone level while recording (0..1). Speech is anything clearly above the
+     * room's background noise, which is tracked slowly so a fan or traffic doesn't count.
+     */
+    fun onVoiceLevel(amplitude: Double) {
+        val now = System.nanoTime()
+        lastLevelAt = now
+        noiseFloor = if (amplitude < noiseFloor) amplitude else noiseFloor + (amplitude - noiseFloor) * 0.002
+        if (amplitude > maxOf(0.02, noiseFloor * 2.5)) lastSpeechAt = now
+    }
+
+    /** How fast to scroll right now: full speed while talking, easing to a stop in pauses. */
+    private fun currentPace(now: Long): Float {
+        val listening = voiceFollow && now - lastLevelAt < 1_000_000_000L
+        val target = if (!listening || now - lastSpeechAt < 700_000_000L) 1f else 0f
+        pace += (target - pace) * 0.12f
+        return pace
+    }
+
     fun play() {
         if (isScrolling) return
         isScrolling = true
@@ -182,7 +224,7 @@ class TeleprompterView @JvmOverloads constructor(
             if (!isScrolling) return
             val now = System.nanoTime()
             if (lastFrameNanos != 0L) {
-                scrollRemainder += speed * density * (now - lastFrameNanos) / 1e9f
+                scrollRemainder += speed * currentPace(now) * density * (now - lastFrameNanos) / 1e9f
                 val step = scrollRemainder.toInt()
                 if (step > 0) {
                     scroller.scrollBy(0, step)
@@ -289,6 +331,7 @@ class TeleprompterView @JvmOverloads constructor(
         const val DEFAULT_SCRIPT =
             "Tap ✎ to paste your script.\n\nTap ▶ to start scrolling, or just press record: " +
                 "the script starts by itself.\n\nUse − and + to change the speed, A− and A+ for text size, " +
-                "and drag the top bar to move this box under your camera."
+                "and drag the top bar to move this box under your camera.\n\nWith 🎙 on, the script follows your " +
+                "voice while recording: it moves while you talk and waits when you pause."
     }
 }

@@ -220,6 +220,8 @@ data class CaptureSettings(
     val cinematic: Int = 0,
     /** Anamorphic lens squeeze to undo (1 = none, 1.33, 1.55, 2…). */
     val anamorphic: Float = 1f,
+    /** Auto-reframe: every frame follows the main face, live and in the finished videos. */
+    val autoReframe: Boolean = false,
     /** Record a landscape video when the phone is turned sideways. */
     val followRotation: Boolean = true,
     val insetCorner: Corner = Corner.TOP_RIGHT,
@@ -257,6 +259,9 @@ data class CaptureSettings(
 
     /** How fast the finished videos play: above 1 is time-lapse, below 1 is slow motion. */
     val playbackSpeed: Float get() = if (activeSlowMotion > 0) 30f / activeSlowMotion else timelapse.toFloat()
+
+    /** Following a face needs one camera (the inset layout stays fixed in Front + Back). */
+    val activeAutoReframe get() = autoReframe && !dual
 
     /** Turning sideways only with one camera; Front + Back stays upright. */
     val activeFollowRotation get() = followRotation && !dual
@@ -335,6 +340,7 @@ object SettingsStore {
             cinematic = p.getInt("cinematic", d.cinematic),
             anamorphic = p.getFloat("anamorphic", d.anamorphic),
             followRotation = p.getBoolean("followRotation", d.followRotation),
+            autoReframe = p.getBoolean("autoReframe", d.autoReframe),
             insetCorner = enumOr(p.getString("insetCorner", null), d.insetCorner),
             lensFacing = p.getInt("lensFacing", d.lensFacing),
         )
@@ -382,6 +388,7 @@ object SettingsStore {
             .putInt("cinematic", s.cinematic)
             .putFloat("anamorphic", s.anamorphic)
             .putBoolean("followRotation", s.followRotation)
+            .putBoolean("autoReframe", s.autoReframe)
             .putString("insetCorner", s.insetCorner.name)
             .putInt("lensFacing", s.lensFacing)
             .apply()

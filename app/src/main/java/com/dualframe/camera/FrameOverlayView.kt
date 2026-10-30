@@ -58,6 +58,27 @@ class FrameOverlayView @JvmOverloads constructor(
     /** The scene's true width / height, which the format frames are cut from. */
     private val frameAspect get() = desqueezed(sourceAspect, desqueeze)
 
+    /**
+     * Auto-reframe: glide every frame toward the face at ([x], [y]) (0..1 of the recorded
+     * picture), ignoring small movements so the frames don't drift with every nod.
+     */
+    fun follow(x: Float, y: Float) {
+        val aspect = frameAspect
+        var centers = placement.centers
+        for (format in formats) {
+            val current = placement.rect(format, aspect)
+            val (tx, ty) = Reframe.target(format, aspect, x, y)
+            val dx = tx - current.centerX
+            val dy = ty - current.centerY
+            if (kotlin.math.abs(dx) < Reframe.DEAD_ZONE && kotlin.math.abs(dy) < Reframe.DEAD_ZONE) continue
+            centers = centers + (format to (current.centerX + dx * FOLLOW_RATE to current.centerY + dy * FOLLOW_RATE))
+        }
+        if (centers !== placement.centers) {
+            placement = FramePlacement(centers).clamped(aspect)
+            changed()
+        }
+    }
+
     var placement = FramePlacement()
         private set
 
@@ -124,6 +145,11 @@ class FrameOverlayView @JvmOverloads constructor(
             changed()
         }
 
+    private companion object {
+        /** Share of the remaining distance a frame moves per tracking update (~15 a second). */
+        const val FOLLOW_RATE = 0.12f
+    }
+
     private val density = resources.displayMetrics.density
     private val corner = 14f * density
 
@@ -183,6 +209,17 @@ class FrameOverlayView @JvmOverloads constructor(
         } else {
             val h = vw / sourceAspect
             content.set(0f, (vh - h) / 2f, vw, (vh + h) / 2f)
+        }
+        // With an anamorphic lens the preview is shown desqueezed: narrowed across the screen
+        // (which is this view's y axis while it's turned for a sideways recording).
+        if (desqueeze != 1f) {
+            if (rotation == 0f) {
+                val w = content.width() / desqueeze
+                content.set(content.centerX() - w / 2f, content.top, content.centerX() + w / 2f, content.bottom)
+            } else {
+                val h = content.height() / desqueeze
+                content.set(content.left, content.centerY() - h / 2f, content.right, content.centerY() + h / 2f)
+            }
         }
         boxes.keys.retainAll(formats.toSet())
         insets.clear()
