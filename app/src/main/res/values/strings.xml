@@ -6,14 +6,22 @@
     <string name="stop_recording">Stop recording</string>
     <string name="flip_camera">Switch camera</string>
     <string name="front_and_back">Front + Back</string>
-    <string name="hint_frames">Drag sideways to move 9:16 · up/down to move 16:9 · double-tap to center</string>
-    <string name="hint_dual">Front + back: the small camera appears in both videos · tap ⟳ to swap</string>
-    <string name="recording_size">%1$d × %2$d</string>
+    <string name="teleprompter">Teleprompter</string>
+    <string name="settings">Settings</string>
+    <string name="auto">AUTO</string>
+    <string name="all_auto">Everything back on auto, like your phone\'s camera</string>
+    <string name="audio_level">Sound level</string>
+    <string name="edit_formats">+ Formats</string>
+    <string name="keep_one_format">Keep at least one format</string>
+    <string name="second_camera_corner">Second camera:</string>
+    <string name="hint_frames">Tap a format above, then drag to move its frame · double-tap to center</string>
+    <string name="hint_dual_fixed">Front + back: frames stay centered on this phone so the second camera is in every video</string>
+    <string name="recording_size">Camera: %1$d × %2$d · %3$s</string>
 
-    <string name="mode_wide_help">Wide: best framing for both. 16:9 gets the full width of the camera.</string>
-    <string name="mode_sharp_help">Sharp: records 4K, so the 9:16 video is the sharpest. The 16:9 video is a tighter shot.</string>
-    <string name="dual_help">Recording front and back cameras together. Tap ⟳ to choose which one is big.</string>
+    <string name="dual_help">Recording front and back cameras together. Pick the corner for the second camera; ⟳ swaps which camera is big.</string>
     <string name="dual_unsupported">This phone can\'t use the front and back cameras at the same time.</string>
+    <string name="stabilization_unsupported">Stabilization isn\'t available with this camera.</string>
+    <string name="fps_fallback">%1$d fps isn\'t possible with these settings, recording at the camera\'s standard rate.</string>
 
     <string name="camera_error">Couldn\'t start the camera: %1$s</string>
     <string name="record_failed">Recording failed (code %1$d). Please try again.</string>
@@ -22,19 +30,17 @@
     <string name="permission_body">DualFrame needs the camera to record, and the microphone for sound.</string>
     <string name="permission_button">Allow access</string>
 
-    <string name="exporting_portrait">Making your 9:16 video (1 of 2)…</string>
-    <string name="exporting_landscape">Making your 16:9 video (2 of 2)…</string>
+    <string name="exporting">Making video %1$d of %2$d (%3$s)…</string>
     <string name="exporting_note">Keep the app open until this finishes.</string>
     <string name="percent">%1$d%%</string>
 
-    <string name="result_title">Both videos are ready</string>
+    <string name="result_title">Your videos are ready</string>
     <string name="result_subtitle">Saved in your gallery under Movies › DualFrame</string>
-    <string name="portrait_label">9:16 · Reels, Shorts, Stories</string>
-    <string name="landscape_label">16:9 · YouTube</string>
+    <string name="result_title_row">%1$s · %2$s</string>
+    <string name="result_subtitle_row">%1$s · %2$d×%3$d</string>
     <string name="play">Play</string>
     <string name="share">Share</string>
-    <string name="share_portrait">Share 9:16 video</string>
-    <string name="share_landscape">Share 16:9 video</string>
+    <string name="share_format">Share %1$s video</string>
     <string name="record_again">Record another</string>
     <string name="no_player">No video player found</string>
 

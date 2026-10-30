@@ -11,11 +11,15 @@ import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.VideoCompositorSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
@@ -36,10 +40,29 @@ import java.io.File
 
 sealed interface ExportState {
     data object Idle : ExportState
-    data class Running(val step: Int, val progress: Int) : ExportState
-    data class Done(val portraitUri: Uri, val landscapeUri: Uri) : ExportState
+    data class Running(val step: Int, val total: Int, val format: OutputFormat, val progress: Int) : ExportState
+    data class Done(val videos: List<SavedVideo>) : ExportState
     data class Failed(val message: String, val savedOriginal: Uri?) : ExportState
 }
+
+data class SavedVideo(val format: OutputFormat, val resolution: OutputResolution, val uri: Uri)
+
+/** A finished camera recording. */
+data class Take(val file: File, val durationNs: Long)
+
+/** Everything needed to turn one take into the two finished videos. */
+data class ExportJob(
+    val main: Take,
+    /** The second camera's separate recording in front + back mode, if there is one. */
+    val inset: Take?,
+    val insetCorner: Corner,
+    val outputs: List<Pair<OutputFormat, OutputResolution>>,
+    val placement: FramePlacement,
+    val look: Look,
+    val quality: ExportQuality,
+    val keepOriginal: Boolean,
+    val baseName: String,
+)
 
 /**
  * Turns one recording into the two finished videos. Lives at process scope (not in the
@@ -48,10 +71,8 @@ sealed interface ExportState {
 @OptIn(UnstableApi::class)
 object DualExporter {
 
-    private const val OUTPUT_LONG = 1920
-    private const val OUTPUT_SHORT = 1080
-    private const val BITRATE = 16_000_000
     private const val ALBUM = "DualFrame"
+    private const val INSET_SEQUENCE = 1
 
     private val scope = MainScope()
     private val _state = MutableStateFlow<ExportState>(ExportState.Idle)
@@ -63,37 +84,49 @@ object DualExporter {
         }
     }
 
-    fun start(context: Context, master: File, placement: FramePlacement, baseName: String) {
+    fun start(context: Context, job: ExportJob) {
         val app = context.applicationContext
-        _state.value = ExportState.Running(step = 1, progress = 0)
+        val first = job.outputs.firstOrNull() ?: return
+        _state.value = ExportState.Running(step = 1, total = job.outputs.size, format = first.first, progress = 0)
         scope.launch {
-            val portraitFile = File(app.cacheDir, "${baseName}_9x16.mp4")
-            val landscapeFile = File(app.cacheDir, "${baseName}_16x9.mp4")
+            val made = mutableListOf<File>()
             try {
-                val aspect = withContext(Dispatchers.IO) { displayAspect(master) }
-                transform(app, master, portraitFile, placement.portraitRect(aspect), OUTPUT_SHORT, OUTPUT_LONG) {
-                    _state.value = ExportState.Running(step = 1, progress = it)
+                val aspect = withContext(Dispatchers.IO) { displayAspect(job.main.file) }
+                val saved = mutableListOf<SavedVideo>()
+                job.outputs.forEachIndexed { index, (format, resolution) ->
+                    val name = "${job.baseName}_${format.label.replace(':', 'x')}_${resolution.label}.mp4"
+                    val file = File(app.cacheDir, name).also { made += it }
+                    val (w, h) = format.sizePx(resolution)
+                    export(app, job, file, w, h, job.placement.rect(format, aspect)) {
+                        _state.value = ExportState.Running(index + 1, job.outputs.size, format, it)
+                    }
+                    saved += SavedVideo(format, resolution, saveToGallery(app, file, name))
+                    withContext(Dispatchers.IO) { file.delete() }
                 }
-                transform(app, master, landscapeFile, placement.landscapeRect(aspect), OUTPUT_LONG, OUTPUT_SHORT) {
-                    _state.value = ExportState.Running(step = 2, progress = it)
-                }
-                val portraitUri = saveToGallery(app, portraitFile, "${baseName}_9x16.mp4")
-                val landscapeUri = saveToGallery(app, landscapeFile, "${baseName}_16x9.mp4")
-                withContext(Dispatchers.IO) { master.delete() }
-                _state.value = ExportState.Done(portraitUri, landscapeUri)
+                if (job.keepOriginal) saveOriginals(app, job)
+                _state.value = ExportState.Done(saved)
             } catch (e: Exception) {
                 // Never lose the take: if cutting fails, keep the original recording instead.
-                val original = runCatching {
-                    if (master.length() > 0) saveToGallery(app, master, "${baseName}_original.mp4") else null
-                }.getOrNull()
+                val original = runCatching { saveOriginals(app, job) }.getOrNull()
                 _state.value = ExportState.Failed(e.message ?: e.javaClass.simpleName, original)
             } finally {
                 withContext(Dispatchers.IO) {
-                    portraitFile.delete()
-                    landscapeFile.delete()
+                    made.forEach { it.delete() }
+                    job.main.file.delete()
+                    job.inset?.file?.delete()
                 }
             }
         }
+    }
+
+    private suspend fun saveOriginals(context: Context, job: ExportJob): Uri? {
+        val main = job.main.file.takeIf { it.length() > 0 }?.let {
+            saveToGallery(context, it, "${job.baseName}_original.mp4")
+        }
+        job.inset?.file?.takeIf { it.length() > 0 }?.let {
+            saveToGallery(context, it, "${job.baseName}_original_second_camera.mp4")
+        }
+        return main
     }
 
     /** width / height of the video as it is meant to be displayed (rotation applied). */
@@ -111,30 +144,105 @@ object DualExporter {
         }
     }
 
-    private suspend fun transform(
-        context: Context,
-        input: File,
-        output: File,
-        crop: NormRect,
-        width: Int,
-        height: Int,
-        onProgress: (Int) -> Unit,
-    ) = coroutineScope {
-        output.delete()
-        val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(input)))
-            .setEffects(
-                Effects(
-                    /* audioProcessors = */ emptyList<AudioProcessor>(),
-                    /* videoEffects = */ listOf<Effect>(
-                        crop.toMedia3Crop(),
-                        Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT),
-                    ),
-                )
+    /**
+     * The two cameras' recordings start a few milliseconds apart but are stopped together, so
+     * they are lined up by their ends: the longer one skips its extra start.
+     */
+    private fun clippedItem(take: Take, otherDurationNs: Long): MediaItem {
+        val skipMs = ((take.durationNs - otherDurationNs) / 1_000_000).coerceAtLeast(0)
+        return MediaItem.Builder()
+            .setUri(Uri.fromFile(take.file))
+            .setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder().setStartPositionMs(skipMs).build()
             )
             .build()
+    }
 
+    private suspend fun export(
+        context: Context,
+        job: ExportJob,
+        output: File,
+        width: Int,
+        height: Int,
+        crop: NormRect,
+        onProgress: (Int) -> Unit,
+    ) {
+        output.delete()
+        val lookEffects = Looks.exportEffects(job.look)
+        val inset = job.inset
+
+        val mainEffects = mutableListOf<Effect>(
+            crop.toMedia3Crop(),
+            Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT),
+        )
+        mainEffects += lookEffects
+
+        if (inset == null) {
+            val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(job.main.file)))
+                .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
+                .build()
+            runTransformer(context, bitrateFor(job.quality, width, height), output, onProgress) { it.start(item, output.absolutePath) }
+            return
+        }
+
+        // Front + back: the main camera fills the frame and the second camera sits in the
+        // chosen corner, sized and placed exactly as the preview showed it.
+        val insetRect = InsetGeometry.rect(width, height, job.insetCorner)
+        val (insetW, insetH) = InsetGeometry.sizePx(width, height)
+        val border = minOf(width, height) * 0.004f
+        mainEffects += InsetCutoutEffect(insetRect, border)
+
+        val mainItem = EditedMediaItem.Builder(clippedItem(job.main, inset.durationNs))
+            .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
+            .build()
+        val insetEffects = mutableListOf<Effect>(
+            Presentation.createForWidthAndHeight(insetW, insetH, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP),
+        )
+        insetEffects += lookEffects
+        val insetItem = EditedMediaItem.Builder(clippedItem(inset, job.main.durationNs))
+            .setRemoveAudio(true)
+            .setEffects(Effects(emptyList<AudioProcessor>(), insetEffects))
+            .build()
+
+        // Pin the inset's corner to the same corner of the video, pulled in by the margin.
+        // OverlaySettings use NDC: -1..1 with +y up.
+        val sx = if (job.insetCorner.isLeft) -1f else 1f
+        val sy = if (job.insetCorner.isTop) 1f else -1f
+        val margin = InsetGeometry.marginPx(width, height)
+        val insetOverlay = OverlaySettings.Builder()
+            .setOverlayFrameAnchor(sx, sy)
+            .setBackgroundFrameAnchor(sx * (1f - 2f * margin / width), sy * (1f - 2f * margin / height))
+            .build()
+        val fullFrame = OverlaySettings.Builder().build()
+        val compositorSettings = object : VideoCompositorSettings {
+            override fun getOutputSize(inputSizes: List<Size>): Size = Size(width, height)
+
+            override fun getOverlaySettings(inputId: Int, presentationTimeUs: Long): OverlaySettings =
+                if (inputId == INSET_SEQUENCE) insetOverlay else fullFrame
+        }
+
+        val composition = Composition.Builder(
+            listOf(
+                EditedMediaItemSequence(listOf(mainItem)),
+                EditedMediaItemSequence(listOf(insetItem)),
+            )
+        )
+            .setVideoCompositorSettings(compositorSettings)
+            .build()
+        runTransformer(context, bitrateFor(job.quality, width, height), output, onProgress) { it.start(composition, output.absolutePath) }
+    }
+
+    private suspend fun runTransformer(
+        context: Context,
+        bitrate: Int,
+        output: File,
+        onProgress: (Int) -> Unit,
+        start: (Transformer) -> Unit,
+    ) = coroutineScope {
         val encoderFactory = DefaultEncoderFactory.Builder(context)
-            .setRequestedVideoEncoderSettings(VideoEncoderSettings.Builder().setBitrate(BITRATE).build())
+            .setRequestedVideoEncoderSettings(
+                VideoEncoderSettings.Builder().setBitrate(bitrate).build()
+            )
             .build()
 
         val finished = CompletableDeferred<Unit>()
@@ -155,7 +263,7 @@ object DualExporter {
                 }
             })
             .build()
-        transformer.start(item, output.absolutePath)
+        start(transformer)
 
         val poller = launch {
             val holder = ProgressHolder()
@@ -168,6 +276,7 @@ object DualExporter {
         }
         try {
             finished.await()
+            if (!output.exists() || output.length() == 0L) error("Export produced no file")
         } finally {
             poller.cancel()
             if (!finished.isCompleted) transformer.cancel()
