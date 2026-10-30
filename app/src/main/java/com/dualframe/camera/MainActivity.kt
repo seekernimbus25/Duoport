@@ -2,6 +2,7 @@ package com.dualframe.camera
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
@@ -9,6 +10,9 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.BatteryManager
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
@@ -46,6 +50,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.CompositionSettings
 import androidx.camera.core.ConcurrentCamera
 import androidx.camera.core.DynamicRange
+import androidx.camera.core.ExperimentalSessionConfig
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.MirrorMode
@@ -58,6 +63,7 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.HighSpeedVideoSessionConfig
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
@@ -94,13 +100,14 @@ import kotlin.math.pow
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalCamera2Interop::class)
+@OptIn(ExperimentalCamera2Interop::class, ExperimentalSessionConfig::class)
 class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private enum class Param(val caption: String, val title: String) {
         PROFILE("Profile", "Recording profile"),
         LUT("LUT", "Look (LUT)"),
         FPS("FPS", "Frame rate"),
+        LENS("Lens", "Lens"),
         SHUTTER("Shutter", "Shutter speed"),
         ISO("ISO", "ISO"),
         WB("WB", "White balance"),
@@ -215,6 +222,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var livePreviewBroken = false
     private var hlgSupported = false
 
+    /** Lenses on the current side, the phone's 1× focal length, and the lens locked now (if any). */
+    private var lenses: List<Lens> = emptyList()
+    private var mainLensMm = 0
+    private var lockedLens: Lens? = null
+
+    /** Slow-motion frame rates this camera can record (60 normally, 120 / 240 in high-speed mode). */
+    private var slowRates: List<Int> = emptyList()
+    private var highSpeedBound = false
+
     private var mainRecording: Recording? = null
     private var insetRecording: Recording? = null
     private var mainTake: Take? = null
@@ -306,7 +322,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 CameraSelector.LENS_FACING_BACK
             }
             flipButton.animate().rotationBy(180f).setDuration(260).start()
-            updateSettings(settings.copy(lensFacing = facing), rebind = true)
+            updateSettings(settings.copy(lensFacing = facing, lensKey = null), rebind = true)
         }
         dualButton.setOnClickListener {
             val turningOn = !settings.dual
@@ -581,6 +597,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         insetCapture = null
         dualKind = DualKind.NONE
         effectAttached = false
+        highSpeedBound = false
+        lockedLens = null
+        lenses = runCatching { Lenses.list(this, provider, settings.lensFacing) }.getOrDefault(emptyList())
+        mainLensMm = runCatching { Lenses.mainMm(this, provider, settings.lensFacing) }.getOrDefault(0)
         flipButton.isVisible =
             provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) && provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)
 
@@ -596,8 +616,100 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             applySettingsToUi()
         }
 
-        if (bindSingle(provider)) onCameraBound() else bound = false
+        val lens = settings.activeLensKey?.let { key -> lenses.firstOrNull { it.key == key } }
+        val selector = lens?.let { Lenses.selector(it) } ?: defaultSelector(provider)
+        slowRates = runCatching { slowMotionRates(provider.getCameraInfo(selector)) }.getOrDefault(emptyList())
+
+        if (settings.activeSlowMotion > 0 && settings.activeSlowMotion !in slowRates) {
+            // This camera can't do the chosen speed: take the nearest slower one it can.
+            val fallback = slowRates.filter { it < settings.activeSlowMotion }.maxOrNull() ?: 0
+            Toast.makeText(this, getString(R.string.slowmo_unsupported, settings.activeSlowMotion), Toast.LENGTH_LONG).show()
+            settings = settings.copy(slowMotion = fallback)
+            SettingsStore.save(this, settings)
+            applySettingsToUi()
+        }
+
+        if (settings.isHighSpeed && bindHighSpeed(provider, selector, settings.activeSlowMotion)) {
+            lockedLens = lens
+            onCameraBound()
+            return
+        }
+        if (settings.isHighSpeed) {
+            Toast.makeText(this, getString(R.string.slowmo_unsupported, settings.activeSlowMotion), Toast.LENGTH_LONG).show()
+            settings = settings.copy(slowMotion = if (60 in slowRates) 60 else 0)
+            SettingsStore.save(this, settings)
+            applySettingsToUi()
+        }
+
+        if (bindSingle(provider, selector, quiet = lens != null)) {
+            lockedLens = lens
+            onCameraBound()
+        } else if (lens != null && bindSingle(provider, defaultSelector(provider))) {
+            // Some phones list a lens but won't stream it on its own.
+            Toast.makeText(this, R.string.lens_unavailable, Toast.LENGTH_LONG).show()
+            settings = settings.copy(lensKey = null)
+            SettingsStore.save(this, settings)
+            onCameraBound()
+        } else {
+            bound = false
+        }
     }
+
+    private fun defaultSelector(provider: ProcessCameraProvider): CameraSelector {
+        val selector = CameraSelector.Builder().requireLensFacing(settings.lensFacing).build()
+        return if (provider.hasCamera(selector)) selector else CameraSelector.DEFAULT_BACK_CAMERA
+    }
+
+    /**
+     * Slow-motion speeds this camera offers: 60 fps through a normal recording, and 120 / 240
+     * through the camera's high-speed mode, when the phone opens it to apps.
+     */
+    private fun slowMotionRates(info: CameraInfo): List<Int> {
+        val rates = mutableListOf<Int>()
+        if (info.supportedFrameRateRanges.any { 60 in it.lower..it.upper }) rates += 60
+        runCatching {
+            val highSpeed = Recorder.getHighSpeedVideoCapabilities(info) ?: return@runCatching
+            val qualities = highSpeed.getSupportedQualities(DynamicRange.SDR)
+            if (qualities.isEmpty()) return@runCatching
+            val capture = VideoCapture.withOutput(
+                Recorder.Builder().setQualitySelector(QualitySelector.fromOrderedList(qualities)).build()
+            )
+            val config = HighSpeedVideoSessionConfig.Builder(capture).setPreview(Preview.Builder().build()).build()
+            info.getSupportedFrameRateRanges(config).map { it.upper }.filter { it >= 120 }.forEach { rates += it }
+        }
+        return rates.distinct().sorted()
+    }
+
+    /**
+     * 120 / 240 fps: the camera's high-speed mode. It only allows a preview and the recording
+     * (no live LUT, analysis or manual controls), and records without sound. The recording is
+     * real-time high frame rate; the finished videos are slowed to play back at 30 fps.
+     */
+    private fun bindHighSpeed(provider: ProcessCameraProvider, selector: CameraSelector, fps: Int): Boolean =
+        try {
+            val info = provider.getCameraInfo(selector)
+            val qualities = Recorder.getHighSpeedVideoCapabilities(info)?.getSupportedQualities(DynamicRange.SDR).orEmpty()
+            if (qualities.isEmpty()) {
+                false
+            } else {
+                val capture = VideoCapture.withOutput(
+                    Recorder.Builder().setQualitySelector(QualitySelector.fromOrderedList(qualities)).build()
+                )
+                val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                val config = HighSpeedVideoSessionConfig.Builder(capture)
+                    .setPreview(preview)
+                    .setFrameRateRange(Range(fps, fps))
+                    .setSlowMotionEnabled(false)
+                    .build()
+                camera = provider.bindToLifecycle(this, selector, config)
+                mainCapture = capture
+                highSpeedBound = true
+                true
+            }
+        } catch (e: Exception) {
+            provider.unbindAll()
+            false
+        }
 
     private fun qualitiesFrom(top: CameraResolution): List<Quality> =
         CameraResolution.entries.drop(top.ordinal).map { it.quality }
@@ -661,10 +773,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             }
 
     /** One camera. If the chosen combination isn't possible, back off one feature at a time. */
-    private fun bindSingle(provider: ProcessCameraProvider): Boolean {
-        var selector = CameraSelector.Builder().requireLensFacing(settings.lensFacing).build()
-        if (!provider.hasCamera(selector)) selector = CameraSelector.DEFAULT_BACK_CAMERA
-        val info = provider.getCameraInfo(selector)
+    private fun bindSingle(provider: ProcessCameraProvider, selector: CameraSelector, quiet: Boolean = false): Boolean {
+        val info = try {
+            provider.getCameraInfo(selector)
+        } catch (e: Exception) {
+            return false
+        }
         val capabilities = Recorder.getVideoCapabilities(info)
 
         hlgSupported = DynamicRange.HLG_10_BIT in capabilities.supportedDynamicRanges
@@ -672,7 +786,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         if (wantHdr && !hlgSupported) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
         val hdr = wantHdr && hlgSupported
 
-        val fps = if (settings.isPro) settings.fps else 30
+        val fps = settings.captureFps
         val fpsOk = info.supportedFrameRateRanges.any { fps in it.lower..it.upper }
 
         val wantStab = settings.effectiveStabilization
@@ -738,7 +852,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 provider.unbindAll()
             }
         }
-        Toast.makeText(this, getString(R.string.camera_error, "no supported setup"), Toast.LENGTH_LONG).show()
+        if (!quiet) Toast.makeText(this, getString(R.string.camera_error, "no supported setup"), Toast.LENGTH_LONG).show()
         return false
     }
 
@@ -880,8 +994,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         if (!c.hasFlash) torchOn = false
         if (torchOn) cam.cameraControl.enableTorch(true)
         updateTorchIcon()
-        nightButton.isVisible = cam.cameraInfo.isLowLightBoostSupported
-        applyNight()
+        nightButton.isVisible = cam.cameraInfo.isLowLightBoostSupported && !highSpeedBound
+        if (!highSpeedBound) applyNight()
+        if (highSpeedBound) monitorRow.isVisible = false
 
         applyManual()
         resolutionText = ""
@@ -940,7 +1055,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             priorityIso = next
         } else {
             val range = c.shutterRange ?: return
-            val maxNs = 1_000_000_000L / settings.fps
+            val maxNs = 1_000_000_000L / settings.captureFps
             val current = priorityShutterNs ?: lastReadout?.shutterNs ?: return
             val next = (current * factor).toLong().coerceIn(range.lower, minOf(range.upper, maxNs))
             if (next == current) return
@@ -978,11 +1093,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val parts = mutableListOf<String>()
         if (resolutionText.isNotEmpty()) parts += resolutionText
         if (dualKind != DualKind.NONE) parts += getString(R.string.front_and_back)
-        if (settings.timelapse > 1) {
+        if (settings.activeSlowMotion > 0) {
+            parts += getString(R.string.slowmo_info, settings.activeSlowMotion / 30, settings.activeSlowMotion)
+        } else if (settings.timelapse > 1) {
             parts += if (settings.isHyperlapse) "Hyperlapse ${settings.timelapse}×" else "Time-lapse ${settings.timelapse}×"
         }
         if (settings.isPro) {
-            parts += "${settings.fps} fps"
+            parts += "${settings.captureFps} fps"
+            lockedLens?.let { parts += it.label(mainLensMm) }
             parts += settings.activeProfile.label
             val bits = settings.recordBitrate.bitsPerSecond(settings.cameraResolution) + 256_000
             val free = runCatching { StatFs(filesDir.path).availableBytes }.getOrDefault(0L)
@@ -1001,7 +1119,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val c = caps ?: return
         if (!manual.shutterPriority) priorityIso = null
         if (!manual.isoPriority) priorityShutterNs = null
-        val fps = if (settings.isPro) settings.fps else 30
+        // The high-speed mode only takes the camera's own automatic settings.
+        if (highSpeedBound) {
+            updateReadouts()
+            openParam?.let { buildControlPanel(it) }
+            return
+        }
+        val fps = settings.captureFps
         ProControls.apply(cam, c, activeManual, settings.activeProfile, fps, lastReadout, priorityIso, priorityShutterNs)
         updateReadouts()
         openParam?.let { buildControlPanel(it) }
@@ -1055,7 +1179,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     ): Recording {
         pendingFinalizes++
         var pending = capture.output.prepareRecording(this, FileOutputOptions.Builder(file).build())
-        if (isMain && has(Manifest.permission.RECORD_AUDIO)) pending = pending.withAudioEnabled()
+        // High-speed recordings have no sound (the slowed videos drop it anyway).
+        if (isMain && !highSpeedBound && has(Manifest.permission.RECORD_AUDIO)) pending = pending.withAudioEnabled()
         return pending.start(ContextCompat.getMainExecutor(this)) { event ->
             when (event) {
                 is VideoRecordEvent.Start -> {
@@ -1163,7 +1288,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             Toast.makeText(this, getString(R.string.record_failed, lastError), Toast.LENGTH_LONG).show()
             return
         }
-        val hdr = settings.activeProfile == RecordProfile.HLG && dualKind == DualKind.NONE && hlgSupported
+        val hdr = settings.activeProfile == RecordProfile.HLG && dualKind == DualKind.NONE && hlgSupported && !highSpeedBound
         DualExporter.start(
             this,
             ExportJob(
@@ -1173,8 +1298,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 outputs = settings.orderedFormats.map { it to settings.outputs.getValue(it) },
                 placement = frameOverlay.placement,
                 lut = if (settings.bakeLut) activeLut else null,
-                speed = settings.timelapse,
+                speed = settings.playbackSpeed,
                 hdrSource = hdr,
+                keepHdr = settings.hdrCuts,
                 codec = settings.codec,
                 quality = settings.exportQuality,
                 // Log and HDR originals are the "negative": always keep them.
@@ -1188,7 +1314,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         recordButton.setImageResource(if (recording) R.drawable.ic_stop else R.drawable.ic_record)
         recordButton.contentDescription = getString(if (recording) R.string.stop_recording else R.string.start_recording)
         Glass.show(timerRow, recording)
-        Glass.show(meterRow, recording && settings.isPro)
+        Glass.show(meterRow, recording && settings.isPro && !highSpeedBound)
         formatScroller.isVisible = !recording
         if (recording) timerText.text = formatDuration(0)
         listOf<View>(flipButton, dualButton, settingsButton, modeAuto, modePro).forEach {
@@ -1328,11 +1454,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         )
         val lutName = Luts.displayName(this, settings.lutId, settings.profile)
         set(Param.LUT, if (lutName.length > 10) lutName.take(9) + "…" else lutName, settings.lutId != Luts.NONE)
-        set(Param.FPS, "${settings.fps}", settings.fps != 30)
+        set(Param.FPS, "${settings.captureFps}", settings.captureFps != 30)
+        set(Param.LENS, lockedLens?.let { if (it.equivalentMm > 0) "${it.equivalentMm}mm" else "Lock" } ?: "Auto", lockedLens != null)
         val shutterNs = m.shutterNs ?: priorityShutterNs ?: r?.shutterNs
         set(
             Param.SHUTTER,
-            if (settings.shutterAngle) Labels.angle(shutterNs, settings.fps) else Labels.shutter(shutterNs),
+            if (settings.shutterAngle) Labels.angle(shutterNs, settings.captureFps) else Labels.shutter(shutterNs),
             m.shutterNs != null,
         )
         set(Param.ISO, Labels.iso(m.iso ?: priorityIso ?: r?.iso), m.iso != null)
@@ -1421,6 +1548,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         })
         controlPanel.addView(header)
 
+        if (highSpeedBound && autoable) {
+            note(getString(R.string.highspeed_auto_only))
+            return
+        }
+
         when (param) {
             Param.PROFILE -> {
                 val pills = panelPills()
@@ -1444,6 +1576,20 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }
                 controlPanel.addView(pills)
                 note(settings.profile.description)
+                if (settings.profile == RecordProfile.HLG) {
+                    panelSwitch(getString(R.string.hdr_cuts), settings.hdrCuts) {
+                        updateSettings(settings.copy(hdrCuts = it), rebind = false)
+                    }
+                    note(getString(if (settings.hdrCuts) R.string.hdr_cuts_on else R.string.hdr_cuts_off))
+                }
+                if (settings.profile == RecordProfile.LOG) {
+                    controlPanel.addView(Glass.pill(this, getString(R.string.save_log_lut)) { saveLogLut() }.apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ).apply { topMargin = dp(10f).toInt() }
+                    })
+                }
                 if (!c.logSupported) note(getString(R.string.log_unsupported))
                 if (!hlgSupported) note(getString(R.string.hlg_unsupported))
             }
@@ -1516,25 +1662,27 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                         })
                     }
                 controlPanel.addView(pills)
-                note("24 for a film feel, 30 for everyday, 60 for smooth motion or slow-mo later.")
+                if (settings.activeSlowMotion > 0) note(getString(R.string.fps_slowmo_note, settings.activeSlowMotion))
+                note("24 for a film feel, 30 for everyday, 60 for smooth motion. For slow motion, use Settings → Speed.")
                 if (dualKind != DualKind.NONE) note("Front + Back records at the camera's standard rate.")
             }
             Param.SHUTTER -> {
-                val current = manual.shutterNs ?: lastReadout?.shutterNs ?: (1_000_000_000L / (settings.fps * 2))
+                val fps = settings.captureFps
+                val current = manual.shutterNs ?: lastReadout?.shutterNs ?: (1_000_000_000L / (fps * 2))
                 if (!c.manualSensor) {
                     note("This camera doesn't allow manual shutter speed.")
                 } else if (settings.shutterAngle) {
-                    val angles = c.shutterAngles(settings.fps)
+                    val angles = c.shutterAngles(fps)
                     if (angles.size >= 2) {
                         val index = angles.indices.minByOrNull { abs(angles[it].second - current) } ?: 0
-                        slider(angles.size, index, { Labels.angle(angles[it].second, settings.fps) }) { i ->
+                        slider(angles.size, index, { Labels.angle(angles[it].second, fps) }) { i ->
                             manual = manual.copy(shutterNs = angles[i].second)
                             applyManual()
                         }
                     }
                     note("180° is natural motion blur; smaller angles look crisper and more staccato.")
                 } else {
-                    val stops = c.shutterStops(settings.fps)
+                    val stops = c.shutterStops(fps)
                     if (stops.size >= 2) {
                         val index = stops.indices.minByOrNull { abs(1_000_000_000L / stops[it] - current) } ?: 0
                         slider(stops.size, index, { "1/${stops[it]}" }) { i ->
@@ -1542,7 +1690,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                             applyManual()
                         }
                     }
-                    note("1/${settings.fps * 2} gives the most natural motion at ${settings.fps} fps.")
+                    note("1/${fps * 2} gives the most natural motion at $fps fps.")
                 }
                 if (c.manualSensor) {
                     note("Shutter priority: with ISO on Auto, ISO keeps following the light.")
@@ -1600,6 +1748,20 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     }
                 })
             }
+            Param.LENS -> {
+                val pills = panelPills()
+                pills.addView(Glass.pill(this, getString(R.string.lens_auto), settings.lensKey == null) {
+                    if (settings.lensKey != null) updateSettings(settings.copy(lensKey = null), rebind = true)
+                })
+                lenses.forEach { lens ->
+                    pills.addView(Glass.pill(this, lens.label(mainLensMm), lens.key == settings.lensKey) {
+                        if (lens.key != settings.lensKey) updateSettings(settings.copy(lensKey = lens.key), rebind = true)
+                    })
+                }
+                controlPanel.addView(pills)
+                note(getString(if (lenses.size > 1) R.string.lens_note else R.string.lens_single))
+                if (dualKind != DualKind.NONE) note(getString(R.string.lens_dual))
+            }
             Param.FOCUS -> {
                 if (!c.manualFocus) {
                     note("This camera has fixed focus or doesn't allow manual focus.")
@@ -1631,6 +1793,63 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }
             }
         }
+    }
+
+    /** Writes the DF-Log → Rec.709 LUT to Downloads for Resolve, Premiere, Final Cut, LumaFusion… */
+    private fun saveLogLut() {
+        lifecycleScope.launch {
+            val saved = withContext(Dispatchers.IO) {
+                runCatching {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, "DF-Log_to_Rec709.cube")
+                        put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: error("Downloads unavailable")
+                    contentResolver.openOutputStream(uri)!!.use { it.write(Luts.logToRec709CubeText().toByteArray()) }
+                }.isSuccess
+            }
+            Toast.makeText(
+                this@MainActivity,
+                if (saved) R.string.log_lut_saved else R.string.log_lut_failed,
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    /** What this phone's cameras can do, shown in Settings so it's clear what's available and why. */
+    private fun phoneSummary(): List<Pair<String, String>> {
+        val p = provider
+        val c = caps
+        val yes = getString(R.string.yes)
+        val no = getString(R.string.no)
+        val out = mutableListOf<Pair<String, String>>()
+        val maker = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
+        out += getString(R.string.phone_model) to "$maker ${Build.MODEL} · Android ${Build.VERSION.RELEASE}"
+        if (p != null) {
+            listOf(
+                CameraSelector.LENS_FACING_BACK to R.string.phone_back_lenses,
+                CameraSelector.LENS_FACING_FRONT to R.string.phone_front_lenses,
+            ).forEach { (facing, label) ->
+                val list = runCatching { Lenses.list(this, p, facing) }.getOrDefault(emptyList())
+                val mm = runCatching { Lenses.mainMm(this, p, facing) }.getOrDefault(0)
+                if (list.isNotEmpty()) out += getString(label) to list.joinToString(",  ") { it.label(mm) }
+            }
+        }
+        if (c != null) {
+            out += getString(R.string.phone_manual) to if (c.manualSensor) yes else no
+            out += getString(R.string.phone_kelvin) to if (c.kelvinWb.isSupported) yes else no
+            out += getString(R.string.phone_log) to if (c.logSupported) yes else no
+        }
+        out += getString(R.string.phone_hlg) to if (hlgSupported) yes else no
+        val fpsList = camera?.cameraInfo?.supportedFrameRateRanges.orEmpty().let { ranges ->
+            listOf(24, 25, 30, 48, 50, 60).filter { f -> ranges.any { f in it.lower..it.upper } }
+        }
+        if (fpsList.isNotEmpty()) out += getString(R.string.phone_fps) to fpsList.joinToString(" · ")
+        out += getString(R.string.phone_slowmo) to slowRates.joinToString(" · ") { "$it fps" }.ifEmpty { no }
+        out += getString(R.string.phone_dual) to if (supportsFrontAndBack()) yes else no
+        return out
     }
 
     private fun confirmDeleteLut(lut: LutInfo) {
@@ -1780,7 +1999,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             pill.isSelected = active
             pill.text = if (active) zoomText(state.zoomRatio) else zoomText(ratio)
         }
-        val focal = caps?.equivalentFocalMm
+        val focal = lockedLens?.equivalentMm?.takeIf { it > 0 }?.toFloat() ?: caps?.equivalentFocalMm
         zoomLabel.text = focal?.let { "${(it * state.zoomRatio).roundToInt()} mm" } ?: ""
     }
 
@@ -1795,7 +2014,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun showSettings() {
         if (isRecording) return
-        SettingsSheet(this, settings, inFrontAndBack = settings.dual) { draft ->
+        SettingsSheet(this, settings, inFrontAndBack = settings.dual, slowRates, phoneSummary()) { draft ->
             val old = settings
             if (draft == old) return@SettingsSheet
             val cameraChanged = draft.cameraFrame != old.cameraFrame ||
@@ -1803,6 +2022,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 draft.effectiveStabilization != old.effectiveStabilization ||
                 draft.recordBitrate != old.recordBitrate ||
                 draft.mirrorFront != old.mirrorFront ||
+                draft.activeSlowMotion != old.activeSlowMotion ||
                 (draft.dual && draft.orderedFormats != old.orderedFormats)
             updateSettings(draft, rebind = cameraChanged)
         }.show()
@@ -1847,6 +2067,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             is ExportState.Done -> if (shownResult != state) {
                 shownResult = state
                 bindResults(state)
+                state.note?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
                 refreshGalleryThumb()
             }
             is ExportState.Failed -> if (shownResult != state) {

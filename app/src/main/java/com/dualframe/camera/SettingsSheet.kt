@@ -21,6 +21,10 @@ class SettingsSheet(
     private val context: Context,
     initial: CaptureSettings,
     private val inFrontAndBack: Boolean,
+    /** Slow-motion frame rates the current camera can record. */
+    private val slowRates: List<Int>,
+    /** What this phone's cameras can do, as label / value rows. */
+    private val phoneInfo: List<Pair<String, String>>,
     private val onDone: (CaptureSettings) -> Unit,
 ) {
     private var draft = initial
@@ -43,6 +47,7 @@ class SettingsSheet(
         export()
         camera()
         extras()
+        phone()
 
         dialog.setContentView(NestedScrollView(context).apply { addView(root) })
         dialog.setOnDismissListener { onDone(draft) }
@@ -189,51 +194,109 @@ class SettingsSheet(
         }
         root.addView(stabNote.apply { setPadding(0, dp(6f), 0, 0) })
 
+        speed()
+    }
+
+    private enum class SpeedKind(val label: String) { NORMAL("Normal"), SLOW("Slow motion"), TIMELAPSE("Time-lapse"), HYPERLAPSE("Hyperlapse") }
+
+    private fun speedKind() = when {
+        draft.slowMotion > 0 -> SpeedKind.SLOW
+        draft.timelapse == 1 -> SpeedKind.NORMAL
+        draft.hyperlapse -> SpeedKind.HYPERLAPSE
+        else -> SpeedKind.TIMELAPSE
+    }
+
+    private fun speed() {
         root.addView(Glass.section(context, "Speed"))
-        val speedNote = Glass.caption(context, "")
-        val factors = flow()
+        val note = Glass.caption(context, "")
+        val lapseFactors = flow()
+        val slowFactors = flow()
         fun describe() {
-            speedNote.text = when {
-                draft.timelapse == 1 -> "Videos play back in real time."
-                draft.hyperlapse -> "Hyperlapse: walk, drive or pan while recording. Strongest stabilization is used and " +
+            note.text = when (speedKind()) {
+                SpeedKind.NORMAL -> "Videos play back in real time."
+                SpeedKind.SLOW -> "Slow motion: the camera records ${draft.slowMotion} fps and your videos play " +
+                    "${draft.slowMotion / 30}× slower at 30 fps, without sound." +
+                    if (draft.slowMotion >= 120) " Needs good light; manual controls pause at this speed." else ""
+                SpeedKind.HYPERLAPSE -> "Hyperlapse: walk, drive or pan while recording. Strongest stabilization is used and " +
                     "the videos play ${draft.timelapse}× faster without sound. The original stays real-time."
-                else -> "Time-lapse: keep the phone still (a tripod helps). The videos play ${draft.timelapse}× faster " +
-                    "without sound. The original stays real-time."
+                SpeedKind.TIMELAPSE -> "Time-lapse: keep the phone still (a tripod helps). The videos play ${draft.timelapse}× " +
+                    "faster without sound. The original stays real-time."
             }
-            factors.visibility = if (draft.timelapse == 1) View.GONE else View.VISIBLE
+            lapseFactors.visibility = if (draft.timelapse > 1 && draft.slowMotion == 0) View.VISIBLE else View.GONE
+            slowFactors.visibility = if (draft.slowMotion > 0) View.VISIBLE else View.GONE
+            for (i in 0 until lapseFactors.childCount) {
+                lapseFactors.getChildAt(i).isSelected = lapseFactors.getChildAt(i).tag == draft.timelapse
+            }
+            for (i in 0 until slowFactors.childCount) {
+                slowFactors.getChildAt(i).isSelected = slowFactors.getChildAt(i).tag == draft.slowMotion
+            }
         }
-        val kinds = listOf("Normal", "Time-lapse", "Hyperlapse")
-        val kind = when {
-            draft.timelapse == 1 -> "Normal"
-            draft.hyperlapse -> "Hyperlapse"
-            else -> "Time-lapse"
-        }
-        choices(kinds, kind, { it }) {
+        val slowOk = slowRates.isNotEmpty() && !inFrontAndBack
+        choices(SpeedKind.entries, speedKind(), { it.label }, enabled = { it != SpeedKind.SLOW || slowOk }) {
+            val lapse = draft.timelapse.takeIf { t -> t > 1 } ?: 10
             draft = when (it) {
-                "Normal" -> draft.copy(timelapse = 1, hyperlapse = false)
-                "Hyperlapse" -> draft.copy(timelapse = draft.timelapse.takeIf { t -> t > 1 } ?: 10, hyperlapse = true)
-                else -> draft.copy(timelapse = draft.timelapse.takeIf { t -> t > 1 } ?: 10, hyperlapse = false)
-            }
-            for (i in 0 until factors.childCount) {
-                factors.getChildAt(i).isSelected = (factors.getChildAt(i).tag as Int) == draft.timelapse
+                SpeedKind.NORMAL -> draft.copy(timelapse = 1, hyperlapse = false, slowMotion = 0)
+                SpeedKind.SLOW -> draft.copy(
+                    timelapse = 1,
+                    hyperlapse = false,
+                    slowMotion = draft.slowMotion.takeIf { r -> r in slowRates } ?: slowRates.max(),
+                )
+                SpeedKind.HYPERLAPSE -> draft.copy(timelapse = lapse, hyperlapse = true, slowMotion = 0)
+                SpeedKind.TIMELAPSE -> draft.copy(timelapse = lapse, hyperlapse = false, slowMotion = 0)
             }
             describe()
         }
         listOf(5, 10, 15, 30).forEach { f ->
-            factors.addView(Glass.pill(context, "${f}×", f == draft.timelapse).apply {
+            lapseFactors.addView(Glass.pill(context, "${f}×", f == draft.timelapse).apply {
                 tag = f
                 setOnClickListener {
-                    for (i in 0 until factors.childCount) factors.getChildAt(i).isSelected = false
-                    isSelected = true
                     draft = draft.copy(timelapse = f)
                     describe()
                 }
             })
         }
-        factors.setPadding(0, dp(8f), 0, 0)
-        root.addView(factors)
-        root.addView(speedNote.apply { setPadding(0, dp(6f), 0, 0) })
+        slowRates.forEach { fps ->
+            slowFactors.addView(Glass.pill(context, "${fps / 30}×  ·  $fps fps", fps == draft.slowMotion).apply {
+                tag = fps
+                setOnClickListener {
+                    draft = draft.copy(slowMotion = fps)
+                    describe()
+                }
+            })
+        }
+        lapseFactors.setPadding(0, dp(8f), 0, 0)
+        slowFactors.setPadding(0, dp(8f), 0, 0)
+        root.addView(lapseFactors)
+        root.addView(slowFactors)
+        root.addView(note.apply { setPadding(0, dp(6f), 0, 0) })
+        if (inFrontAndBack) {
+            root.addView(Glass.caption(context, "Slow motion needs one camera, so it's off in Front + Back."))
+        } else if (slowRates.isEmpty()) {
+            root.addView(Glass.caption(context, "This camera doesn't offer slow motion to apps."))
+        } else if (slowRates.none { it >= 120 }) {
+            root.addView(Glass.caption(context, "This phone only gives apps 60 fps, so slow motion is 2×. 120 / 240 fps appear here on phones that open their high-speed mode to apps."))
+        }
         describe()
+    }
+
+    private fun phone() {
+        if (phoneInfo.isEmpty()) return
+        root.addView(Glass.section(context, "This phone"))
+        root.addView(Glass.caption(context, "The app checks what your phone's cameras allow and only offers what works on it."))
+        phoneInfo.forEach { (label, value) ->
+            root.addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(8f), 0, 0)
+                addView(
+                    Glass.body(context, label).apply { alpha = 0.7f },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                addView(
+                    Glass.body(context, value).apply { gravity = android.view.Gravity.END },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f),
+                )
+            })
+        }
     }
 
     private fun extras() {

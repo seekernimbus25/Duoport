@@ -32,6 +32,33 @@ jobs:
           name: DualFrame-apk
           path: DualFrame.apk
 
+      # Google Play bundle, signed with the private upload key from repository secrets.
+      # Skipped until the secrets exist (see docs/PLAY_STORE.md).
+      - name: Build Play bundle
+        id: play
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+        run: |
+          if [ -z "$UPLOAD_KEYSTORE_BASE64" ]; then
+            echo "No upload key in secrets yet; skipping the Play bundle."
+            exit 0
+          fi
+          export UPLOAD_KEYSTORE_FILE="$RUNNER_TEMP/upload.jks"
+          echo "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$UPLOAD_KEYSTORE_FILE"
+          ./gradlew bundlePlay --stacktrace
+          cp app/build/outputs/bundle/play/app-play.aab DualFrame.aab
+          rm -f "$UPLOAD_KEYSTORE_FILE"
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.play.outputs.built == 'true'
+        with:
+          name: DualFrame-play-bundle
+          path: DualFrame.aab
+
       # Every build on main becomes a GitHub Release, so the newest APK is
       # always one tap away under Releases on the repo page.
       - name: Publish release
@@ -43,3 +70,5 @@ jobs:
             --title "DualFrame 1.0.${{ github.run_number }}" \
             --notes "Built from ${GITHUB_SHA::7}. Download DualFrame.apk below and open it on your phone to install." \
             --latest
+          # The Play bundle goes up to the Play Console by hand (or later by a Play API step).
+          if [ -f DualFrame.aab ]; then gh release upload "build-${{ github.run_number }}" DualFrame.aab; fi

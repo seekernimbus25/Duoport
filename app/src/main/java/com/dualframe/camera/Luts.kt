@@ -35,6 +35,17 @@ class LutCube(val size: Int, val rgb: FloatArray) {
         }
     }
 
+    /** The .cube text format editors read (Resolve, Premiere, Final Cut): red changes fastest. */
+    fun toCubeText(title: String, comments: List<String> = emptyList()): String = buildString {
+        comments.forEach { append("# ").append(it).append('\n') }
+        append("TITLE \"").append(title).append("\"\n")
+        append("LUT_3D_SIZE ").append(size).append("\n\n")
+        for (b in 0 until size) for (g in 0 until size) for (r in 0 until size) {
+            val i = ((r * size + g) * size + b) * 3
+            append(String.format(java.util.Locale.US, "%.6f %.6f %.6f\n", rgb[i], rgb[i + 1], rgb[i + 2]))
+        }
+    }
+
     /** GL 3D texture layout: x = red (fastest), y = green, z = blue. */
     fun toGlBytes(): ByteArray {
         val out = ByteArray(size * size * size * 3)
@@ -121,6 +132,16 @@ object Luts {
         }
         TonemapCurve(curve, curve, curve)
     }
+
+    /** DF-Log -> Rec.709 as a .cube file, so any editor can convert DF-Log footage the same way the app does. */
+    fun logToRec709CubeText(): String = LutCube.bake(BAKE_SIZE, logTo709).toCubeText(
+        "DF-Log to Rec.709",
+        listOf(
+            "DualFrame DF-Log to Rec.709 (BT.709 primaries, sRGB-style display gamma).",
+            "DF-Log curve: v = $LOG_FLOOR + $LOG_RANGE * ln(1 + $LOG_K * x) / ln(1 + $LOG_K), x = linear light 0..1.",
+            "Apply to DF-Log clips as the first node / input LUT, then grade.",
+        ),
+    )
 
     /** DF-Log -> Rec.709-style display picture, with a gentle film shoulder. */
     private val logTo709: Grade = { p ->

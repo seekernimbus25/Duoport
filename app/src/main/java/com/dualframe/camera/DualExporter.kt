@@ -42,7 +42,7 @@ import java.io.File
 sealed interface ExportState {
     data object Idle : ExportState
     data class Running(val step: Int, val total: Int, val format: OutputFormat, val progress: Int) : ExportState
-    data class Done(val videos: List<SavedVideo>) : ExportState
+    data class Done(val videos: List<SavedVideo>, val note: String? = null) : ExportState
     data class Failed(val message: String, val savedOriginal: Uri?) : ExportState
 }
 
@@ -61,11 +61,13 @@ data class ExportJob(
     val placement: FramePlacement,
     /** Colour LUT to bake into every video, or null. */
     val lut: LutCube?,
-    /** The recording is HLG HDR: tone-map to standard range (LUTs and compositing are SDR). */
+    /** The recording is HLG 10-bit HDR. */
     val hdrSource: Boolean,
+    /** With an HDR source: keep the cut videos 10-bit HDR (HEVC, no LUT) instead of tone-mapping. */
+    val keepHdr: Boolean = false,
     val codec: VideoCodec,
-    /** 1 = real time; otherwise time-lapse / hyperlapse speed-up (sound is dropped). */
-    val speed: Int = 1,
+    /** 1 = real time; above 1 time-lapse / hyperlapse, below 1 slow motion. Sound is dropped unless 1. */
+    val speed: Float = 1f,
     val quality: ExportQuality,
     val keepOriginal: Boolean,
     val baseName: String,
@@ -80,6 +82,8 @@ object DualExporter {
 
     private const val ALBUM = "DualFrame"
     private const val INSET_SEQUENCE = 1
+    private const val HDR_FALLBACK_NOTE =
+        "This phone can't save edited HDR video, so the cut videos are standard range. The 10-bit original is saved too."
 
     private val scope = MainScope()
     private val _state = MutableStateFlow<ExportState>(ExportState.Idle)
@@ -100,18 +104,29 @@ object DualExporter {
             try {
                 val aspect = withContext(Dispatchers.IO) { displayAspect(job.main.file) }
                 val saved = mutableListOf<SavedVideo>()
+                var current = job
+                var note: String? = null
                 job.outputs.forEachIndexed { index, (format, resolution) ->
                     val name = "${job.baseName}_${format.label.replace(':', 'x')}_${resolution.label}.mp4"
                     val file = File(app.cacheDir, name).also { made += it }
                     val (w, h) = format.sizePx(resolution)
-                    export(app, job, file, w, h, job.placement.rect(format, aspect)) {
-                        _state.value = ExportState.Running(index + 1, job.outputs.size, format, it)
+                    val crop = job.placement.rect(format, aspect)
+                    val progress = { p: Int -> _state.value = ExportState.Running(index + 1, job.outputs.size, format, p) }
+                    try {
+                        export(app, current, file, w, h, crop, progress)
+                    } catch (e: ExportException) {
+                        // Not every phone can encode edited HDR. Fall back to standard range; the
+                        // 10-bit original is still saved.
+                        if (!(current.hdrSource && current.keepHdr)) throw e
+                        current = current.copy(keepHdr = false, keepOriginal = true)
+                        note = HDR_FALLBACK_NOTE
+                        export(app, current, file, w, h, crop, progress)
                     }
                     saved += SavedVideo(format, resolution, saveToGallery(app, file, name))
                     withContext(Dispatchers.IO) { file.delete() }
                 }
-                if (job.keepOriginal) saveOriginals(app, job)
-                _state.value = ExportState.Done(saved)
+                if (current.keepOriginal) saveOriginals(app, job)
+                _state.value = ExportState.Done(saved, note)
             } catch (e: Exception) {
                 // Never lose the take: if cutting fails, keep the original recording instead.
                 val original = runCatching { saveOriginals(app, job) }.getOrNull()
@@ -176,13 +191,15 @@ object DualExporter {
     ) {
         output.delete()
         // A fresh effect per input: SingleColorLut owns a GL texture tied to one export.
+        // LUTs are made for standard-range pictures, so they're skipped while keeping HDR.
+        val lut = job.lut.takeIf { !keepsHdr(job) }
         fun lutEffects(): List<Effect> =
-            job.lut?.let { listOf<Effect>(SingleColorLut.createFromCube(it.toArgbCube())) } ?: emptyList()
+            lut?.let { listOf<Effect>(SingleColorLut.createFromCube(it.toArgbCube())) } ?: emptyList()
         val inset = job.inset
 
-        // Time-lapse first, so later effects see the already sped-up timeline.
+        // Speed first (time-lapse or slow motion), so later effects see the new timeline.
         fun speedEffects(): List<Effect> =
-            if (job.speed > 1) listOf(SpeedChangeEffect(job.speed.toFloat())) else emptyList()
+            if (job.speed != 1f) listOf(SpeedChangeEffect(job.speed)) else emptyList()
 
         val mainEffects = mutableListOf<Effect>()
         mainEffects += speedEffects()
@@ -194,7 +211,7 @@ object DualExporter {
 
         if (inset == null) {
             val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(job.main.file)))
-                .setRemoveAudio(job.speed > 1)
+                .setRemoveAudio(job.speed != 1f)
                 .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
                 .build()
             val composition = Composition.Builder(EditedMediaItemSequence(item))
@@ -212,7 +229,7 @@ object DualExporter {
         mainEffects += InsetCutoutEffect(insetRect, border)
 
         val mainItem = EditedMediaItem.Builder(clippedItem(job.main, inset.durationNs))
-            .setRemoveAudio(job.speed > 1)
+            .setRemoveAudio(job.speed != 1f)
             .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
             .build()
         val insetEffects = mutableListOf<Effect>()
@@ -255,8 +272,10 @@ object DualExporter {
         runTransformer(context, job, width, height, output, onProgress) { it.start(composition, output.absolutePath) }
     }
 
+    private fun keepsHdr(job: ExportJob) = job.hdrSource && job.keepHdr
+
     private fun hdrMode(job: ExportJob) =
-        if (job.hdrSource) Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL else Composition.HDR_MODE_KEEP_HDR
+        if (job.hdrSource && !job.keepHdr) Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL else Composition.HDR_MODE_KEEP_HDR
 
     private suspend fun runTransformer(
         context: Context,
@@ -275,7 +294,8 @@ object DualExporter {
 
         val finished = CompletableDeferred<Unit>()
         val transformer = Transformer.Builder(context)
-            .setVideoMimeType(job.codec.mimeType)
+            // 10-bit HDR needs HEVC; H.264 encoders on phones are 8-bit.
+            .setVideoMimeType(if (keepsHdr(job)) VideoCodec.HEVC.mimeType else job.codec.mimeType)
             .setEncoderFactory(encoderFactory)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {

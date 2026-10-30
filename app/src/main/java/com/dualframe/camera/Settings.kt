@@ -102,8 +102,16 @@ enum class CaptureMode { AUTO, PRO }
 /** How the camera itself encodes the picture (Pro only). */
 enum class RecordProfile(val label: String, val description: String) {
     STANDARD("Standard", "Your phone's own colour processing. Ready to post."),
-    LOG("DF-Log", "Flat log curve that keeps shadow and highlight detail for grading. Pair it with a LUT."),
-    HLG("HLG HDR", "10-bit HDR (HEVC). The original is kept as HDR; your cut videos are converted to standard range."),
+    LOG(
+        "DF-Log",
+        "A log curve applied inside the camera's image processor to the sensor data, before compression. " +
+            "Works on most phones, but it is 8-bit, so grade gently. Save the conversion LUT for your editor below.",
+    ),
+    HLG(
+        "HLG 10-bit",
+        "10-bit, wide colour (Rec.2020) with a log-type highlight curve: the most range Android lets apps record. " +
+            "Best for grading. Editors read it directly, no LUT needed.",
+    ),
 }
 
 enum class Stabilization(val label: String, val description: String) {
@@ -195,12 +203,37 @@ data class CaptureSettings(
     val grid: Boolean = false,
     val keepOriginal: Boolean = false,
     val dual: Boolean = false,
+    /** Slow motion: the frame rate the camera runs at (60, 120, 240); 0 = off. Videos play back at 30. */
+    val slowMotion: Int = 0,
+    /** A specific lens ([Lens.key]) instead of letting the phone switch lenses; null = automatic. */
+    val lensKey: String? = null,
+    /** With HLG: cut videos stay 10-bit HDR for grading instead of being converted to standard range. */
+    val hdrCuts: Boolean = true,
     val insetCorner: Corner = Corner.TOP_RIGHT,
     val lensFacing: Int = CameraSelector.LENS_FACING_BACK,
 ) {
     val isPro get() = mode == CaptureMode.PRO
 
-    val isHyperlapse get() = hyperlapse && timelapse > 1
+    val isHyperlapse get() = hyperlapse && timelapse > 1 && activeSlowMotion == 0
+
+    /** Slow motion needs the camera to itself, so not in Front + Back. */
+    val activeSlowMotion get() = if (dual) 0 else slowMotion
+
+    /** 120 / 240 fps use the camera's special high-speed mode; 60 is a normal recording. */
+    val isHighSpeed get() = activeSlowMotion >= 120
+
+    /** The frame rate the camera actually runs at. */
+    val captureFps get() = when {
+        activeSlowMotion > 0 -> activeSlowMotion
+        isPro -> fps
+        else -> 30
+    }
+
+    /** How fast the finished videos play: above 1 is time-lapse, below 1 is slow motion. */
+    val playbackSpeed: Float get() = if (activeSlowMotion > 0) 30f / activeSlowMotion else timelapse.toFloat()
+
+    /** Lens locking is a Pro control and needs a single camera. */
+    val activeLensKey get() = if (isPro && !dual) lensKey else null
 
     /** Hyperlapse needs the steadiest picture the phone can give. */
     val effectiveStabilization get() = if (isHyperlapse) Stabilization.ENHANCED else stabilization
@@ -264,6 +297,9 @@ object SettingsStore {
             grid = p.getBoolean("grid", d.grid),
             keepOriginal = p.getBoolean("keepOriginal", d.keepOriginal),
             dual = p.getBoolean("dual", d.dual),
+            slowMotion = p.getInt("slowMotion", d.slowMotion),
+            lensKey = p.getString("lensKey", null)?.takeIf { it.isNotEmpty() },
+            hdrCuts = p.getBoolean("hdrCuts", d.hdrCuts),
             insetCorner = enumOr(p.getString("insetCorner", null), d.insetCorner),
             lensFacing = p.getInt("lensFacing", d.lensFacing),
         )
@@ -302,6 +338,9 @@ object SettingsStore {
             .putBoolean("grid", s.grid)
             .putBoolean("keepOriginal", s.keepOriginal)
             .putBoolean("dual", s.dual)
+            .putInt("slowMotion", s.slowMotion)
+            .putString("lensKey", s.lensKey ?: "")
+            .putBoolean("hdrCuts", s.hdrCuts)
             .putString("insetCorner", s.insetCorner.name)
             .putInt("lensFacing", s.lensFacing)
             .apply()

@@ -1,13 +1,10 @@
 package com.dualframe.camera
 
-import android.Manifest
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.LruCache
@@ -18,9 +15,7 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
@@ -57,7 +52,10 @@ data class GalleryVideo(
 object VideoLibrary {
     const val RELATIVE_PATH = "Movies/DualFrame/"
 
-    /** Newest first. Without the media permission only videos this install saved are visible. */
+    /**
+     * Newest first. Apps can always see the videos they saved themselves, with no permission,
+     * which is all the library needs (Play only allows broad media access to gallery apps).
+     */
     fun query(context: Context): List<GalleryVideo> {
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
@@ -95,9 +93,6 @@ object VideoLibrary {
         return videos
     }
 
-    fun mediaPermission(): String =
-        if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
-
     fun formatDuration(ms: Long): String {
         val s = ms / 1000
         return if (s >= 3600) {
@@ -114,9 +109,6 @@ class GalleryActivity : AppCompatActivity() {
     private lateinit var empty: View
     private lateinit var countText: TextView
     private val adapter = VideoAdapter { openVideo(it) }
-
-    private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { load() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -136,11 +128,6 @@ class GalleryActivity : AppCompatActivity() {
             findViewById<View>(R.id.header).updatePadding(top = bars.top)
             grid.updatePadding(bottom = bars.bottom)
             insets
-        }
-
-        if (ContextCompat.checkSelfPermission(this, VideoLibrary.mediaPermission()) != PackageManager.PERMISSION_GRANTED) {
-            // Without it, videos from before a reinstall wouldn't show. Still works if refused.
-            permissionLauncher.launch(VideoLibrary.mediaPermission())
         }
     }
 

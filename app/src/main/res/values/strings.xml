@@ -27,7 +27,7 @@
     <string name="dual_unsupported">This phone can\'t use the front and back cameras at the same time.</string>
     <string name="stabilization_unsupported">Stabilization isn\'t available with this camera.</string>
     <string name="fps_fallback">%1$d fps isn\'t possible with these settings, recording at the standard rate.</string>
-    <string name="hlg_unsupported">HLG HDR isn\'t available on this camera with these settings.</string>
+    <string name="hlg_unsupported">HLG 10-bit isn\'t available on this camera with these settings.</string>
     <string name="log_unsupported">DF-Log needs custom tone curves, which this camera doesn\'t allow.</string>
     <string name="camera_error">Couldn\'t start the camera: %1$s</string>
     <string name="record_failed">Recording failed (code %1$d). Please try again.</string>
@@ -58,7 +58,7 @@
     <string name="lut_imported">LUT imported</string>
     <string name="lut_import_failed">That file isn\'t a usable 3D LUT: %1$s</string>
     <string name="lut_preview_unavailable">Live LUT preview isn\'t available on this phone. The look is still applied to your videos.</string>
-    <string name="lut_hlg_note">HDR is converted to standard range first, then the LUT is applied to your videos. The live preview shows the plain HDR picture.</string>
+    <string name="lut_hlg_note">While cut videos stay 10-bit HDR, LUTs aren\'t applied (they\'re made for standard range). Turn off “Keep cut videos 10-bit HDR” under Profile to bake a LUT.</string>
     <string name="lut_export_only">The look is applied to your videos (no live preview in this mode).</string>
     <string name="delete_lut_title">Delete “%1$s”?</string>
 
@@ -84,7 +84,7 @@
     <string name="original_saved">Your original recording was saved to Movies › DualFrame, so nothing is lost.</string>
 
     <!-- Library & player -->
-    <string name="gallery_empty">Nothing here yet.\nYour videos will appear here after you record.</string>
+    <string name="gallery_empty">Nothing here yet.\nYour videos will appear here after you record.\n\nVideos made before a reinstall are in your Photos app, under Movies/DualFrame.</string>
     <plurals name="video_count">
         <item quantity="one">%d video</item>
         <item quantity="other">%d videos</item>
@@ -98,4 +98,32 @@
     <string name="delete_message">It will be removed from your phone.</string>
     <string name="delete_failed">Couldn\'t delete this video.</string>
     <string name="no_player">No video player found</string>
+    <!-- Slow motion, lenses, HDR cuts, DF-Log LUT, this phone -->
+    <string name="slowmo_unsupported">This camera can\'t record %1$d fps slow motion, so a slower speed it supports is used.</string>
+    <string name="slowmo_info">Slow-mo %1$d× · %2$d fps</string>
+    <string name="highspeed_auto_only">In 120 / 240 fps slow motion the camera sets exposure, focus and colour itself. Manual controls come back at normal speed.</string>
+    <string name="fps_slowmo_note">Slow motion is on, so the camera runs at %1$d fps.</string>
+    <string name="lens_auto">Auto (phone switches)</string>
+    <string name="lens_note">Locking a lens stops the phone switching lenses as you zoom, so the picture never jumps mid-shot. Zoom then stays within that lens.</string>
+    <string name="lens_single">This phone gives apps one lens on this side. Zoom still works within it.</string>
+    <string name="lens_dual">Lens locking isn\'t available in Front + Back.</string>
+    <string name="lens_unavailable">This phone lists that lens but won\'t let apps use it on its own, so it\'s back to Auto.</string>
+    <string name="hdr_cuts">Keep cut videos 10-bit HDR</string>
+    <string name="hdr_cuts_on">Your 9:16, 16:9… videos stay 10-bit HLG (HEVC) for grading. Phones that can\'t save edited HDR fall back to standard range automatically.</string>
+    <string name="hdr_cuts_off">Cut videos are converted to standard range, ready to post. The 10-bit original is kept.</string>
+    <string name="save_log_lut">Save DF-Log → Rec.709 LUT for your editor</string>
+    <string name="log_lut_saved">Saved DF-Log_to_Rec709.cube to Downloads. Use it as the input LUT in Resolve, Premiere, Final Cut or LumaFusion.</string>
+    <string name="log_lut_failed">Couldn\'t save the LUT to Downloads.</string>
+    <string name="yes">Yes</string>
+    <string name="no">No</string>
+    <string name="phone_model">Phone</string>
+    <string name="phone_back_lenses">Back lenses</string>
+    <string name="phone_front_lenses">Front lenses</string>
+    <string name="phone_manual">Manual ISO and shutter</string>
+    <string name="phone_kelvin">Kelvin white balance</string>
+    <string name="phone_log">DF-Log</string>
+    <string name="phone_hlg">HLG 10-bit</string>
+    <string name="phone_fps">Frame rates</string>
+    <string name="phone_slowmo">Slow motion</string>
+    <string name="phone_dual">Front + Back together</string>
 </resources>

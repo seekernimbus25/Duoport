@@ -14,7 +14,7 @@ android {
     defaultConfig {
         applicationId = "com.dualframe.camera"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
     }
@@ -29,6 +29,17 @@ android {
             keyAlias = "dualframe"
             keyPassword = "dualframe"
         }
+        // Google Play upload key. Never committed: CI writes it from repository secrets
+        // (see docs/PLAY_STORE.md). Google re-signs the app with its own key for users.
+        val uploadStore = System.getenv("UPLOAD_KEYSTORE_FILE")
+        if (!uploadStore.isNullOrEmpty() && file(uploadStore).exists()) {
+            create("upload") {
+                storeFile = file(uploadStore)
+                storePassword = System.getenv("UPLOAD_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("UPLOAD_KEY_ALIAS")
+                keyPassword = System.getenv("UPLOAD_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -38,6 +49,13 @@ android {
         }
         debug {
             signingConfig = signingConfigs.getByName("sideload")
+        }
+        // The Play Store build: same as release, signed with the private upload key.
+        // `./gradlew bundlePlay` makes the .aab to upload.
+        create("play") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            signingConfig = signingConfigs.findByName("upload")
         }
     }
 
