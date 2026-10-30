@@ -62,6 +62,7 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.ExperimentalHighSpeedVideo
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.HighSpeedVideoSessionConfig
 import androidx.camera.video.Quality
@@ -100,7 +101,8 @@ import kotlin.math.pow
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalCamera2Interop::class, ExperimentalSessionConfig::class)
+@OptIn(ExperimentalCamera2Interop::class)
+@kotlin.OptIn(ExperimentalSessionConfig::class, ExperimentalHighSpeedVideo::class)
 class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private enum class Param(val caption: String, val title: String) {
