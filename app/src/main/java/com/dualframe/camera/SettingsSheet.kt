@@ -25,6 +25,10 @@ class SettingsSheet(
     private val slowRates: List<Int>,
     /** What this phone's cameras can do, as label / value rows. */
     private val phoneInfo: List<Pair<String, String>>,
+    /** Highest bitrate this phone's video encoder accepts, in Mbps (0 = unknown). */
+    private val encoderMaxMbps: Int,
+    /** Which microphone recording will use right now ("USB mic"…). */
+    private val micName: String,
     private val onDone: (CaptureSettings) -> Unit,
 ) {
     private var draft = initial
@@ -46,6 +50,7 @@ class SettingsSheet(
         formats()
         export()
         camera()
+        sound()
         extras()
         phone()
 
@@ -181,10 +186,38 @@ class SettingsSheet(
             draft = draft.copy(cameraResolution = it)
         }
         root.addView(Glass.section(context, "Camera bitrate"))
-        choices(RecordBitrate.entries, draft.recordBitrate, { it.label }) { draft = draft.copy(recordBitrate = it) }
-        root.addView(Glass.caption(context, "Data rate of the original recording. Higher survives grading better.").apply {
-            setPadding(0, dp(6f), 0, 0)
-        })
+        val rates = RecordBitrate.CHOICES.filter { it == 0 || encoderMaxMbps <= 0 || it <= encoderMaxMbps }
+        choices(rates, draft.recordMbps.takeIf { it in rates } ?: 0, { RecordBitrate.label(it) }) {
+            draft = draft.copy(recordMbps = it)
+        }
+        root.addView(Glass.caption(
+            context,
+            "Data rate of the camera recording itself. Higher keeps more detail for grading and makes bigger files." +
+                if (encoderMaxMbps > 0) " This phone's encoder goes up to $encoderMaxMbps Mbps." else "",
+        ).apply { setPadding(0, dp(6f), 0, 0) })
+
+        root.addView(Glass.section(context, "Anamorphic lens"))
+        val squeezes = listOf(1f, 1.33f, 1.5f, 1.55f, 1.8f, 2f)
+        choices(squeezes, squeezes.minByOrNull { kotlin.math.abs(it - draft.anamorphic) } ?: 1f, {
+            if (it == 1f) "Off" else "${it}×"
+        }) { draft = draft.copy(anamorphic = it) }
+        root.addView(Glass.caption(
+            context,
+            "For clip-on anamorphic lenses. Pick the lens's squeeze: the frames show the real (desqueezed) shapes " +
+                "and your videos and photos come out desqueezed. Mount the lens for sideways shooting and turn the phone." +
+                if (inFrontAndBack) " Not used in Front + Back." else "",
+        ).apply { setPadding(0, dp(6f), 0, 0) })
+
+        root.addView(Glass.section(context, "Cinematic mode"))
+        choices(listOf(0, 1, 2, 3), draft.cinematic, { listOf("Off", "Subtle", "Medium", "Strong")[it] }) {
+            draft = draft.copy(cinematic = it)
+        }
+        root.addView(Glass.caption(
+            context,
+            "Blurs the background behind people, like a big-sensor camera with a fast lens. Phones don't share depth " +
+                "with apps, so an on-device model finds the people: it works on people, not objects or pets. " +
+                "Added when your videos and photos are made, so making them takes longer.",
+        ).apply { setPadding(0, dp(6f), 0, 0) })
 
         root.addView(Glass.section(context, "Stabilization"))
         val stabNote = Glass.caption(context, draft.stabilization.description)
@@ -299,6 +332,19 @@ class SettingsSheet(
         }
     }
 
+    private fun sound() {
+        root.addView(Glass.section(context, "Sound"))
+        choices(listOf(-12, -6, -3, 0, 3, 6, 12), draft.audioGainDb, {
+            if (it == 0) "0 dB" else if (it > 0) "+$it dB" else "$it dB"
+        }) { draft = draft.copy(audioGainDb = it) }
+        root.addView(Glass.caption(
+            context,
+            "Raises or lowers the level of your finished videos. Recording now uses: $micName. A USB-C microphone, " +
+                "or an XLR mic through a USB audio interface, is used automatically when plugged in. Android doesn't " +
+                "let apps set the mic's input gain, so set the level on the mic or interface itself.",
+        ).apply { setPadding(0, dp(6f), 0, 0) })
+    }
+
     private fun extras() {
         root.addView(Glass.section(context, "Clip name"))
         val name = android.widget.EditText(context).apply {
@@ -330,7 +376,12 @@ class SettingsSheet(
             draft = draft.copy(mirrorFront = it)
         }
         toggle("Grid lines", null, draft.grid) { draft = draft.copy(grid = it) }
-        toggle("Keep the original recording", "Also saves the uncut file (always useful with Log or HDR)", draft.keepOriginal) {
+        toggle(
+            "Record sideways when the phone is turned",
+            "Hold the phone landscape for a landscape recording (one camera only)",
+            draft.followRotation,
+        ) { draft = draft.copy(followRotation = it) }
+        toggle("Keep the original recording", "Also saves the uncut file. Useful with Log or HLG for re-framing and re-grading", draft.keepOriginal) {
             draft = draft.copy(keepOriginal = it)
         }
     }

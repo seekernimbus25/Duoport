@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Photo shutter: warm-white ring with a solid centre. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="84dp"
+    android:height="84dp"
+    android:viewportWidth="84"
+    android:viewportHeight="84">
+    <path
+        android:strokeColor="#F4F1EA"
+        android:strokeWidth="4"
+        android:pathData="M42,4 a38,38 0 1 0 0.01,0 z" />
+    <path
+        android:fillColor="#F4F1EA"
+        android:pathData="M42,11 a31,31 0 1 0 0.01,0 z" />
+</vector>

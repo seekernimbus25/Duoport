@@ -2,6 +2,8 @@ package com.dualframe.camera
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
@@ -10,6 +12,9 @@ import androidx.annotation.OptIn
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.ChannelMixingAudioProcessor
+import androidx.media3.common.audio.ChannelMixingMatrix
+import androidx.media3.container.XmpData
 import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlaySettings
@@ -24,6 +29,7 @@ import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.InAppMuxer
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
@@ -38,6 +44,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.pow
 
 sealed interface ExportState {
     data object Idle : ExportState
@@ -46,7 +56,15 @@ sealed interface ExportState {
     data class Failed(val message: String, val savedOriginal: Uri?) : ExportState
 }
 
-data class SavedVideo(val format: OutputFormat, val resolution: OutputResolution, val uri: Uri)
+data class SavedVideo(
+    val format: OutputFormat,
+    val resolution: OutputResolution,
+    val uri: Uri,
+    /** A still photo rather than a video; [width] x [height] is its real size. */
+    val photo: Boolean = false,
+    val width: Int = 0,
+    val height: Int = 0,
+)
 
 /** A finished camera recording. */
 data class Take(val file: File, val durationNs: Long)
@@ -71,6 +89,31 @@ data class ExportJob(
     val quality: ExportQuality,
     val keepOriginal: Boolean,
     val baseName: String,
+    /** Sound level change in dB (only for real-time videos, which keep their sound). */
+    val audioGainDb: Int = 0,
+    /** Cinematic background blur strength, 0 = off. */
+    val cinematic: Int = 0,
+    /** Anamorphic squeeze to undo, 1 = none. */
+    val anamorphic: Float = 1f,
+    /** Wall-clock time the recording started, written as time-of-day timecode; null = none. */
+    val timecodeStartMs: Long? = null,
+    /** Frame rate label for the timecode ("23.98", "30"…). */
+    val timecodeRate: String = "30",
+)
+
+/** One still photo to cut into every chosen shape. */
+data class PhotoJob(
+    val image: Bitmap,
+    /** Clockwise rotation that makes [image] upright. */
+    val rotationDegrees: Int,
+    val mirror: Boolean,
+    val outputs: List<OutputFormat>,
+    val placement: FramePlacement,
+    val lut: LutCube?,
+    val anamorphic: Float,
+    val cinematic: Int,
+    val keepOriginal: Boolean,
+    val baseName: String,
 )
 
 /**
@@ -82,6 +125,8 @@ object DualExporter {
 
     private const val ALBUM = "DualFrame"
     private const val INSET_SEQUENCE = 1
+    private const val CINEMATIC_FALLBACK_NOTE =
+        "Cinematic blur couldn't run on this phone, so the videos were made without it."
     private const val HDR_FALLBACK_NOTE =
         "This phone can't save edited HDR video, so the cut videos are standard range. The 10-bit original is saved too."
 
@@ -110,17 +155,29 @@ object DualExporter {
                     val name = "${job.baseName}_${format.label.replace(':', 'x')}_${resolution.label}.mp4"
                     val file = File(app.cacheDir, name).also { made += it }
                     val (w, h) = format.sizePx(resolution)
-                    val crop = job.placement.rect(format, aspect)
+                    val crop = job.placement.rect(format, desqueezed(aspect, job.anamorphic))
                     val progress = { p: Int -> _state.value = ExportState.Running(index + 1, job.outputs.size, format, p) }
-                    try {
-                        export(app, current, file, w, h, crop, progress)
-                    } catch (e: ExportException) {
-                        // Not every phone can encode edited HDR. Fall back to standard range; the
-                        // 10-bit original is still saved.
-                        if (!(current.hdrSource && current.keepHdr)) throw e
-                        current = current.copy(keepHdr = false, keepOriginal = true)
-                        note = HDR_FALLBACK_NOTE
-                        export(app, current, file, w, h, crop, progress)
+                    // If a phone can't do one of the optional extras, drop that one and try again
+                    // rather than failing the whole take.
+                    while (true) {
+                        try {
+                            export(app, current, file, w, h, crop, progress)
+                            break
+                        } catch (e: ExportException) {
+                            current = when {
+                                current.timecodeStartMs != null -> current.copy(timecodeStartMs = null)
+                                current.hdrSource && current.keepHdr -> {
+                                    // The 10-bit original is saved so nothing is lost.
+                                    note = HDR_FALLBACK_NOTE
+                                    current.copy(keepHdr = false, keepOriginal = true)
+                                }
+                                current.cinematic > 0 -> {
+                                    note = CINEMATIC_FALLBACK_NOTE
+                                    current.copy(cinematic = 0)
+                                }
+                                else -> throw e
+                            }
+                        }
                     }
                     saved += SavedVideo(format, resolution, saveToGallery(app, file, name))
                     withContext(Dispatchers.IO) { file.delete() }
@@ -140,6 +197,95 @@ object DualExporter {
             }
         }
     }
+
+    /** A photo becomes one picture per shape, each cut at the full resolution the sensor gave. */
+    fun startPhoto(context: Context, job: PhotoJob) {
+        val app = context.applicationContext
+        val first = job.outputs.firstOrNull() ?: return
+        _state.value = ExportState.Running(step = 1, total = job.outputs.size, format = first, progress = 0)
+        scope.launch {
+            try {
+                val saved = withContext(Dispatchers.Default) { makePhotos(app, job) }
+                _state.value = ExportState.Done(saved)
+            } catch (e: Exception) {
+                _state.value = ExportState.Failed(e.message ?: e.javaClass.simpleName, null)
+            }
+        }
+    }
+
+    private suspend fun makePhotos(context: Context, job: PhotoJob): List<SavedVideo> {
+        val upright = uprightPhoto(job)
+        val aspect = upright.width.toFloat() / upright.height
+        val saved = mutableListOf<SavedVideo>()
+        var blurFailed = false
+        job.outputs.forEachIndexed { index, format ->
+            _state.value = ExportState.Running(index + 1, job.outputs.size, format, 30)
+            val r = job.placement.rect(format, aspect)
+            val x = (r.left * upright.width).toInt().coerceIn(0, upright.width - 2)
+            val y = (r.top * upright.height).toInt().coerceIn(0, upright.height - 2)
+            val w = (r.width * upright.width).toInt().coerceIn(1, upright.width - x)
+            val h = (r.height * upright.height).toInt().coerceIn(1, upright.height - y)
+            var cut = Bitmap.createBitmap(upright, x, y, w, h)
+            if (job.cinematic > 0 && !blurFailed) {
+                val blurred = runCatching { CinematicBlur.applyToPhoto(cut, job.cinematic) }.getOrNull()
+                if (blurred == null) blurFailed = true else cut = replace(cut, blurred, upright)
+            }
+            job.lut?.let { lut -> cut = replace(cut, lut.applyTo(cut), upright) }
+            _state.value = ExportState.Running(index + 1, job.outputs.size, format, 80)
+            val name = "${job.baseName}_${format.label.replace(':', 'x')}.jpg"
+            saved += SavedVideo(
+                format, OutputResolution.FHD, savePhoto(context, cut, name),
+                photo = true, width = cut.width, height = cut.height,
+            )
+            if (cut !== upright) cut.recycle()
+        }
+        if (job.keepOriginal) savePhoto(context, upright, "${job.baseName}_original.jpg")
+        upright.recycle()
+        return saved
+    }
+
+    private fun replace(old: Bitmap, new: Bitmap, keep: Bitmap): Bitmap {
+        if (old !== new && old !== keep) old.recycle()
+        return new
+    }
+
+    /** Rotated upright, mirrored for selfies if asked, and anamorphic squeeze undone. */
+    private fun uprightPhoto(job: PhotoJob): Bitmap {
+        val src = job.image
+        val matrix = Matrix()
+        matrix.postRotate(job.rotationDegrees.toFloat())
+        if (job.mirror) matrix.postScale(-1f, 1f)
+        val turned = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+        if (turned !== src) src.recycle()
+        if (job.anamorphic == 1f) return turned
+        val wide = turned.width >= turned.height
+        val w = if (wide) (turned.width * job.anamorphic).toInt() else turned.width
+        val h = if (wide) turned.height else (turned.height * job.anamorphic).toInt()
+        val stretched = Bitmap.createScaledBitmap(turned, w, h, true)
+        if (stretched !== turned) turned.recycle()
+        return stretched
+    }
+
+    private suspend fun savePhoto(context: Context, bitmap: Bitmap, displayName: String): Uri =
+        withContext(Dispatchers.IO) {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$ALBUM")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: error("Couldn't create $displayName in the gallery")
+            try {
+                resolver.openOutputStream(uri)!!.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+                resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+            } catch (e: Exception) {
+                resolver.delete(uri, null, null)
+                throw e
+            }
+            uri
+        }
 
     private suspend fun saveOriginals(context: Context, job: ExportJob): Uri? {
         val main = job.main.file.takeIf { it.length() > 0 }?.let {
@@ -203,16 +349,19 @@ object DualExporter {
 
         val mainEffects = mutableListOf<Effect>()
         mainEffects += speedEffects()
+        // Stretching (not fitting) the cut to the output size is what undoes an anamorphic squeeze.
+        val layout = if (job.anamorphic != 1f) Presentation.LAYOUT_STRETCH_TO_FIT else Presentation.LAYOUT_SCALE_TO_FIT
         mainEffects += listOf(
             crop.toMedia3Crop(),
-            Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT),
+            Presentation.createForWidthAndHeight(width, height, layout),
         )
+        if (job.cinematic > 0) mainEffects += CinematicBlurEffect(job.cinematic)
         mainEffects += lutEffects()
 
         if (inset == null) {
             val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(job.main.file)))
                 .setRemoveAudio(job.speed != 1f)
-                .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
+                .setEffects(Effects(audioEffects(job), mainEffects))
                 .build()
             val composition = Composition.Builder(EditedMediaItemSequence(item))
                 .setHdrMode(hdrMode(job))
@@ -230,7 +379,7 @@ object DualExporter {
 
         val mainItem = EditedMediaItem.Builder(clippedItem(job.main, inset.durationNs))
             .setRemoveAudio(job.speed != 1f)
-            .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
+            .setEffects(Effects(audioEffects(job), mainEffects))
             .build()
         val insetEffects = mutableListOf<Effect>()
         insetEffects += speedEffects()
@@ -274,6 +423,46 @@ object DualExporter {
 
     private fun keepsHdr(job: ExportJob) = job.hdrSource && job.keepHdr
 
+    /** Volume change as a plain gain on every channel (mono, stereo or more). */
+    private fun audioEffects(job: ExportJob): List<AudioProcessor> {
+        if (job.audioGainDb == 0 || job.speed != 1f) return emptyList()
+        val gain = 10.0.pow(job.audioGainDb / 20.0).toFloat()
+        val mixer = ChannelMixingAudioProcessor()
+        for (channels in 1..8) mixer.putChannelMixingMatrix(ChannelMixingMatrix.create(channels, channels).scaleBy(gain))
+        return listOf(mixer)
+    }
+
+    /**
+     * Time-of-day start timecode as XMP (xmpDM:startTimeCode), which editors such as Premiere
+     * read. Android's own MP4 writer can't add a timecode track, so this uses Media3's muxer.
+     */
+    private fun timecodeXmp(startMs: Long, rate: String): ByteArray {
+        val fps = rate.toFloatOrNull()?.let { kotlin.math.round(it).toInt() } ?: 30
+        val day = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(startMs))
+        val frames = ((startMs % 1000) * fps / 1000).toInt()
+        val tc = String.format(Locale.US, "%s:%02d", day, frames)
+        val format = when (rate) {
+            "23.98" -> "23976Timecode"
+            "29.97" -> "2997NonDropTimecode"
+            "59.94" -> "5994NonDropTimecode"
+            "24" -> "24Timecode"
+            "25" -> "25Timecode"
+            "50" -> "50Timecode"
+            "60" -> "60Timecode"
+            else -> "30Timecode"
+        }
+        val created = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date(startMs))
+        val xmp = """<?xpacket begin="${'\uFEFF'}" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/">
+<xmp:CreateDate>$created</xmp:CreateDate>
+<xmpDM:startTimeCode rdf:parseType="Resource"><xmpDM:timeFormat>$format</xmpDM:timeFormat><xmpDM:timeValue>$tc</xmpDM:timeValue></xmpDM:startTimeCode>
+<xmpDM:altTimecode rdf:parseType="Resource"><xmpDM:timeFormat>$format</xmpDM:timeFormat><xmpDM:timeValue>$tc</xmpDM:timeValue></xmpDM:altTimecode>
+</rdf:Description></rdf:RDF></x:xmpmeta>
+<?xpacket end="w"?>"""
+        return xmp.toByteArray(Charsets.UTF_8)
+    }
+
     private fun hdrMode(job: ExportJob) =
         if (job.hdrSource && !job.keepHdr) Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL else Composition.HDR_MODE_KEEP_HDR
 
@@ -293,7 +482,7 @@ object DualExporter {
             .build()
 
         val finished = CompletableDeferred<Unit>()
-        val transformer = Transformer.Builder(context)
+        val builder = Transformer.Builder(context)
             // 10-bit HDR needs HEVC; H.264 encoders on phones are 8-bit.
             .setVideoMimeType(if (keepsHdr(job)) VideoCodec.HEVC.mimeType else job.codec.mimeType)
             .setEncoderFactory(encoderFactory)
@@ -310,7 +499,17 @@ object DualExporter {
                     finished.completeExceptionally(exportException)
                 }
             })
-            .build()
+        // Timecode only makes sense for real-time videos.
+        val startMs = job.timecodeStartMs
+        if (startMs != null && job.speed == 1f) {
+            val xmp = timecodeXmp(startMs, job.timecodeRate)
+            builder.setMuxerFactory(
+                InAppMuxer.Factory.Builder()
+                    .setMetadataProvider { entries -> entries.add(XmpData(xmp)) }
+                    .build()
+            )
+        }
+        val transformer = builder.build()
         start(transformer)
 
         val poller = launch {

@@ -50,9 +50,9 @@ enum class OutputResolution(val label: String, val shortSide: Int) {
 
 /** How much data the finished videos get. Scaled by resolution, see [bitrateFor]. */
 enum class ExportQuality(val label: String, val mbpsAt1080p: Int) {
-    STANDARD("Standard", 12),
-    HIGH("High", 20),
-    MAX("Max", 35),
+    STANDARD("Standard · 12 Mbps", 12),
+    HIGH("High · 20 Mbps", 20),
+    MAX("Max · 35 Mbps", 35),
 }
 
 fun bitrateFor(quality: ExportQuality, width: Int, height: Int): Int {
@@ -69,8 +69,9 @@ enum class CameraFrame(
     val portraitAspect: Float,
 ) {
     FULL_4_3(
-        "Full sensor 4:3",
-        "Uses the whole camera sensor, so tall and wide videos both have room. Best when making several formats.",
+        "Open gate 4:3",
+        "Records the whole sensor area (open gate), so tall and wide videos both have room. Best when making " +
+            "several formats or reframing later. Resolution is capped by the phone's video encoder.",
         AspectRatio.RATIO_4_3,
         3f / 4f,
     ),
@@ -121,19 +122,18 @@ enum class Stabilization(val label: String, val description: String) {
 }
 
 /** Bitrate of the camera recording itself (the master the videos are cut from). */
-enum class RecordBitrate(val label: String, val factor: Float) {
-    STANDARD("Standard", 1.0f),
-    HIGH("High", 1.6f),
-    MAX("Max", 2.4f);
+object RecordBitrate {
+    /** Choices in Mbps; 0 means the phone's own default for the resolution. */
+    val CHOICES = listOf(0, 10, 20, 35, 50, 75, 100, 150, 200)
 
-    fun bitsPerSecond(resolution: CameraResolution): Int {
-        val base = when (resolution) {
-            CameraResolution.UHD -> 45_000_000
-            CameraResolution.FHD -> 17_000_000
-            CameraResolution.HD -> 10_000_000
-        }
-        return (base * factor).toInt()
+    /** Roughly what phones use by default, for the "time left" estimate when on Auto. */
+    fun defaultBitsPerSecond(resolution: CameraResolution) = when (resolution) {
+        CameraResolution.UHD -> 45_000_000
+        CameraResolution.FHD -> 17_000_000
+        CameraResolution.HD -> 10_000_000
     }
+
+    fun label(mbps: Int) = if (mbps == 0) "Auto" else "$mbps Mbps"
 }
 
 enum class PeakColor(val label: String, val r: Float, val g: Float, val b: Float) {
@@ -176,6 +176,8 @@ data class CaptureSettings(
     val cameraFrame: CameraFrame = CameraFrame.FULL_4_3,
     val cameraResolution: CameraResolution = CameraResolution.UHD,
     val fps: Int = 30,
+    /** Film / broadcast rates: 23.976, 29.97, 59.94 instead of 24, 30, 60 (needs manual sensor control). */
+    val ntsc: Boolean = false,
     val mode: CaptureMode = CaptureMode.AUTO,
     val profile: RecordProfile = RecordProfile.STANDARD,
     /** See [Luts]: "none", a built-in id, or "custom:<file name>". */
@@ -186,7 +188,8 @@ data class CaptureSettings(
     val shutterAngle: Boolean = false,
     /** False: the LUT is only for viewing; the videos stay as recorded. */
     val bakeLut: Boolean = true,
-    val recordBitrate: RecordBitrate = RecordBitrate.HIGH,
+    /** Camera recording bitrate in Mbps; 0 = the phone's default. */
+    val recordMbps: Int = 0,
     val volumeKeysRecord: Boolean = true,
     val mirrorFront: Boolean = true,
     /** File names start with this, then the take number. */
@@ -203,12 +206,22 @@ data class CaptureSettings(
     val grid: Boolean = false,
     val keepOriginal: Boolean = false,
     val dual: Boolean = false,
+    /** Photo mode: the shutter takes a still, cut into every chosen shape like a video. */
+    val photoMode: Boolean = false,
     /** Slow motion: the frame rate the camera runs at (60, 120, 240); 0 = off. Videos play back at 30. */
     val slowMotion: Int = 0,
     /** A specific lens ([Lens.key]) instead of letting the phone switch lenses; null = automatic. */
     val lensKey: String? = null,
     /** With HLG: cut videos stay 10-bit HDR for grading instead of being converted to standard range. */
     val hdrCuts: Boolean = true,
+    /** Sound level change for the finished videos, in dB. */
+    val audioGainDb: Int = 0,
+    /** Cinematic mode: blur the background behind people in the finished videos. 0 = off, 1..3 strength. */
+    val cinematic: Int = 0,
+    /** Anamorphic lens squeeze to undo (1 = none, 1.33, 1.55, 2…). */
+    val anamorphic: Float = 1f,
+    /** Record a landscape video when the phone is turned sideways. */
+    val followRotation: Boolean = true,
     val insetCorner: Corner = Corner.TOP_RIGHT,
     val lensFacing: Int = CameraSelector.LENS_FACING_BACK,
 ) {
@@ -217,7 +230,7 @@ data class CaptureSettings(
     val isHyperlapse get() = hyperlapse && timelapse > 1 && activeSlowMotion == 0
 
     /** Slow motion needs the camera to itself, so not in Front + Back. */
-    val activeSlowMotion get() = if (dual) 0 else slowMotion
+    val activeSlowMotion get() = if (dual || photoMode) 0 else slowMotion
 
     /** 120 / 240 fps use the camera's special high-speed mode; 60 is a normal recording. */
     val isHighSpeed get() = activeSlowMotion >= 120
@@ -229,8 +242,24 @@ data class CaptureSettings(
         else -> 30
     }
 
+    /** Film rates only work while the app runs exposure itself (Pro, not slow motion). */
+    val activeNtsc get() = isPro && ntsc && activeSlowMotion == 0 && fps in NTSC_BASES
+
+    /** Exact time per frame: 1001/1000 longer for 23.976 / 29.97 / 59.94. */
+    val frameDurationNs: Long get() =
+        if (activeNtsc) 1_000_000_000L * 1001 / (captureFps * 1000L) else 1_000_000_000L / captureFps
+
+    /** "23.98", "30"… */
+    val fpsLabel: String get() = if (activeNtsc) ntscLabel(captureFps) else "$captureFps"
+
+    /** Squeeze only applies with one camera (the second camera has no anamorphic lens). */
+    val activeAnamorphic get() = if (dual) 1f else anamorphic
+
     /** How fast the finished videos play: above 1 is time-lapse, below 1 is slow motion. */
     val playbackSpeed: Float get() = if (activeSlowMotion > 0) 30f / activeSlowMotion else timelapse.toFloat()
+
+    /** Turning sideways only with one camera; Front + Back stays upright. */
+    val activeFollowRotation get() = followRotation && !dual
 
     /** Lens locking is a Pro control and needs a single camera. */
     val activeLensKey get() = if (isPro && !dual) lensKey else null
@@ -269,6 +298,7 @@ object SettingsStore {
             cameraFrame = enumOr(p.getString("cameraFrame", null), d.cameraFrame),
             cameraResolution = enumOr(p.getString("cameraResolution", null), d.cameraResolution),
             fps = p.getInt("fps", d.fps),
+            ntsc = p.getBoolean("ntsc", d.ntsc),
             mode = enumOr(p.getString("mode", null), d.mode),
             profile = enumOr(p.getString("profile", null), d.profile),
             lutId = p.getString("lutId", null) ?: d.lutId,
@@ -285,7 +315,7 @@ object SettingsStore {
             ),
             shutterAngle = p.getBoolean("shutterAngle", d.shutterAngle),
             bakeLut = p.getBoolean("bakeLut", d.bakeLut),
-            recordBitrate = enumOr(p.getString("recordBitrate", null), d.recordBitrate),
+            recordMbps = p.getInt("recordMbps", d.recordMbps),
             volumeKeysRecord = p.getBoolean("volumeKeysRecord", d.volumeKeysRecord),
             mirrorFront = p.getBoolean("mirrorFront", d.mirrorFront),
             clipName = p.getString("clipName", null) ?: d.clipName,
@@ -297,9 +327,14 @@ object SettingsStore {
             grid = p.getBoolean("grid", d.grid),
             keepOriginal = p.getBoolean("keepOriginal", d.keepOriginal),
             dual = p.getBoolean("dual", d.dual),
+            photoMode = p.getBoolean("photoMode", d.photoMode),
             slowMotion = p.getInt("slowMotion", d.slowMotion),
             lensKey = p.getString("lensKey", null)?.takeIf { it.isNotEmpty() },
             hdrCuts = p.getBoolean("hdrCuts", d.hdrCuts),
+            audioGainDb = p.getInt("audioGainDb", d.audioGainDb),
+            cinematic = p.getInt("cinematic", d.cinematic),
+            anamorphic = p.getFloat("anamorphic", d.anamorphic),
+            followRotation = p.getBoolean("followRotation", d.followRotation),
             insetCorner = enumOr(p.getString("insetCorner", null), d.insetCorner),
             lensFacing = p.getInt("lensFacing", d.lensFacing),
         )
@@ -312,6 +347,7 @@ object SettingsStore {
             .putString("cameraFrame", s.cameraFrame.name)
             .putString("cameraResolution", s.cameraResolution.name)
             .putInt("fps", s.fps)
+            .putBoolean("ntsc", s.ntsc)
             .putString("mode", s.mode.name)
             .putString("profile", s.profile.name)
             .putString("lutId", s.lutId)
@@ -326,7 +362,7 @@ object SettingsStore {
             .putBoolean("safeArea", s.monitoring.safeArea)
             .putBoolean("shutterAngle", s.shutterAngle)
             .putBoolean("bakeLut", s.bakeLut)
-            .putString("recordBitrate", s.recordBitrate.name)
+            .putInt("recordMbps", s.recordMbps)
             .putBoolean("volumeKeysRecord", s.volumeKeysRecord)
             .putBoolean("mirrorFront", s.mirrorFront)
             .putString("clipName", s.clipName)
@@ -338,9 +374,14 @@ object SettingsStore {
             .putBoolean("grid", s.grid)
             .putBoolean("keepOriginal", s.keepOriginal)
             .putBoolean("dual", s.dual)
+            .putBoolean("photoMode", s.photoMode)
             .putInt("slowMotion", s.slowMotion)
             .putString("lensKey", s.lensKey ?: "")
             .putBoolean("hdrCuts", s.hdrCuts)
+            .putInt("audioGainDb", s.audioGainDb)
+            .putInt("cinematic", s.cinematic)
+            .putFloat("anamorphic", s.anamorphic)
+            .putBoolean("followRotation", s.followRotation)
             .putString("insetCorner", s.insetCorner.name)
             .putInt("lensFacing", s.lensFacing)
             .apply()
@@ -357,3 +398,17 @@ object SettingsStore {
     private inline fun <reified E : Enum<E>> enumOr(name: String?, default: E): E =
         name?.let { n -> enumValues<E>().firstOrNull { it.name == n } } ?: default
 }
+
+fun ntscLabel(fps: Int) = when (fps) {
+    24 -> "23.98"
+    30 -> "29.97"
+    60 -> "59.94"
+    else -> "$fps"
+}
+
+/** Width / height of the real scene once an anamorphic squeeze along the sensor's long side is undone. */
+fun desqueezed(recordedAspect: Float, squeeze: Float): Float =
+    if (squeeze == 1f) recordedAspect else if (recordedAspect >= 1f) recordedAspect * squeeze else recordedAspect / squeeze
+
+/** Frame rates that have a 1000/1001 film / broadcast twin. */
+val NTSC_BASES = setOf(24, 30, 60)

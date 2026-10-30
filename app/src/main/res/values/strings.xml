@@ -51,7 +51,7 @@
     <string name="grid">Grid (thirds)</string>
     <string name="monitor_note">Monitoring aids are only drawn on screen, never recorded. Long-press the picture to lock exposure and focus.</string>
     <string name="monitor_unavailable">Zebras, peaking and false colour aren\'t available in Front + Back or HLG HDR.</string>
-    <string name="lut_bake">Bake LUT into videos (off = for viewing only)</string>
+    <string name="lut_bake">Apply LUT to videos and photos (off = view only)</string>
 
     <!-- LUTs -->
     <string name="import_lut">+ Import .cube</string>
@@ -127,4 +127,15 @@
     <string name="phone_slowmo">Slow motion</string>
     <string name="phone_dual">Front + Back together</string>
     <string name="log_stalled">This phone\'s camera stops when given DF-Log\'s tone curve, so DF-Log is off for now. Use HLG 10-bit for grading instead.</string>
+    <string name="capture_video">VIDEO</string>
+    <string name="capture_photo">PHOTO</string>
+    <string name="photo">Photo</string>
+    <string name="take_photo">Take photo</string>
+    <string name="photo_failed">Couldn\'t take the photo: %1$s</string>
+    <string name="photo_no_dual">Photos use one camera, so Front + Back is paused in Photo mode.</string>
+    <string name="log_not_applied">Your phone ignored the DF-Log curve (its camera kept its own tone processing), so DF-Log is off. Use HLG 10-bit for a flat, wide-range picture.</string>
+    <string name="log_flat_note">DF-Log looks flat and grey on purpose: that\'s the extra highlight and shadow detail for grading. Pick Rec.709 under LUT to view it normally while you shoot.</string>
+    <string name="lut_view_only_note">With Log, LUTs are usually for viewing only, so the files stay flat for grading. Turn on “Apply LUT to videos” to bake the look in.</string>
+    <string name="ntsc_unsupported">Film rates (23.98 / 29.97 / 59.94) need manual exposure control, which this camera doesn\'t allow.</string>
+    <string name="ntsc_note">Film rates run the shutter at 180° automatically and adjust ISO, unless you set them yourself.</string>
 </resources>

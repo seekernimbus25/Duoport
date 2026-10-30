@@ -46,6 +46,42 @@ class LutCube(val size: Int, val rgb: FloatArray) {
         }
     }
 
+    /** This LUT applied to every pixel of a photo, in a new bitmap (trilinear, like the GPU). */
+    fun applyTo(bitmap: android.graphics.Bitmap): android.graphics.Bitmap {
+        val out = bitmap.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+        val w = out.width
+        val row = IntArray(w)
+        val n = size - 1
+        for (y in 0 until out.height) {
+            out.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                val p = row[x]
+                val fr = ((p shr 16) and 0xFF) / 255f * n
+                val fg = ((p shr 8) and 0xFF) / 255f * n
+                val fb = (p and 0xFF) / 255f * n
+                val r0 = fr.toInt().coerceAtMost(n - 1)
+                val g0 = fg.toInt().coerceAtMost(n - 1)
+                val b0 = fb.toInt().coerceAtMost(n - 1)
+                val dr = fr - r0
+                val dg = fg - g0
+                val db = fb - b0
+                var argb = 0xFF shl 24
+                for (c in 0 until 3) {
+                    fun at(r: Int, g: Int, b: Int) = rgb[((r * size + g) * size + b) * 3 + c]
+                    val c00 = at(r0, g0, b0) * (1 - db) + at(r0, g0, b0 + 1) * db
+                    val c01 = at(r0, g0 + 1, b0) * (1 - db) + at(r0, g0 + 1, b0 + 1) * db
+                    val c10 = at(r0 + 1, g0, b0) * (1 - db) + at(r0 + 1, g0, b0 + 1) * db
+                    val c11 = at(r0 + 1, g0 + 1, b0) * (1 - db) + at(r0 + 1, g0 + 1, b0 + 1) * db
+                    val v = (c00 * (1 - dg) + c01 * dg) * (1 - dr) + (c10 * (1 - dg) + c11 * dg) * dr
+                    argb = argb or ((v * 255f + 0.5f).toInt().coerceIn(0, 255) shl (16 - 8 * c))
+                }
+                row[x] = argb
+            }
+            out.setPixels(row, 0, w, 0, y, w, 1)
+        }
+        return out
+    }
+
     /** GL 3D texture layout: x = red (fastest), y = green, z = blue. */
     fun toGlBytes(): ByteArray {
         val out = ByteArray(size * size * size * 3)

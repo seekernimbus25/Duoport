@@ -5,6 +5,9 @@ import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.media.MediaCodecList
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -17,8 +20,11 @@ import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
 import android.view.KeyEvent
+import android.view.OrientationEventListener
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.net.Uri
 import android.os.Bundle
@@ -53,6 +59,9 @@ import androidx.camera.core.DynamicRange
 import androidx.camera.core.ExperimentalSessionConfig
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
@@ -211,7 +220,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             // Roll of an upright phone, smoothed; clockwise tilt is positive.
             val roll = Math.toDegrees(atan2(-event.values[0].toDouble(), event.values[1].toDouble())).toFloat()
             levelRoll += (roll - levelRoll) * 0.2f
-            frameOverlay.levelDegrees = levelRoll
+            // When recording sideways the level is drawn in the turned frame.
+            var relative = levelRoll + frameOverlay.rotation
+            if (relative > 180f) relative -= 360f
+            if (relative < -180f) relative += 360f
+            frameOverlay.levelDegrees = relative
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -248,6 +261,38 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     /** Slow-motion frame rates this camera can record (60 normally, 120 / 240 in high-speed mode). */
     private var slowRates: List<Int> = emptyList()
     private var highSpeedBound = false
+
+    /** Photo mode's still capture (instead of [mainCapture]). */
+    private var imageCapture: ImageCapture? = null
+    private val photoExecutor = Executors.newSingleThreadExecutor()
+
+    /** HLG is only offered through the codec list on some phones (not their camcorder profiles). */
+    private var hlgViaCodecs = false
+
+    /** Which way up the next recording / photo is: follows the phone when turned sideways. */
+    private var recordRotation = Surface.ROTATION_0
+    private val orientationListener by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) = onPhoneTurned(orientation)
+        }
+    }
+
+    /** Frames in a row where the camera reported it wasn't using the DF-Log curve. */
+    @Volatile private var tonemapIgnored = 0
+    private var recordingStartMs = 0L
+
+    /** The highest bitrate any H.264 / HEVC encoder on this phone accepts, in Mbps. */
+    private val encoderMaxMbps: Int by lazy {
+        runCatching {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .filter { it.isEncoder }
+                .flatMap { info ->
+                    info.supportedTypes.filter { it == "video/avc" || it == "video/hevc" }
+                        .mapNotNull { info.getCapabilitiesForType(it).videoCapabilities?.bitrateRange?.upper }
+                }
+                .maxOrNull()?.div(1_000_000) ?: 0
+        }.getOrDefault(0)
+    }
 
     private var mainRecording: Recording? = null
     private var insetRecording: Recording? = null
@@ -383,6 +428,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             applyNight()
             Toast.makeText(this, if (on) R.string.night_on else R.string.night_off, Toast.LENGTH_SHORT).show()
         }
+        findViewById<View>(R.id.capture_video).setOnClickListener { setPhotoMode(false) }
+        findViewById<View>(R.id.capture_photo).setOnClickListener { setPhotoMode(true) }
         modeAuto.setOnClickListener { setMode(CaptureMode.AUTO) }
         modePro.setOnClickListener { setMode(CaptureMode.PRO) }
         findViewById<View>(R.id.gallery_button).setOnClickListener { openLibrary() }
@@ -416,6 +463,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         statusHandler.post(statusTick)
         stallRecoveries = 0
         statusHandler.postDelayed(stallWatch, 1000)
+        if (orientationListener.canDetectOrientation()) orientationListener.enable()
     }
 
     override fun onPause() {
@@ -423,6 +471,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         sensorManager?.unregisterListener(levelListener)
         statusHandler.removeCallbacks(statusTick)
         statusHandler.removeCallbacks(stallWatch)
+        orientationListener.disable()
     }
 
     /** Volume buttons start and stop recording, like a camera's record button. */
@@ -451,6 +500,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         super.onDestroy()
         lutProcessor.release()
         analysisExecutor.shutdown()
+        photoExecutor.shutdown()
     }
 
     private fun updateSettings(new: CaptureSettings, rebind: Boolean) {
@@ -468,6 +518,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             bindCamera()
         }
         if (!rebind) applyManual()
+    }
+
+    private fun setPhotoMode(photo: Boolean) {
+        if (photo == settings.photoMode || isRecording || countdownRunning) return
+        closeControlPanel()
+        if (photo && settings.dual) Toast.makeText(this, R.string.photo_no_dual, Toast.LENGTH_LONG).show()
+        updateSettings(settings.copy(photoMode = photo), rebind = true)
     }
 
     private fun setMode(mode: CaptureMode) {
@@ -506,6 +563,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         Glass.show(proStrip, pro)
         val accent = ContextCompat.getColor(this, R.color.accent)
         val dim = ContextCompat.getColor(this, R.color.text_tertiary)
+        val photo = settings.photoMode
+        findViewById<TextView>(R.id.capture_video).setTextColor(if (photo) dim else accent)
+        findViewById<TextView>(R.id.capture_photo).setTextColor(if (photo) accent else dim)
+        if (!isRecording && !countdownRunning) recordButton.setImageResource(shutterIcon())
+        recordButton.contentDescription = getString(if (photo) R.string.take_photo else R.string.start_recording)
+        dualButton.isEnabled = !photo
+        dualButton.alpha = if (photo) 0.35f else 1f
+        frameOverlay.desqueeze = settings.activeAnamorphic
         findViewById<TextView>(R.id.mode_auto_text).setTextColor(if (pro) dim else accent)
         findViewById<TextView>(R.id.mode_pro_text).setTextColor(if (pro) accent else dim)
         findViewById<View>(R.id.mode_auto_dot).visibility = if (pro) View.INVISIBLE else View.VISIBLE
@@ -620,13 +685,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         dualKind = DualKind.NONE
         effectAttached = false
         highSpeedBound = false
+        imageCapture = null
         lockedLens = null
         lenses = runCatching { Lenses.list(this, provider, settings.lensFacing) }.getOrDefault(emptyList())
         mainLensMm = runCatching { Lenses.mainMm(this, provider, settings.lensFacing) }.getOrDefault(0)
         flipButton.isVisible =
             provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) && provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)
 
-        if (settings.dual) {
+        if (settings.dual && !settings.photoMode) {
             val pair = frontAndBackPair(provider)
             if (pair != null && (tryBindSeparate(provider, pair) || tryBindComposited(provider, pair))) {
                 onCameraBound()
@@ -641,6 +707,23 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val lens = settings.activeLensKey?.let { key -> lenses.firstOrNull { it.key == key } }
         val selector = lens?.let { Lenses.selector(it) } ?: defaultSelector(provider)
         slowRates = runCatching { slowMotionRates(provider.getCameraInfo(selector)) }.getOrDefault(emptyList())
+
+        if (settings.photoMode) {
+            when {
+                bindPhoto(provider, selector) -> {
+                    lockedLens = lens
+                    onCameraBound()
+                }
+                lens != null && bindPhoto(provider, defaultSelector(provider)) -> {
+                    Toast.makeText(this, R.string.lens_unavailable, Toast.LENGTH_LONG).show()
+                    settings = settings.copy(lensKey = null)
+                    SettingsStore.save(this, settings)
+                    onCameraBound()
+                }
+                else -> bound = false
+            }
+            return
+        }
 
         if (settings.activeSlowMotion > 0 && settings.activeSlowMotion !in slowRates) {
             // This camera can't do the chosen speed: take the nearest slower one it can.
@@ -675,6 +758,49 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         } else {
             bound = false
         }
+    }
+
+    /** Photo mode: preview + full-resolution stills (+ the live look and meters when possible). */
+    private fun bindPhoto(provider: ProcessCameraProvider, selector: CameraSelector): Boolean {
+        val effect = if (wantsPreviewEffect()) {
+            LutPreviewEffect(lutProcessor) {
+                runOnUiThread {
+                    livePreviewBroken = true
+                    Toast.makeText(this, R.string.lut_preview_unavailable, Toast.LENGTH_LONG).show()
+                    bindCamera()
+                }
+            }
+        } else {
+            null
+        }
+        for ((withAnalysis, withEffect) in listOf(true to true, false to true, false to false)) {
+            try {
+                val preview = buildPreview(settings.cameraFrame, null, previewView, readouts = true)
+                val capture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder()
+                            .setAspectRatioStrategy(
+                                AspectRatioStrategy(settings.cameraFrame.cameraRatio, AspectRatioStrategy.FALLBACK_RULE_AUTO)
+                            )
+                            .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+                            .build()
+                    )
+                    .setTargetRotation(recordRotation)
+                    .build()
+                val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(capture)
+                if (withAnalysis && settings.isPro) group.addUseCase(buildAnalysis())
+                if (withEffect && effect != null) group.addEffect(effect)
+                camera = provider.bindToLifecycle(this, selector, group.build())
+                imageCapture = capture
+                effectAttached = withEffect && effect != null
+                if (settings.isPro && !withAnalysis) monitorRow.isVisible = false
+                return true
+            } catch (e: Exception) {
+                provider.unbindAll()
+            }
+        }
+        return false
     }
 
     private fun defaultSelector(provider: ProcessCameraProvider): CameraSelector {
@@ -763,8 +889,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         stabilization: Boolean,
         hdr: Boolean = false,
         bitrate: Int? = null,
+        codecSource: Boolean = false,
     ): VideoCapture<Recorder> {
         val recorderBuilder = Recorder.Builder()
+        // Some phones list 10-bit HLG only in their codecs, not their camcorder profiles.
+        if (codecSource) recorderBuilder.setVideoCapabilitiesSource(Recorder.VIDEO_CAPABILITIES_SOURCE_CODEC_CAPABILITIES)
+        recorderBuilder
             .setAspectRatio(frame.cameraRatio)
             .setQualitySelector(
                 QualitySelector.fromOrderedList(qualities, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD))
@@ -802,8 +932,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             return false
         }
         val capabilities = Recorder.getVideoCapabilities(info)
-
-        hlgSupported = DynamicRange.HLG_10_BIT in capabilities.supportedDynamicRanges
+        val codecCapabilities = runCatching {
+            Recorder.getVideoCapabilities(info, Recorder.VIDEO_CAPABILITIES_SOURCE_CODEC_CAPABILITIES)
+        }.getOrNull()
+        val hlgFromProfiles = DynamicRange.HLG_10_BIT in capabilities.supportedDynamicRanges
+        val hlgFromCodecs = codecCapabilities?.supportedDynamicRanges?.contains(DynamicRange.HLG_10_BIT) == true
+        hlgSupported = hlgFromProfiles || hlgFromCodecs
+        hlgViaCodecs = !hlgFromProfiles && hlgFromCodecs
         val wantHdr = settings.activeProfile == RecordProfile.HLG
         if (wantHdr && !hlgSupported) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
         val hdr = wantHdr && hlgSupported
@@ -817,7 +952,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         if (wantStab != Stabilization.OFF && !enhancedOk && !standardOk) {
             Toast.makeText(this, R.string.stabilization_unsupported, Toast.LENGTH_SHORT).show()
         }
-        val bitrate = settings.recordBitrate.bitsPerSecond(settings.cameraResolution)
+        val bitrate = settings.recordMbps.takeIf { it > 0 }?.let { it * 1_000_000 }
         val analysisWanted = settings.isPro
 
         val effect = if (wantsPreviewEffect() && !hdr) {
@@ -857,6 +992,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 val capture = buildCapture(
                     qualitiesFrom(attempt.resolution), settings.cameraFrame, attempt.fps, attempt.standard, attempt.hdr,
                     bitrate = if (attempt.resolution == settings.cameraResolution) bitrate else null,
+                    codecSource = attempt.hdr && hlgViaCodecs,
                 )
                 val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(capture)
                 if (attempt.analysis) group.addUseCase(buildAnalysis())
@@ -988,6 +1124,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
         val frame = if (dualKind == DualKind.NONE) settings.cameraFrame else CameraFrame.FULL_4_3
         frameOverlay.sourceAspect = frame.portraitAspect
+        frameOverlay.desqueeze = settings.activeAnamorphic
+        if (!settings.activeFollowRotation || dualKind != DualKind.NONE) recordRotation = Surface.ROTATION_0
+        applyRecordRotation()
         frameOverlay.movable = dualKind != DualKind.COMPOSITED
         frameOverlay.insetCorner = if (dualKind == DualKind.SEPARATE) settings.insetCorner else null
         insetFrame.isVisible = dualKind == DualKind.SEPARATE
@@ -1024,13 +1163,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         applyManual()
         resolutionText = ""
         updateInfoLine()
-        mainCapture?.let { pollResolution(it, attemptsLeft = 20) }
+        refreshSourceAspect()
     }
 
     /** Low Light Boost only works while exposure is automatic. */
     private fun applyNight() {
         val cam = camera ?: return
-        val allowed = cam.cameraInfo.isLowLightBoostSupported && !activeManual.manualExposure
+        val allowed = cam.cameraInfo.isLowLightBoostSupported && !effectiveManual(caps).manualExposure
         nightButton.isSelected = settings.night && allowed
         if (cam.cameraInfo.isLowLightBoostSupported) {
             runCatching { cam.cameraControl.enableLowLightBoostAsync(settings.night && allowed) }
@@ -1065,8 +1204,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
      */
     private fun runPriorityLoop(offsetStops: Float) {
         val c = caps ?: return
-        val m = manual
+        val m = effectiveManual(c)
         if (!c.manualSensor || !(m.shutterPriority || m.isoPriority)) return
+        if (highSpeedBound) return
         if (kotlin.math.abs(offsetStops) < 0.15f) return
         val step = (-offsetStops * 0.6f).coerceIn(-0.5f, 0.5f)
         val factor = 2.0.pow(step.toDouble())
@@ -1078,7 +1218,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             priorityIso = next
         } else {
             val range = c.shutterRange ?: return
-            val maxNs = 1_000_000_000L / settings.captureFps
+            val maxNs = settings.frameDurationNs
             val current = priorityShutterNs ?: lastReadout?.shutterNs ?: return
             val next = (current * factor).toLong().coerceIn(range.lower, minOf(range.upper, maxNs))
             if (next == current) return
@@ -1111,6 +1251,16 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         applyManual()
     }
 
+    /** Which microphone Android will record from: a plugged-in USB or wired mic wins over the built-in one. */
+    private fun micName(): String {
+        val inputs = getSystemService(AudioManager::class.java)?.getDevices(AudioManager.GET_DEVICES_INPUTS).orEmpty()
+        return when {
+            inputs.any { it.type == AudioDeviceInfo.TYPE_USB_DEVICE || it.type == AudioDeviceInfo.TYPE_USB_HEADSET } -> "USB mic"
+            inputs.any { it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET } -> "Wired mic"
+            else -> "Phone mic"
+        }
+    }
+
     /** Pro status: recording size, fps, profile, time left on the phone, battery. */
     private fun updateInfoLine() {
         val parts = mutableListOf<String>()
@@ -1122,10 +1272,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             parts += if (settings.isHyperlapse) "Hyperlapse ${settings.timelapse}×" else "Time-lapse ${settings.timelapse}×"
         }
         if (settings.isPro) {
-            parts += "${settings.captureFps} fps"
+            parts += "${settings.fpsLabel} fps"
+            if (settings.recordMbps > 0 && !settings.photoMode) parts += RecordBitrate.label(settings.recordMbps)
+            if (!settings.photoMode) parts += micName()
             lockedLens?.let { parts += it.label(mainLensMm) }
             parts += settings.activeProfile.label
-            val bits = settings.recordBitrate.bitsPerSecond(settings.cameraResolution) + 256_000
+            val bits = (settings.recordMbps.takeIf { it > 0 }?.times(1_000_000)
+                ?: RecordBitrate.defaultBitsPerSecond(settings.cameraResolution)) + 256_000
             val free = runCatching { StatFs(filesDir.path).availableBytes }.getOrDefault(0L)
             val minutes = free * 8 / bits / 60
             parts += if (minutes >= 60) "${minutes / 60}h ${minutes % 60}m left" else "${minutes}m left"
@@ -1136,6 +1289,18 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     // endregion
+
+    /**
+     * What is actually sent to the camera. Film rates (23.976…) need the app to time frames
+     * itself, so with exposure on Auto the shutter is held at 180° and ISO follows the light.
+     */
+    private fun effectiveManual(c: CameraCaps?): ManualState {
+        val m = activeManual
+        if (settings.activeNtsc && c?.manualSensor == true && !m.manualExposure) {
+            return m.copy(shutterNs = settings.frameDurationNs / 2)
+        }
+        return m
+    }
 
     private fun checkForStall() {
         val cam = camera ?: return
@@ -1185,7 +1350,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
         val fps = settings.captureFps
         if (logCurveBroken && settings.activeProfile == RecordProfile.LOG) return
-        ProControls.apply(cam, c, activeManual, settings.activeProfile, fps, lastReadout, priorityIso, priorityShutterNs)
+        ProControls.apply(
+            cam, c, effectiveManual(c), settings.activeProfile, fps, lastReadout, priorityIso, priorityShutterNs,
+            frameDurationNs = settings.frameDurationNs,
+        )
         updateReadouts()
         openParam?.let { buildControlPanel(it) }
     }
@@ -1197,6 +1365,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            checkLogApplied(result)
             val now = SystemClock.elapsedRealtime()
             if (now - lastReadoutAt < 200) return
             lastReadoutAt = now
@@ -1209,20 +1378,89 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     /** The real recording size is only known once the camera has started; show it when it is. */
-    private fun pollResolution(capture: VideoCapture<Recorder>, attemptsLeft: Int) {
-        if (capture != mainCapture || attemptsLeft <= 0) return
-        val info = capture.resolutionInfo
-        if (info == null) {
-            previewView.postDelayed({ pollResolution(capture, attemptsLeft - 1) }, 250)
+    /** The recorded picture's real shape, once the camera has settled on a size and rotation. */
+    private fun refreshSourceAspect() {
+        mainCapture?.let { capture -> pollResolution(capture, { capture.resolutionInfo }, attemptsLeft = 20) }
+        imageCapture?.let { capture -> pollResolution(capture, { capture.resolutionInfo }, attemptsLeft = 20) }
+    }
+
+    /**
+     * Some phones accept the DF-Log tone curve but quietly keep their own processing. The camera
+     * reports which tone mode it really used; if it isn't the curve for ~2 s, say so plainly.
+     */
+    private fun checkLogApplied(result: TotalCaptureResult) {
+        if (settings.activeProfile != RecordProfile.LOG || logCurveBroken || highSpeedBound) {
+            tonemapIgnored = 0
             return
         }
-        val crop = info.cropRect
-        var w = if (crop.isEmpty) info.resolution.width else crop.width()
-        var h = if (crop.isEmpty) info.resolution.height else crop.height()
-        if (info.rotationDegrees % 180 != 0) w = h.also { h = w }
+        val mode = result.get(CaptureResult.TONEMAP_MODE) ?: return
+        if (mode == CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE) {
+            tonemapIgnored = 0
+            return
+        }
+        if (++tonemapIgnored == 60) {
+            runOnUiThread {
+                if (logCurveBroken || settings.activeProfile != RecordProfile.LOG) return@runOnUiThread
+                logCurveBroken = true
+                Toast.makeText(this, R.string.log_not_applied, Toast.LENGTH_LONG).show()
+                val lut = if (settings.lutId == Luts.REC709) Luts.NONE else settings.lutId
+                updateSettings(settings.copy(profile = RecordProfile.STANDARD, lutId = lut), rebind = true)
+            }
+        }
+    }
+
+    private fun pollResolution(owner: Any, info: () -> androidx.camera.core.ResolutionInfo?, attemptsLeft: Int) {
+        if ((owner !== mainCapture && owner !== imageCapture) || attemptsLeft <= 0) return
+        val res = info()
+        if (res == null) {
+            previewView.postDelayed({ pollResolution(owner, info, attemptsLeft - 1) }, 250)
+            return
+        }
+        val crop = res.cropRect
+        var w = if (crop.isEmpty) res.resolution.width else crop.width()
+        var h = if (crop.isEmpty) res.resolution.height else crop.height()
+        if (res.rotationDegrees % 180 != 0) w = h.also { h = w }
         frameOverlay.sourceAspect = w.toFloat() / h
         resolutionText = "$w × $h"
         updateInfoLine()
+    }
+
+    /**
+     * Turning the phone sideways makes the next recording (or photo) landscape. The screen stays
+     * upright like the phone's own camera app; only the frames overlay turns with the phone,
+     * so its shapes line up with the world.
+     */
+    private fun onPhoneTurned(degrees: Int) {
+        if (degrees == OrientationEventListener.ORIENTATION_UNKNOWN) return
+        val rotation = when (degrees) {
+            in 60..120 -> Surface.ROTATION_270
+            in 240..300 -> Surface.ROTATION_90
+            in 0..30, in 330..359 -> Surface.ROTATION_0
+            else -> return // in between, or upside down: keep what we have
+        }
+        val target = if (settings.activeFollowRotation && dualKind == DualKind.NONE) rotation else Surface.ROTATION_0
+        if (target == recordRotation || isRecording || countdownRunning || !bound) return
+        recordRotation = target
+        applyRecordRotation()
+        refreshSourceAspect()
+    }
+
+    private fun applyRecordRotation() {
+        mainCapture?.targetRotation = recordRotation
+        imageCapture?.targetRotation = recordRotation
+        val turn = when (recordRotation) {
+            Surface.ROTATION_90 -> 90f
+            Surface.ROTATION_270 -> -90f
+            else -> 0f
+        }
+        if (frameOverlay.rotation == turn) return
+        val parent = frameOverlay.parent as View
+        frameOverlay.layoutParams = if (turn == 0f) {
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        } else {
+            FrameLayout.LayoutParams(parent.height, parent.width, Gravity.CENTER)
+        }
+        frameOverlay.rotation = turn
     }
 
     // endregion
@@ -1269,7 +1507,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     private fun startRecording() {
-        if (mainCapture == null || countdownRunning) return
+        if ((mainCapture == null && imageCapture == null) || countdownRunning) return
         if (DualExporter.state.value !is ExportState.Idle) return
         closeControlPanel()
         if (settings.timerSeconds > 0) countdown(settings.timerSeconds) else beginRecording()
@@ -1306,16 +1544,80 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun cancelCountdown() {
         countdownRunning = false
         countdownText.isVisible = false
-        recordButton.setImageResource(R.drawable.ic_record)
+        recordButton.setImageResource(shutterIcon())
+    }
+
+    private fun shutterIcon() = if (settings.photoMode) R.drawable.ic_shutter else R.drawable.ic_record
+
+    /** Slate-style names: Interview_T007_20261030_141502 */
+    private fun slateName(): String {
+        val safeName = settings.clipName.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().replace(' ', '_').ifEmpty { "DualFrame" }
+        val take = SettingsStore.nextTake(this)
+        return String.format(Locale.US, "%s_T%03d_", safeName, take) +
+            SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    }
+
+    /** One still, then cut into every chosen shape (full sensor resolution, no video encoder limits). */
+    private fun takePhoto() {
+        val capture = imageCapture ?: return
+        recordButton.setImageResource(R.drawable.ic_shutter)
+        recordButton.isEnabled = false
+        val name = slateName()
+        val mirror = settings.mirrorFront && settings.lensFacing == CameraSelector.LENS_FACING_FRONT
+        val job = { bitmap: android.graphics.Bitmap, rotation: Int ->
+            PhotoJob(
+                image = bitmap,
+                rotationDegrees = rotation,
+                mirror = mirror,
+                outputs = settings.orderedFormats,
+                placement = frameOverlay.placement,
+                lut = if (settings.bakeLut) activeLut else null,
+                anamorphic = settings.activeAnamorphic,
+                cinematic = settings.cinematic,
+                keepOriginal = settings.keepOriginal,
+                baseName = name,
+            )
+        }
+        // A quick dip of the preview, like a shutter.
+        previewView.animate().alpha(0.15f).setDuration(70).withEndAction {
+            previewView.animate().alpha(1f).setDuration(180).start()
+        }.start()
+        capture.takePicture(photoExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                val rotation = image.imageInfo.rotationDegrees
+                val bitmap = runCatching { image.toBitmap() }.getOrNull()
+                image.close()
+                runOnUiThread {
+                    recordButton.isEnabled = true
+                    if (bitmap == null) {
+                        Toast.makeText(this@MainActivity, getString(R.string.photo_failed, "no image"), Toast.LENGTH_LONG).show()
+                    } else {
+                        DualExporter.startPhoto(this@MainActivity, job(bitmap, rotation))
+                    }
+                }
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                runOnUiThread {
+                    recordButton.isEnabled = true
+                    Toast.makeText(
+                        this@MainActivity,
+                        getString(R.string.photo_failed, exception.message ?: "camera error"),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        })
     }
 
     private fun beginRecording() {
+        if (settings.photoMode) {
+            takePhoto()
+            return
+        }
         val main = mainCapture ?: return
-        // Slate-style names: Interview_T007_20261030_1415
-        val safeName = settings.clipName.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().replace(' ', '_').ifEmpty { "DualFrame" }
-        val take = SettingsStore.nextTake(this)
-        baseName = String.format(Locale.US, "%s_T%03d_", safeName, take) +
-            SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        baseName = slateName()
+        recordingStartMs = System.currentTimeMillis()
         mainTake = null
         insetTake = null
         pendingFinalizes = 0
@@ -1362,15 +1664,20 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 keepHdr = settings.hdrCuts,
                 codec = settings.codec,
                 quality = settings.exportQuality,
-                // Log and HDR originals are the "negative": always keep them.
-                keepOriginal = settings.keepOriginal || settings.activeProfile != RecordProfile.STANDARD,
+                // Only what you asked for: one format in, one video out (plus the original if kept).
+                keepOriginal = settings.keepOriginal,
                 baseName = baseName,
+                audioGainDb = settings.audioGainDb,
+                cinematic = settings.cinematic,
+                anamorphic = settings.activeAnamorphic,
+                timecodeStartMs = recordingStartMs,
+                timecodeRate = settings.fpsLabel,
             ),
         )
     }
 
     private fun setRecordingUi(recording: Boolean) {
-        recordButton.setImageResource(if (recording) R.drawable.ic_stop else R.drawable.ic_record)
+        recordButton.setImageResource(if (recording) R.drawable.ic_stop else shutterIcon())
         recordButton.contentDescription = getString(if (recording) R.string.stop_recording else R.string.start_recording)
         Glass.show(timerRow, recording)
         Glass.show(meterRow, recording && settings.isPro && !highSpeedBound)
@@ -1513,7 +1820,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         )
         val lutName = Luts.displayName(this, settings.lutId, settings.profile)
         set(Param.LUT, if (lutName.length > 10) lutName.take(9) + "…" else lutName, settings.lutId != Luts.NONE)
-        set(Param.FPS, "${settings.captureFps}", settings.captureFps != 30)
+        set(Param.FPS, settings.fpsLabel, settings.captureFps != 30 || settings.activeNtsc)
         set(Param.LENS, lockedLens?.let { if (it.equivalentMm > 0) "${it.equivalentMm}mm" else "Lock" } ?: "Auto", lockedLens != null)
         val shutterNs = m.shutterNs ?: priorityShutterNs ?: r?.shutterNs
         set(
@@ -1619,15 +1926,19 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     val enabled = when (profile) {
                         RecordProfile.STANDARD -> true
                         RecordProfile.LOG -> c.logSupported && !logCurveBroken
-                        RecordProfile.HLG -> hlgSupported && !settings.dual
+                        RecordProfile.HLG -> hlgSupported && !settings.dual && !settings.photoMode
                     }
                     pills.addView(Glass.pill(this, profile.label, profile == settings.profile) {
                         if (profile != settings.profile) {
-                            // Log changes what LUTs mean, so start from a sensible look.
-                            val lut = if (profile == RecordProfile.LOG && settings.lutId == Luts.NONE) Luts.REC709 else settings.lutId
-                            val keptLut = if (profile != RecordProfile.LOG && lut == Luts.REC709) Luts.NONE else lut
+                            // DF-Log starts flat (that's the point). A LUT chosen with Log is for
+                            // viewing only unless you turn baking on, so the files stay flat.
+                            val keptLut = if (profile != RecordProfile.LOG && settings.lutId == Luts.REC709) Luts.NONE else settings.lutId
                             updateSettings(
-                                settings.copy(profile = profile, lutId = keptLut),
+                                settings.copy(
+                                    profile = profile,
+                                    lutId = keptLut,
+                                    bakeLut = if (profile == RecordProfile.LOG) false else settings.bakeLut,
+                                ),
                                 rebind = profile == RecordProfile.HLG || settings.profile == RecordProfile.HLG,
                             )
                         }
@@ -1635,6 +1946,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }
                 controlPanel.addView(pills)
                 note(settings.profile.description)
+                if (settings.profile == RecordProfile.LOG) note(getString(R.string.log_flat_note))
                 if (settings.profile == RecordProfile.HLG) {
                     panelSwitch(getString(R.string.hdr_cuts), settings.hdrCuts) {
                         updateSettings(settings.copy(hdrCuts = it), rebind = false)
@@ -1675,6 +1987,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 panelSwitch(getString(R.string.lut_bake), settings.bakeLut) {
                     updateSettings(settings.copy(bakeLut = it), rebind = false)
                 }
+                if (settings.profile == RecordProfile.LOG) note(getString(R.string.lut_view_only_note))
                 if (settings.profile == RecordProfile.HLG) note(getString(R.string.lut_hlg_note))
                 else if (!effectAttached && activeLut != null) note(getString(R.string.lut_export_only))
             }
@@ -1713,14 +2026,23 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             Param.FPS -> {
                 val supported = camera?.cameraInfo?.supportedFrameRateRanges.orEmpty()
                 val pills = panelPills()
-                listOf(24, 25, 30, 48, 50, 60)
+                val rates = listOf(24, 25, 30, 48, 50, 60)
                     .filter { fps -> supported.isEmpty() || supported.any { fps in it.lower..it.upper } }
-                    .forEach { fps ->
-                        pills.addView(Glass.pill(this, "$fps", fps == settings.fps) {
-                            if (fps != settings.fps) updateSettings(settings.copy(fps = fps), rebind = true)
+                rates.forEach { fps ->
+                    pills.addView(Glass.pill(this, "$fps", fps == settings.fps && !settings.ntsc) {
+                        updateSettings(settings.copy(fps = fps, ntsc = false), rebind = fps != settings.fps)
+                    })
+                }
+                // 23.976 / 29.97 / 59.94: the app times frames itself, which needs manual sensor control.
+                if (c.manualSensor) {
+                    rates.filter { it in NTSC_BASES }.forEach { fps ->
+                        pills.addView(Glass.pill(this, ntscLabel(fps), fps == settings.fps && settings.ntsc) {
+                            updateSettings(settings.copy(fps = fps, ntsc = true), rebind = fps != settings.fps)
                         })
                     }
+                }
                 controlPanel.addView(pills)
+                if (c.manualSensor) note(getString(R.string.ntsc_note)) else note(getString(R.string.ntsc_unsupported))
                 if (settings.activeSlowMotion > 0) note(getString(R.string.fps_slowmo_note, settings.activeSlowMotion))
                 note("24 for a film feel, 30 for everyday, 60 for smooth motion. For slow motion, use Settings → Speed.")
                 if (dualKind != DualKind.NONE) note("Front + Back records at the camera's standard rate.")
@@ -2027,10 +2349,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private var zoomStopsShown: List<Float> = emptyList()
 
+    /** Just two buttons: the ultra-wide (if there is one) and 1×, which shows the live zoom. */
     private fun zoomStops(state: ZoomState): List<Float> {
         val stops = mutableListOf<Float>()
         if (state.minZoomRatio < 0.95f) stops += (state.minZoomRatio * 10).roundToInt() / 10f
-        listOf(1f, 2f, 3f, 5f, 10f).filterTo(stops) { it <= state.maxZoomRatio + 0.01f }
+        stops += 1f
         return stops
     }
 
@@ -2049,8 +2372,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }, LinearLayout.LayoutParams(dp(42f).toInt(), dp(42f).toInt()).apply { marginStart = dp(2f).toInt(); marginEnd = dp(2f).toInt() })
             }
         }
-        // The nearest stop lights up and shows the exact zoom, like a lens ring.
-        val nearest = stops.minByOrNull { abs(it - state.zoomRatio) }
+        // Below 1× the wide button lights up; from 1× up, the 1× button shows the exact zoom.
+        val nearest = if (state.zoomRatio < 0.95f && stops.size > 1) stops.first() else 1f
         for (i in 0 until zoomCapsule.childCount) {
             val pill = zoomCapsule.getChildAt(i) as TextView
             val ratio = pill.tag as Float
@@ -2073,13 +2396,16 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun showSettings() {
         if (isRecording) return
-        SettingsSheet(this, settings, inFrontAndBack = settings.dual, slowRates, phoneSummary()) { draft ->
+        SettingsSheet(
+            this, settings, inFrontAndBack = settings.dual, slowRates, phoneSummary(), encoderMaxMbps, micName(),
+        ) { draft ->
             val old = settings
             if (draft == old) return@SettingsSheet
             val cameraChanged = draft.cameraFrame != old.cameraFrame ||
                 draft.cameraResolution != old.cameraResolution ||
                 draft.effectiveStabilization != old.effectiveStabilization ||
-                draft.recordBitrate != old.recordBitrate ||
+                draft.recordMbps != old.recordMbps ||
+                draft.activeFollowRotation != old.activeFollowRotation ||
                 draft.mirrorFront != old.mirrorFront ||
                 draft.activeSlowMotion != old.activeSlowMotion ||
                 (draft.dual && draft.orderedFormats != old.orderedFormats)
@@ -2161,12 +2487,16 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }
             }
             loadThumbnail(video.uri, thumb)
-            val (w, h) = video.format.sizePx(video.resolution)
-            row.findViewById<TextView>(R.id.title).text = getString(R.string.result_title_row, video.format.label, video.resolution.label)
+            val (w, h) = if (video.photo) video.width to video.height else video.format.sizePx(video.resolution)
+            row.findViewById<TextView>(R.id.title).text = if (video.photo) {
+                "${video.format.label} · ${getString(R.string.photo)}"
+            } else {
+                getString(R.string.result_title_row, video.format.label, video.resolution.label)
+            }
             row.findViewById<TextView>(R.id.subtitle).text = getString(R.string.result_subtitle_row, video.format.use, w, h)
             row.findViewById<View>(R.id.play).setOnClickListener { play(video) }
             thumb.setOnClickListener { play(video) }
-            row.findViewById<View>(R.id.share).setOnClickListener { share(video.uri, video.format.label) }
+            row.findViewById<View>(R.id.share).setOnClickListener { share(video.uri, video.format.label, video.photo) }
             resultList.addView(row)
         }
     }
@@ -2185,13 +2515,16 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         startActivity(
             Intent(this, PlayerActivity::class.java)
                 .setData(video.uri)
-                .putExtra(PlayerActivity.EXTRA_TITLE, "${video.format.label} · ${video.resolution.label}")
+                .putExtra(
+                    PlayerActivity.EXTRA_TITLE,
+                    "${video.format.label} · ${if (video.photo) getString(R.string.photo) else video.resolution.label}",
+                )
         )
     }
 
-    private fun share(uri: Uri, label: String) {
+    private fun share(uri: Uri, label: String, photo: Boolean = false) {
         val send = Intent(Intent.ACTION_SEND)
-            .setType("video/mp4")
+            .setType(if (photo) "image/jpeg" else "video/mp4")
             .putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         startActivity(Intent.createChooser(send, getString(R.string.share_format, label)))

@@ -13,6 +13,14 @@
         app:show_buffering="when_playing"
         app:shutter_background_color="@android:color/black" />
 
+    <ImageView
+        android:id="@+id/photo_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@string/photo"
+        android:scaleType="fitCenter"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/header"
         android:layout_width="match_parent"

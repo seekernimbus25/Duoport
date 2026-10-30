@@ -39,13 +39,24 @@ class FrameOverlayView @JvmOverloads constructor(
 
     var listener: Listener? = null
 
-    /** width / height of the recorded picture in portrait. */
+    /** width / height of the recorded picture as it will be displayed (squeezed, if anamorphic). */
     var sourceAspect: Float = CameraFrame.FULL_4_3.portraitAspect
         set(value) {
             field = value
-            placement = placement.clamped(value)
+            placement = placement.clamped(frameAspect)
             changed()
         }
+
+    /** Anamorphic squeeze to undo: frames are laid out in the real (desqueezed) scene. */
+    var desqueeze: Float = 1f
+        set(value) {
+            field = value
+            placement = placement.clamped(frameAspect)
+            changed()
+        }
+
+    /** The scene's true width / height, which the format frames are cut from. */
+    private val frameAspect get() = desqueezed(sourceAspect, desqueeze)
 
     var placement = FramePlacement()
         private set
@@ -148,7 +159,7 @@ class FrameOverlayView @JvmOverloads constructor(
     }
 
     fun resetPlacement() {
-        placement = FramePlacement().clamped(sourceAspect)
+        placement = FramePlacement().clamped(frameAspect)
         changed()
     }
 
@@ -177,7 +188,7 @@ class FrameOverlayView @JvmOverloads constructor(
         insets.clear()
         for (format in formats) {
             val box = boxes.getOrPut(format) { RectF() }
-            placement.rect(format, sourceAspect).mapInto(content, box)
+            placement.rect(format, frameAspect).mapInto(content, box)
             insetCorner?.let { c ->
                 val (w, h) = format.sizePx(OutputResolution.FHD)
                 insets[format] = RectF().also { InsetGeometry.rect(w, h, c).mapInto(box, it) }
@@ -307,12 +318,16 @@ class FrameOverlayView @JvmOverloads constructor(
         override fun onDown(e: MotionEvent) = true
 
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-            listener?.onTapToFocus(e.x, e.y)
+            val (x, y) = toParent(e.x, e.y)
+            listener?.onTapToFocus(x, y)
             return true
         }
 
         override fun onLongPress(e: MotionEvent) {
-            if (!scaling) listener?.onLongPress(e.x, e.y)
+            if (!scaling) {
+                val (x, y) = toParent(e.x, e.y)
+                listener?.onLongPress(x, y)
+            }
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
@@ -323,7 +338,7 @@ class FrameOverlayView @JvmOverloads constructor(
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
             val format = selected
             if (locked || !movable || scaling || format == null || content.width() <= 0f) return false
-            placement = placement.moved(format, -distanceX / content.width(), -distanceY / content.height(), sourceAspect)
+            placement = placement.moved(format, -distanceX / content.width(), -distanceY / content.height(), frameAspect)
             changed()
             return true
         }
@@ -346,6 +361,16 @@ class FrameOverlayView @JvmOverloads constructor(
             scaling = false
         }
     })
+
+    /**
+     * This view turns with the phone when recording sideways; the preview under it doesn't.
+     * Touch points are handed out in the parent's (= the preview's) coordinates.
+     */
+    private fun toParent(x: Float, y: Float): Pair<Float, Float> {
+        val p = floatArrayOf(x, y)
+        matrix.mapPoints(p)
+        return (p[0] + left) to (p[1] + top)
+    }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleGestures.onTouchEvent(event)

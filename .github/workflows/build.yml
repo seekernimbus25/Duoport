@@ -27,6 +27,16 @@ jobs:
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk DualFrame.apk
 
+      # Google Play needs native libraries aligned for 16 KB memory pages (0x4000 or more).
+      - name: Report native library page alignment
+        run: |
+          rm -rf /tmp/apk && mkdir -p /tmp/apk
+          unzip -q -o DualFrame.apk 'lib/arm64-v8a/*' -d /tmp/apk || true
+          for so in /tmp/apk/lib/arm64-v8a/*.so; do
+            [ -f "$so" ] || continue
+            echo "$(basename "$so"): $(readelf -lW "$so" | awk '/LOAD/ {print $NF; exit}')"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: DualFrame-apk

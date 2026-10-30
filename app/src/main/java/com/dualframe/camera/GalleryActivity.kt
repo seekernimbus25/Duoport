@@ -30,7 +30,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
 
-/** One saved video in Movies/DualFrame. */
+/** One saved video (Movies/DualFrame) or photo (Pictures/DualFrame). */
 data class GalleryVideo(
     val uri: Uri,
     val name: String,
@@ -38,6 +38,7 @@ data class GalleryVideo(
     val width: Int,
     val height: Int,
     val dateAddedSec: Long,
+    val photo: Boolean = false,
 ) {
     /** "9:16", "16:9"… worked out from the pixel size. */
     val shapeLabel: String
@@ -51,12 +52,52 @@ data class GalleryVideo(
 
 object VideoLibrary {
     const val RELATIVE_PATH = "Movies/DualFrame/"
+    const val PHOTO_PATH = "Pictures/DualFrame/"
 
     /**
      * Newest first. Apps can always see the videos they saved themselves, with no permission,
      * which is all the library needs (Play only allows broad media access to gallery apps).
      */
-    fun query(context: Context): List<GalleryVideo> {
+    fun query(context: Context): List<GalleryVideo> =
+        (queryVideos(context) + queryPhotos(context)).sortedByDescending { it.dateAddedSec }
+
+    private fun queryPhotos(context: Context): List<GalleryVideo> {
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.WIDTH,
+            MediaStore.Images.Media.HEIGHT,
+            MediaStore.Images.Media.DATE_ADDED,
+        )
+        val photos = mutableListOf<GalleryVideo>()
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
+            arrayOf("$PHOTO_PATH%"),
+            "${MediaStore.Images.Media.DATE_ADDED} DESC",
+        )?.use { c ->
+            val id = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            val name = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            val width = c.getColumnIndexOrThrow(MediaStore.Images.Media.WIDTH)
+            val height = c.getColumnIndexOrThrow(MediaStore.Images.Media.HEIGHT)
+            val date = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+            while (c.moveToNext()) {
+                photos += GalleryVideo(
+                    uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(id)),
+                    name = c.getString(name) ?: "",
+                    durationMs = 0,
+                    width = c.getInt(width),
+                    height = c.getInt(height),
+                    dateAddedSec = c.getLong(date),
+                    photo = true,
+                )
+            }
+        }
+        return photos
+    }
+
+    private fun queryVideos(context: Context): List<GalleryVideo> {
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DISPLAY_NAME,
@@ -180,7 +221,7 @@ class GalleryActivity : AppCompatActivity() {
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val video = items[position]
             holder.shape.text = video.shapeLabel
-            holder.duration.text = VideoLibrary.formatDuration(video.durationMs)
+            holder.duration.text = if (video.photo) getString(R.string.photo) else VideoLibrary.formatDuration(video.durationMs)
             holder.itemView.setOnClickListener { onClick(video) }
             holder.job?.cancel()
             val cached = thumbs.get(video.uri)

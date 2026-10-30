@@ -145,6 +145,8 @@ object ProControls {
         lastReadout: Readout?,
         priorityIso: Int? = null,
         priorityShutterNs: Long? = null,
+        /** Exact frame time; differs from 1/fps for 23.976 / 29.97 / 59.94. */
+        frameDurationNs: Long = 1_000_000_000L / fps,
     ) {
         val options = CaptureRequestOptions.Builder()
 
@@ -153,7 +155,7 @@ object ProControls {
             // scaled so the picture keeps its brightness.
             val measuredIso = lastReadout?.iso ?: 100
             val measuredShutter = lastReadout?.shutterNs ?: (1_000_000_000L / (fps * 2))
-            val maxShutter = 1_000_000_000L / fps
+            val maxShutter = frameDurationNs
             val shutter = (state.shutterNs ?: priorityShutterNs ?: run {
                 val iso = state.iso ?: measuredIso
                 (measuredShutter * measuredIso.toDouble() / iso).toLong()
@@ -166,7 +168,7 @@ object ProControls {
             options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             options.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso)
             options.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, shutter)
-            options.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, 1_000_000_000L / fps)
+            options.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs)
         }
 
         if (!state.manualExposure && state.aeLocked) {
