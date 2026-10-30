@@ -292,7 +292,16 @@
     <string name="shots_paste_add">Add shots</string>
     <string name="shots_pasted">Added %1$d shots</string>
     <string name="shots_assemble">Assemble</string>
-    <string name="shots_assemble_which">Which shape to join?</string>
+    <string name="shots_assemble_which">Assemble</string>
+    <string name="shots_join_all">Join all shapes now (%1$s)</string>
+    <string name="shots_trim_join">Trim and join %1$s in the editor</string>
+    <string name="shots_joining">Assembling</string>
+    <string name="shots_joining_shape">%1$s (%2$d of %3$d)</string>
+    <string name="shots_joined">Saved %1$d assembled videos to the library.</string>
+    <string name="shots_joined_skipped">Some takes were not shot in every shape, so they are missing from those cuts.</string>
+    <string name="shots_shapes">SHAPES FOR EVERY TAKE</string>
+    <string name="shots_shapes_note">The camera switches to these shapes when you shoot this list, so every take has all of them. Resolutions come from the camera settings.</string>
+    <string name="shots_shapes_applied">Shooting this list in %1$s</string>
     <string name="shots_nothing_to_assemble">No takes yet. Shoot some shots first.</string>
     <string name="shots_missing">%1$d shots have no usable take yet, so they are left out.</string>
     <string name="shots_project_empty">Add your shots one by one, or paste the whole list.</string>

@@ -171,6 +171,7 @@ class ShotListActivity : AppCompatActivity() {
             addView(Glass.pill(context, getString(R.string.shots_paste)) { pasteList(p) })
             addView(Glass.pill(context, getString(R.string.shots_assemble)) { assemble(p) })
         })
+        shapesRow(p)
         if (p.shots.isEmpty()) {
             body.addView(Glass.body(this, getString(R.string.shots_project_empty)).apply { setPadding(0, dp(16f), 0, 0) })
             return
@@ -178,6 +179,31 @@ class ShotListActivity : AppCompatActivity() {
         val active = ShotLists.activeId(this) == p.id
         p.shots.forEachIndexed { index, shot -> body.addView(shotCard(p, index, shot, active && index == p.current)) }
         body.addView(Glass.caption(this, getString(R.string.shots_project_note)).apply { setPadding(0, dp(12f), 0, 0) })
+    }
+
+    /** The shapes every take of this list is shot in; the camera switches to them for this list. */
+    private fun shapesRow(p: ShotProject) {
+        body.addView(Glass.label(this, getString(R.string.shots_shapes)).apply { setPadding(0, dp(8f), 0, dp(4f)) })
+        body.addView(ChipGroup(this).apply {
+            chipSpacingHorizontal = dp(8f)
+            chipSpacingVertical = dp(8f)
+            OutputFormat.entries.forEach { format ->
+                addView(Glass.pill(context, format.label, format in p.outputs) {
+                    if (format in p.outputs) {
+                        if (p.outputs.size > 1) p.outputs.remove(format)
+                    } else {
+                        p.outputs[format] = SettingsStore.load(context).outputs[format] ?: OutputResolution.FHD
+                    }
+                    // Keep them in the usual order.
+                    val ordered = OutputFormat.entries.filter { it in p.outputs }.associateWith { p.outputs.getValue(it) }
+                    p.outputs.clear()
+                    p.outputs.putAll(ordered)
+                    ShotLists.save(context, p)
+                    render()
+                })
+            }
+        })
+        body.addView(Glass.caption(this, getString(R.string.shots_shapes_note)))
     }
 
     private fun card() = LinearLayout(this).apply {
@@ -441,22 +467,73 @@ class ShotListActivity : AppCompatActivity() {
             return
         }
         val missing = p.shots.count { it.pick() == null }
-        // Takes can come in several shapes (9:16, 16:9…): join one shape at a time.
+        if (missing > 0) Toast.makeText(this, getString(R.string.shots_missing, missing), Toast.LENGTH_LONG).show()
+        // Takes come in every shape they were shot in (9:16, 16:9…).
         val labels = picks.flatMap { t -> t.videos.map { it.first } }.distinct()
-        fun go(label: String?) {
-            val uris = picks.map { t -> (t.videos.firstOrNull { it.first == label } ?: t.videos.first()).second }
-            if (missing > 0) Toast.makeText(this, getString(R.string.shots_missing, missing), Toast.LENGTH_LONG).show()
-            EditorActivity.open(this, uris)
+        val shapes = OutputFormat.entries.filter { f -> labels.contains(f.label) }
+        val options = mutableListOf<Pair<String, () -> Unit>>()
+        if (shapes.isNotEmpty()) {
+            options += getString(R.string.shots_join_all, shapes.joinToString(" + ") { it.label }) to { joinAll(p, picks, shapes) }
         }
-        if (labels.size <= 1) {
-            go(labels.firstOrNull())
-        } else {
-            MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.shots_assemble_which)
-                .setItems(labels.toTypedArray()) { _, which -> go(labels[which]) }
-                .show()
+        labels.forEach { label ->
+            options += getString(R.string.shots_trim_join, label) to {
+                EditorActivity.open(this, picks.map { t -> (t.videos.firstOrNull { it.first == label } ?: t.videos.first()).second })
+            }
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.shots_assemble_which)
+            .setItems(options.map { it.first }.toTypedArray()) { _, which -> options[which].second() }
+            .show()
+    }
+
+    /** Joins the chosen takes in shot order once per shape, all in one go, and saves each cut. */
+    private fun joinAll(p: ShotProject, picks: List<ShotTake>, shapes: List<OutputFormat>) {
+        val bar = com.google.android.material.progressindicator.LinearProgressIndicator(this).apply {
+            max = 100
+            setIndicatorColor(ContextCompat.getColor(context, R.color.accent))
+        }
+        val status = Glass.caption(this, "")
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.shots_joining)
+            .setView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(24f), dp(8f), dp(24f), 0)
+                addView(status)
+                addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12f) })
+            })
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            var made = 0
+            var skipped = 0
+            try {
+                shapes.forEachIndexed { i, format ->
+                    status.text = getString(R.string.shots_joining_shape, format.label, i + 1, shapes.size)
+                    val uris = picks.mapNotNull { t -> t.videos.firstOrNull { it.first == format.label }?.second }
+                    skipped += picks.size - uris.size
+                    if (uris.isEmpty()) return@forEachIndexed
+                    val resolution = p.outputs[format] ?: SettingsStore.load(this@ShotListActivity).outputs[format] ?: OutputResolution.FHD
+                    val (w, h) = format.sizePx(resolution)
+                    ShotAssembler.join(this@ShotListActivity, uris, w, h, "${safeName(p.name)}_assembled_${format.label.replace(':', 'x')}") {
+                        bar.setProgressCompat(it, true)
+                    }
+                    made++
+                }
+                dialog.dismiss()
+                Toast.makeText(
+                    this@ShotListActivity,
+                    getString(R.string.shots_joined, made) + if (skipped > 0) " " + getString(R.string.shots_joined_skipped) else "",
+                    Toast.LENGTH_LONG,
+                ).show()
+                startActivity(Intent(this@ShotListActivity, GalleryActivity::class.java))
+            } catch (e: Exception) {
+                dialog.dismiss()
+                Toast.makeText(this@ShotListActivity, getString(R.string.editor_failed, e.message ?: e.javaClass.simpleName), Toast.LENGTH_LONG).show()
+            }
         }
     }
+
+    private fun safeName(name: String) = name.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().replace(' ', '_').ifEmpty { "Shots" }
 
     // endregion
 

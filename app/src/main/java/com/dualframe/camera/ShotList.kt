@@ -68,6 +68,8 @@ class Shot(
 
 class ShotProject(val id: String, var name: String) {
     val shots = mutableListOf<Shot>()
+    /** The shapes (and their resolutions) every take is shot in; empty = whatever the camera has on. */
+    val outputs = LinkedHashMap<OutputFormat, OutputResolution>()
     var current = 0
     val currentShot get() = shots.getOrNull(current.coerceIn(0, (shots.size - 1).coerceAtLeast(0)))
     fun nextId() = (shots.maxOfOrNull { it.id } ?: 0L) + 1
@@ -99,8 +101,12 @@ object ShotLists {
         file(context, project.id).writeText(toJson(project).toString())
     }
 
+    /** A new shot list starts with the shapes the camera is set to now. */
     fun create(context: Context, name: String): ShotProject =
-        ShotProject(System.currentTimeMillis().toString(), name).also { save(context, it) }
+        ShotProject(System.currentTimeMillis().toString(), name).also {
+            it.outputs.putAll(SettingsStore.load(context).outputs)
+            save(context, it)
+        }
 
     fun delete(context: Context, project: ShotProject) {
         file(context, project.id).delete()
@@ -253,6 +259,7 @@ object ShotLists {
         put("id", p.id)
         put("name", p.name)
         put("current", p.current)
+        put("outputs", p.outputs.entries.joinToString(",") { "${it.key.name}:${it.value.name}" })
         put("shots", JSONArray().apply {
             p.shots.forEach { s ->
                 put(JSONObject().apply {
@@ -276,6 +283,11 @@ object ShotLists {
 
     private fun fromJson(o: JSONObject): ShotProject = ShotProject(o.getString("id"), o.optString("name", "Shot list")).apply {
         current = o.optInt("current")
+        o.optString("outputs").split(',').filter { ':' in it }.forEach { pair ->
+            val format = OutputFormat.entries.firstOrNull { it.name == pair.substringBefore(':') }
+            val resolution = OutputResolution.entries.firstOrNull { it.name == pair.substringAfter(':') }
+            if (format != null && resolution != null) outputs[format] = resolution
+        }
         val arr = o.optJSONArray("shots") ?: JSONArray()
         for (i in 0 until arr.length()) {
             val s = arr.getJSONObject(i)

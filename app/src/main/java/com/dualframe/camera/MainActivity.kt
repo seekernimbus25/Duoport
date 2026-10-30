@@ -145,6 +145,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var recordingShotTake: Pair<Long, Int>? = null
     private var lastShotTake: Pair<Long, Int>? = null
     private var shownShotId: Long? = null
+    private var shownProjectId: String? = null
     private lateinit var dualButton: ImageButton
     private lateinit var settingsButton: ImageButton
     private lateinit var formatScroller: View
@@ -546,8 +547,17 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         stallRecoveries = 0
         val lutChanged = new.activeLutId != settings.activeLutId || new.activeProfile != settings.activeProfile ||
             new.activeGrade != settings.activeGrade
+        val outputsChanged = new.outputs != settings.outputs
         settings = new
         SettingsStore.save(this, new)
+        // Shapes changed while shooting a shot list: they become that list's shapes.
+        shotProject?.takeIf { outputsChanged && new.outputs.isNotEmpty() }?.let { p ->
+            ShotLists.load(this, p.id)?.let { fresh ->
+                fresh.outputs.clear()
+                fresh.outputs.putAll(new.outputs)
+                ShotLists.save(this, fresh)
+            }
+        }
         applySettingsToUi()
         // A new LUT can mean adding or removing the live-preview effect, which needs a rebind;
         // refreshLut decides once the LUT is baked.
@@ -2675,7 +2685,20 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         findViewById<TextView>(R.id.capture_shots).setTextColor(
             ContextCompat.getColor(this, if (p != null) R.color.accent else R.color.text_secondary)
         )
+        // Starting on a shot list: shoot in its shapes.
+        if (p != null && p.id != shownProjectId && !isRecording) {
+            shownProjectId = p.id
+            if (p.outputs.isNotEmpty() && p.outputs != settings.outputs) {
+                updateSettings(settings.copy(outputs = p.outputs.toMap()), rebind = true)
+                Toast.makeText(
+                    this,
+                    getString(R.string.shots_shapes_applied, p.outputs.keys.joinToString(" + ") { it.label }),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
         if (p == null) {
+            shownProjectId = null
             Glass.show(shotBanner, false)
             if (shownShotId != null) {
                 shownShotId = null
