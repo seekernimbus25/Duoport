@@ -15,15 +15,14 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: emulator-tests
-  cancel-in-progress: true
-
 jobs:
   emulator:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[emu')
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 340
+    concurrency:
+      group: emulator-tests
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 

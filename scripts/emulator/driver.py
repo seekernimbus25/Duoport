@@ -94,9 +94,17 @@ def dump(retries=4):
             try:
                 root = ET.fromstring(xml[xml.find("<"):])
                 _last_dump = [Node(e) for e in root.iter("node")]
-                return _last_dump
             except ET.ParseError:
-                pass
+                sleep(1)
+                continue
+            # A system "isn't responding" dialog (often the emulator's launcher) hides the app.
+            if any("isn't responding" in n.text or "keeps stopping" in n.text for n in _last_dump):
+                wait = next((n for n in _last_dump if n.text in ("Wait", "Close app")), None)
+                if wait is not None:
+                    ashell(f"input tap {wait.cx} {wait.cy}")
+                    sleep(1)
+                    continue
+            return _last_dump
         sleep(1)
     _last_dump = []
     return _last_dump

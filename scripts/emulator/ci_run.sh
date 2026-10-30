@@ -13,6 +13,8 @@ adb shell settings put global transition_animation_scale 0
 adb shell settings put global animator_duration_scale 0
 adb shell settings put system screen_off_timeout 1800000
 adb shell svc power stayon true
+# No system "isn't responding" dialogs over the app.
+adb shell settings put global hide_error_dialogs 1
 adb shell wm dismiss-keyguard
 adb install -r -g "$NEW_APK" | tee "$OUT_DIR/install.txt"
 ONLY_ARGS=()
