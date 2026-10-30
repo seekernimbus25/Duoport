@@ -101,8 +101,28 @@ class DesignActivity : AppCompatActivity() {
     /** Where the next picked image goes. */
     private var imageTarget: (Uri) -> Unit = {}
     private val pickImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
-        if (picked != null) imageTarget(picked)
+        if (picked != null) {
+            keepAccess(picked)
+            imageTarget(picked)
+        }
     }
+    private val pickVideo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
+        if (picked != null) {
+            keepAccess(picked)
+            design.bgVideo = picked
+            design.background = BackgroundKind.VIDEO
+            buildPanel()
+        }
+    }
+
+    /** Saved designs point at the files you picked, so keep permission to read them. */
+    private fun keepAccess(uri: Uri) {
+        runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+    }
+
+    /** A still from the video, for the template previews. */
+    private var videoFrame: android.graphics.Bitmap? = null
+    private var stickerPack = StickerPack.THREE_D
 
     private fun dp(v: Float) = Glass.dp(this, v).toInt()
 
@@ -136,6 +156,9 @@ class DesignActivity : AppCompatActivity() {
             val aspect = w.toFloat() / h
             design.canvas = OutputFormat.entries.minByOrNull { kotlin.math.abs(it.aspect - aspect) } ?: OutputFormat.PORTRAIT_9_16
             canvasVideoAspect = aspect
+            videoFrame = runCatching {
+                r.getScaledFrameAtTime(minOf(1_000_000L, durationMs * 500), MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 640)
+            }.getOrNull()
         } catch (e: Exception) {
             // Defaults.
         } finally {
@@ -271,7 +294,9 @@ class DesignActivity : AppCompatActivity() {
     private fun renderLayer(layer: Layer, then: () -> Unit = {}) {
         lifecycleScope.launch {
             val (w, _) = design.canvasSize
-            layer.bitmap = withContext(Dispatchers.Default) { DesignArt.layer(this@DesignActivity, layer, w) }
+            val art = withContext(Dispatchers.Default) { DesignArt.layer(this@DesignActivity, layer, w) }
+            layer.frames = art?.takeIf { it.frames.size > 1 }
+            layer.bitmap = art?.frames?.firstOrNull()
             canvasView.invalidate()
             then()
         }
@@ -350,6 +375,7 @@ class DesignActivity : AppCompatActivity() {
         }
         panel.removeAllViews()
         when (tab) {
+            TAB_TEMPLATES -> templatesPanel()
             TAB_CANVAS -> canvasPanel()
             TAB_BACKGROUND -> backgroundPanel()
             TAB_VIDEO -> videoPanel()
@@ -381,6 +407,7 @@ class DesignActivity : AppCompatActivity() {
             if (it == BackgroundKind.IMAGE && design.bgImage == null) {
                 pickImageFor { u -> design.bgImage = u; refreshBackground() }
             }
+            if (it == BackgroundKind.VIDEO && design.bgVideo == null) pickVideo.launch(arrayOf("video/*"))
             refreshBackground()
             buildPanel()
         }
@@ -398,6 +425,13 @@ class DesignActivity : AppCompatActivity() {
                 pickImageFor { u -> design.bgImage = u; refreshBackground() }
             })
             BackgroundKind.BLUR -> note(getString(R.string.design_blur_note))
+            BackgroundKind.VIDEO -> {
+                panel.addView(Glass.pill(this, getString(if (design.bgVideo == null) R.string.design_pick_video else R.string.design_change_video)) {
+                    pickVideo.launch(arrayOf("video/*"))
+                })
+                toggle(getString(R.string.design_bg_video_blur), design.bgVideoBlur) { design.bgVideoBlur = it }
+                note(getString(R.string.design_bg_video_note))
+            }
         }
         note(getString(R.string.design_background_note))
     }
@@ -454,12 +488,125 @@ class DesignActivity : AppCompatActivity() {
 
     private fun stickerPanel() {
         section(getString(R.string.design_stickers))
-        val group = flow()
-        STICKERS.forEach { emoji ->
-            group.addView(Glass.pill(this, emoji) { newLayer(LayerKind.STICKER) { it.text = emoji } }.apply { textSize = 22f })
+        pills(StickerPack.entries, stickerPack, { it.label }) { stickerPack = it; buildPanel() }
+        when (stickerPack) {
+            StickerPack.EMOJI -> {
+                val group = flow()
+                STICKERS.forEach { emoji ->
+                    group.addView(Glass.pill(this, emoji) { newLayer(LayerKind.STICKER) { it.text = emoji } }.apply { textSize = 22f })
+                }
+                panel.addView(group)
+            }
+            StickerPack.THREE_D, StickerPack.ANIMATED -> stickerGrid(Stickers.ids(this, stickerPack))
+            StickerPack.YOURS -> {
+                panel.addView(Glass.pill(this, getString(R.string.design_add_gif)) {
+                    pickImageFor { u -> newLayer(LayerKind.IMAGE) { it.imageUri = u } }
+                })
+                note(getString(R.string.design_gif_note))
+            }
         }
-        panel.addView(group)
         note(getString(R.string.design_stickers_note))
+    }
+
+    /** Sticker thumbnails, loaded in the background; tap one to add it. */
+    private fun stickerGrid(ids: List<String>) {
+        val size = dp(58f)
+        val grid = android.widget.GridLayout(this).apply { columnCount = 5 }
+        val views = ids.map { id ->
+            ImageView(this).apply {
+                setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+                background = ContextCompat.getDrawable(context, R.drawable.bg_glass_card)
+                contentDescription = id.substringAfter('/').replace('_', ' ')
+                setOnClickListener { newLayer(LayerKind.STICKER) { it.asset = id; it.scale = 0.9f } }
+            }.also { grid.addView(it, android.widget.GridLayout.LayoutParams().apply { width = size; height = size; setMargins(dp(4f), dp(4f), dp(4f), dp(4f)) }) }
+        }
+        panel.addView(grid)
+        lifecycleScope.launch {
+            ids.forEachIndexed { i, id ->
+                val thumb = withContext(Dispatchers.IO) { Stickers.thumbnail(this@DesignActivity, id) }
+                views[i].setImageBitmap(thumb)
+            }
+        }
+    }
+
+    private fun templatesPanel() {
+        section(getString(R.string.design_templates))
+        note(getString(R.string.design_templates_note))
+        val templates = DesignTemplates.all(this)
+        val grid = android.widget.GridLayout(this).apply { columnCount = 3 }
+        val thumbW = dp(96f)
+        val views = templates.map { t ->
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(4f), dp(8f), dp(4f), dp(4f))
+                addView(ImageView(context).apply {
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    background = ContextCompat.getDrawable(context, R.drawable.bg_glass_card)
+                }, LinearLayout.LayoutParams(thumbW, thumbW * 16 / 9))
+                addView(Glass.caption(context, t.name).apply { gravity = Gravity.CENTER; maxLines = 2 })
+                isClickable = true
+                setOnClickListener { applyTemplate(t) }
+                if (!t.builtIn) setOnLongClickListener {
+                    androidx.appcompat.app.AlertDialog.Builder(context)
+                        .setTitle(getString(R.string.design_delete_template, t.name))
+                        .setPositiveButton(R.string.delete) { _, _ -> DesignTemplates.delete(context, t); buildPanel() }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                    true
+                }
+            }.also { grid.addView(it, android.widget.GridLayout.LayoutParams().apply { width = thumbW + dp(12f) }) }
+        }
+        panel.addView(grid)
+        lifecycleScope.launch {
+            templates.forEachIndexed { i, t ->
+                val thumb = withContext(Dispatchers.Default) {
+                    runCatching { DesignTemplates.thumbnail(this@DesignActivity, t, videoFrame, thumbW) }.getOrNull()
+                }
+                ((views[i].getChildAt(0)) as ImageView).setImageBitmap(thumb)
+            }
+        }
+        panel.addView(Glass.pill(this, getString(R.string.design_save_template)) { askTemplateName() }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14f) }
+        })
+        note(getString(R.string.design_save_template_note))
+    }
+
+    private fun askTemplateName() {
+        val input = EditText(this).apply {
+            hint = getString(R.string.design_template_name)
+            setSingleLine()
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.design_save_template)
+            .setView(FrameLayout(this).apply {
+                setPadding(dp(20f), dp(8f), dp(20f), 0)
+                addView(input)
+            })
+            .setPositiveButton(R.string.editor_save) { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { getString(R.string.design_template_default) }
+                DesignTemplates.save(this, design, name)
+                Toast.makeText(this, getString(R.string.design_template_saved, name), Toast.LENGTH_SHORT).show()
+                buildPanel()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun applyTemplate(t: DesignTemplate) {
+        DesignTemplates.applyTo(t.json, design) { nextId++ }
+        selectedLayer = null
+        refreshBackground()
+        var pending = design.layers.size
+        if (pending == 0) applyEffects()
+        design.layers.forEach { l ->
+            renderLayer(l) {
+                pending--
+                if (pending == 0) applyEffects()
+            }
+        }
+        applyEffects()
+        buildPanel()
     }
 
     private fun photoPanel() {
@@ -614,6 +761,8 @@ class DesignActivity : AppCompatActivity() {
             })
         }
         pills(LayerAnimation.entries, layer.animation, { it.label }) { layer.animation = it; buildPanel() }
+        section(getString(R.string.design_motion))
+        pills(LayerMotion.entries, layer.motion, { it.label }) { layer.motion = it; buildPanel() }
         panel.addView(flow().apply {
             setPadding(0, dp(10f), 0, 0)
             addView(Glass.pill(context, getString(R.string.design_forward)) {
@@ -757,16 +906,17 @@ class DesignActivity : AppCompatActivity() {
 
     companion object {
         private val PLAYER_ID = View.generateViewId()
-        private const val TAB_CANVAS = 0
-        private const val TAB_BACKGROUND = 1
-        private const val TAB_VIDEO = 2
-        private const val TAB_TEXT = 3
-        private const val TAB_STICKERS = 4
-        private const val TAB_PHOTOS = 5
-        private const val TAB_LOGO = 6
-        private const val TAB_CARDS = 7
-        private const val TAB_LAYER = 8
-        private val TAB_NAMES = listOf("Canvas", "Background", "Video", "Text", "Stickers", "Photos", "Logo", "Cards", "Layer")
+        private const val TAB_TEMPLATES = 0
+        private const val TAB_CANVAS = 1
+        private const val TAB_BACKGROUND = 2
+        private const val TAB_VIDEO = 3
+        private const val TAB_TEXT = 4
+        private const val TAB_STICKERS = 5
+        private const val TAB_PHOTOS = 6
+        private const val TAB_LOGO = 7
+        private const val TAB_CARDS = 8
+        private const val TAB_LAYER = 9
+        private val TAB_NAMES = listOf("Templates", "Canvas", "Background", "Video", "Text", "Stickers", "Photos", "Logo", "Cards", "Layer")
 
         private val STICKERS = listOf(
             "🔥", "✨", "💯", "❤️", "😂", "😍", "🤯", "👀", "👉", "👇", "✅", "❌", "⚡", "💰", "🚀", "🎉",

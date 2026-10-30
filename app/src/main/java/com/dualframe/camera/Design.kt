@@ -21,7 +21,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** What fills the canvas behind the video. */
-enum class BackgroundKind(val label: String) { BLUR("Blurred video"), COLOR("Colour"), GRADIENT("Gradient"), IMAGE("Photo") }
+enum class BackgroundKind(val label: String) { BLUR("Blurred video"), COLOR("Colour"), GRADIENT("Gradient"), IMAGE("Photo"), VIDEO("Video") }
 
 /** The shape the video is shown in. */
 enum class VideoMask(val label: String, val code: Float) {
@@ -32,6 +32,11 @@ enum class LayerKind { TEXT, STICKER, IMAGE }
 
 /** How a layer comes in (and goes out) during its time on screen. */
 enum class LayerAnimation(val label: String) { NONE("None"), FADE("Fade"), POP("Pop"), SLIDE_UP("Slide up") }
+
+/** A movement a layer keeps repeating while it's on screen. */
+enum class LayerMotion(val label: String) {
+    NONE("Still"), FLOAT("Float"), PULSE("Pulse"), WIGGLE("Wiggle"), BOUNCE("Bounce"), SPIN("Spin")
+}
 
 /**
  * One thing placed on the canvas: text, a sticker or a photo. Position and size are live so
@@ -46,6 +51,8 @@ class Layer(val id: Long, val kind: LayerKind) {
     var imageUri: Uri? = null
     /** Photo layers: cut the person out of the photo (transparent background). */
     var cutout = false
+    /** A bundled sticker, e.g. "3d/fire" or "animated/1f525"; null for an emoji sticker. */
+    var asset: String? = null
     @Volatile var x = 0.5f
     @Volatile var y = 0.5f
     @Volatile var scale = 1f
@@ -54,8 +61,11 @@ class Layer(val id: Long, val kind: LayerKind) {
     var startMs = 0L
     var endMs = Long.MAX_VALUE
     var animation = LayerAnimation.NONE
-    /** The layer drawn at its natural size for the canvas, ready to overlay. */
+    var motion = LayerMotion.NONE
+    /** The layer drawn at its natural size for the canvas, ready to overlay (first frame if animated). */
     @Volatile var bitmap: Bitmap? = null
+    /** All frames of an animated sticker or GIF; null for a still layer. */
+    @Volatile var frames: Frames? = null
 }
 
 /** Where and how the video sits on the canvas; read live by [DesignEffect]. */
@@ -94,6 +104,9 @@ class Design {
     var bgColor = 0xFF101014.toInt()
     var bgColor2 = 0xFF3A2C1C.toInt()
     var bgImage: Uri? = null
+    /** Another video playing on a loop behind (its sound isn't used). */
+    @Volatile var bgVideo: Uri? = null
+    @Volatile var bgVideoBlur = false
     /** The colour / gradient / photo background, drawn at canvas size; null for the blurred video. */
     @Volatile var backgroundBitmap: Bitmap? = null
     val video = VideoPlacement()
@@ -123,7 +136,7 @@ object DesignArt {
         val bw = w / 2
         val bh = h / 2
         return when (design.background) {
-            BackgroundKind.BLUR -> null
+            BackgroundKind.BLUR, BackgroundKind.VIDEO -> null
             BackgroundKind.COLOR -> Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888).apply { eraseColor(design.bgColor) }
             BackgroundKind.GRADIENT -> Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888).also { b ->
                 Canvas(b).drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), Paint().apply {
@@ -146,14 +159,26 @@ object DesignArt {
         return out
     }
 
-    /** A layer at its natural size on a canvas [canvasW] wide. */
-    fun layer(context: Context, layer: Layer, canvasW: Int): Bitmap? = when (layer.kind) {
-        LayerKind.TEXT -> text(context, layer, canvasW * 0.075f)
-        LayerKind.STICKER -> text(context, layer, canvasW * 0.2f)
-        LayerKind.IMAGE -> layer.imageUri?.let { decode(context, it, (canvasW * 0.6f).toInt()) }?.let { img ->
-            val fitted = fitInside(img, (canvasW * 0.5f).toInt())
-            if (layer.cutout) cutOutPerson(fitted) ?: fitted else fitted
+    /** A layer at its natural size on a canvas [canvasW] wide: one frame, or several if animated. */
+    fun layer(context: Context, layer: Layer, canvasW: Int): Frames? {
+        val still: Bitmap? = when (layer.kind) {
+            LayerKind.TEXT -> text(context, layer, canvasW * 0.075f)
+            LayerKind.STICKER -> {
+                val asset = layer.asset
+                if (asset != null) return Stickers.load(context, asset, (canvasW * 0.22f).toInt())
+                text(context, layer, canvasW * 0.2f)
+            }
+            LayerKind.IMAGE -> {
+                val uri = layer.imageUri ?: return null
+                // An animated GIF keeps moving (cutout doesn't apply to it).
+                if (Stickers.isGif(context, uri)) Stickers.gif(context, uri, (canvasW * 0.5f).toInt())?.let { return it }
+                decode(context, uri, (canvasW * 0.6f).toInt())?.let { img ->
+                    val fitted = fitInside(img, (canvasW * 0.5f).toInt())
+                    if (layer.cutout) cutOutPerson(fitted) ?: fitted else fitted
+                }
+            }
         }
+        return still?.let { Frames(listOf(it), 1000) }
     }
 
     private fun fitInside(src: Bitmap, maxSide: Int): Bitmap {

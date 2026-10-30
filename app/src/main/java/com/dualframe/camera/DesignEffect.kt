@@ -38,14 +38,18 @@ import kotlin.math.sin
  */
 @OptIn(UnstableApi::class)
 class DesignEffect(private val design: Design) : GlEffect {
-    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(design, useHdr)
+    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(context.applicationContext, design, useHdr)
 
-    private class Program(private val design: Design, useHdr: Boolean) :
+    private class Program(private val context: Context, private val design: Design, useHdr: Boolean) :
         BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1) {
 
         private val bgProgram = program(BG_FRAGMENT)
         private val videoProgram = program(VIDEO_FRAGMENT)
         private val copyProgram = program(COPY_FRAGMENT)
+        private val bgVideoProgram = program(BG_VIDEO_FRAGMENT)
+        private var bgVideo: BackgroundVideo? = null
+        /** A background video that couldn't be opened, so we don't retry it every frame. */
+        private var failedBgVideo: android.net.Uri? = null
         private var inW = 1
         private var inH = 1
         private var outW = 1
@@ -89,7 +93,7 @@ class DesignEffect(private val design: Design) : GlEffect {
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo[0])
                 GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
 
-                drawBackground(inputTexId)
+                if (!drawVideoBackground(presentationTimeUs)) drawBackground(inputTexId)
 
                 // The video as a quad: fitted to the canvas, then scaled, moved and rotated.
                 val inAspect = inW.toFloat() / inH
@@ -162,6 +166,43 @@ class DesignEffect(private val design: Design) : GlEffect {
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         }
 
+        /** The design's background video, if that's the background; false to fall back. */
+        private fun drawVideoBackground(presentationTimeUs: Long): Boolean {
+            val uri = design.bgVideo
+            if (design.background != BackgroundKind.VIDEO || uri == null) {
+                bgVideo?.release()
+                bgVideo = null
+                return false
+            }
+            if (bgVideo?.uri != uri) {
+                bgVideo?.release()
+                bgVideo = null
+                if (uri == failedBgVideo) return false
+                bgVideo = runCatching { BackgroundVideo(context, uri) }.getOrElse {
+                    failedBgVideo = uri
+                    return false
+                }
+            }
+            val video = bgVideo ?: return false
+            runCatching { video.update(presentationTimeUs) }
+            if (!video.hasFrame) return false
+            bgVideoProgram.use()
+            bgVideoProgram.setBufferAttribute("aFramePosition", GlUtil.getNormalizedCoordinateBounds(), 4)
+            bgVideoProgram.setBufferAttribute("aTexCoord", TEX_COORDS, 4)
+            bgVideoProgram.setSamplerTexIdUniform("uTexSampler", video.textureId, 0)
+            bgVideoProgram.setFloatsUniform("uTransform", video.transform)
+            bgVideoProgram.setFloatUniform("uRotation", video.rotation.toFloat())
+            bgVideoProgram.setFloatUniform("uBlur", if (design.bgVideoBlur) 1f else 0f)
+            val bgAspect = video.width.toFloat() / video.height
+            val canvasAspect = outW.toFloat() / outH
+            val sx = if (bgAspect > canvasAspect) canvasAspect / bgAspect else 1f
+            val sy = if (bgAspect > canvasAspect) 1f else bgAspect / canvasAspect
+            bgVideoProgram.setFloatsUniform("uCover", floatArrayOf(sx, sy))
+            bgVideoProgram.bindAttributesAndUniforms()
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            return true
+        }
+
         /** Person mask for the cutout: small upright copy -> read back -> segmentation model. */
         private fun segment(inputTexId: Int) {
             if (smallFbo == 0) {
@@ -220,6 +261,9 @@ class DesignEffect(private val design: Design) : GlEffect {
             super.release()
             segmenter?.close()
             try {
+                bgVideo?.release()
+                bgVideo = null
+                bgVideoProgram.delete()
                 bgProgram.delete()
                 videoProgram.delete()
                 copyProgram.delete()
@@ -268,6 +312,41 @@ class DesignEffect(private val design: Design) : GlEffect {
                 sum += texture2D(uTexSampler, clamp(uv + vec2(cos(a), sin(a)) * r, 0.0, 1.0)).rgb;
               }
               gl_FragColor = vec4(sum / 24.0 * 0.7, 1.0);
+            }
+        """
+
+        // The background video, straight from its decoder: upright it (the decoder hands over
+        // frames as stored), cover-fit it to the canvas, optionally blur and dim it.
+        private const val BG_VIDEO_FRAGMENT = """#extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            uniform samplerExternalOES uTexSampler;
+            uniform mat4 uTransform;
+            uniform float uRotation;
+            uniform float uBlur;
+            uniform vec2 uCover;
+            varying vec2 vTexCoord;
+            vec3 sampleAt(vec2 d) {
+              d = clamp(d, 0.0, 1.0);
+              vec2 s = d;
+              if (uRotation > 45.0 && uRotation < 135.0) s = vec2(1.0 - d.y, d.x);
+              else if (uRotation >= 135.0 && uRotation < 225.0) s = vec2(1.0 - d.x, 1.0 - d.y);
+              else if (uRotation >= 225.0) s = vec2(d.y, 1.0 - d.x);
+              return texture2D(uTexSampler, (uTransform * vec4(s, 0.0, 1.0)).xy).rgb;
+            }
+            void main() {
+              vec2 uv = (vTexCoord - 0.5) * uCover + 0.5;
+              if (uBlur < 0.5) {
+                gl_FragColor = vec4(sampleAt(uv), 1.0);
+                return;
+              }
+              vec3 sum = vec3(0.0);
+              for (int i = 0; i < 24; i++) {
+                float fi = float(i);
+                float r = sqrt(fi / 24.0) * 0.05;
+                float a = fi * 2.39996;
+                sum += sampleAt(uv + vec2(cos(a), sin(a)) * r);
+              }
+              gl_FragColor = vec4(sum / 24.0 * 0.8, 1.0);
             }
         """
 
@@ -341,7 +420,11 @@ class DesignEffect(private val design: Design) : GlEffect {
 class LayerOverlay(private val layer: Layer, private val offsetUs: Long = 0) : BitmapOverlay() {
     private val empty = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
 
-    override fun getBitmap(presentationTimeUs: Long): Bitmap = layer.bitmap ?: empty
+    override fun getBitmap(presentationTimeUs: Long): Bitmap {
+        val frames = layer.frames
+        if (frames != null && frames.frames.size > 1) return frames.at((presentationTimeUs - offsetUs) / 1000 - layer.startMs)
+        return layer.bitmap ?: empty
+    }
 
     override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings {
         val ms = (presentationTimeUs - offsetUs) / 1000
@@ -354,6 +437,17 @@ class LayerOverlay(private val layer: Layer, private val offsetUs: Long = 0) : B
         var alpha = if (visible) layer.opacity else 0f
         var scale = layer.scale
         var y = layer.y
+        var rotation = layer.rotation
+        val t = sinceStart / 1000f
+        val tau = (2 * Math.PI).toFloat()
+        when (layer.motion) {
+            LayerMotion.FLOAT -> y += 0.012f * sin(tau * t / 2.4f)
+            LayerMotion.PULSE -> scale *= 1f + 0.07f * sin(tau * t / 1.1f)
+            LayerMotion.WIGGLE -> rotation += 9f * sin(tau * t / 0.7f)
+            LayerMotion.BOUNCE -> y -= 0.025f * kotlin.math.abs(sin(tau * t / 1.4f))
+            LayerMotion.SPIN -> rotation += 360f * t / 3f
+            LayerMotion.NONE -> Unit
+        }
         when (layer.animation) {
             LayerAnimation.FADE -> alpha *= edge
             LayerAnimation.POP -> scale *= 0.6f + 0.4f * max(0f, min(1f, sinceStart / 220f))
@@ -366,7 +460,7 @@ class LayerOverlay(private val layer: Layer, private val offsetUs: Long = 0) : B
         return OverlaySettings.Builder()
             .setBackgroundFrameAnchor(layer.x * 2f - 1f, 1f - y * 2f)
             .setScale(scale, scale)
-            .setRotationDegrees(-layer.rotation)
+            .setRotationDegrees(-rotation)
             .setAlphaScale(alpha.coerceIn(0f, 1f))
             .build()
     }
