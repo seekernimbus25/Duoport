@@ -181,6 +181,22 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private var countdownRunning = false
     private val statusHandler = Handler(Looper.getMainLooper())
+    /**
+     * Preview watchdog. If the picture stops moving, find out which part stalled and turn that
+     * part off, instead of leaving a frozen viewfinder:
+     *  - the live LUT / monitoring pass stopped drawing → show the plain camera picture
+     *  - the camera itself stopped sending frames with DF-Log's tone curve → switch DF-Log off
+     */
+    private var boundAt = 0L
+    private var stallRecoveries = 0
+    private var logCurveBroken = false
+    private val stallWatch = object : Runnable {
+        override fun run() {
+            checkForStall()
+            statusHandler.postDelayed(this, 1000)
+        }
+    }
+
     private val statusTick = object : Runnable {
         override fun run() {
             updateInfoLine()
@@ -398,12 +414,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         refreshGalleryThumb()
         updateLevelSensor()
         statusHandler.post(statusTick)
+        stallRecoveries = 0
+        statusHandler.postDelayed(stallWatch, 1000)
     }
 
     override fun onPause() {
         super.onPause()
         sensorManager?.unregisterListener(levelListener)
         statusHandler.removeCallbacks(statusTick)
+        statusHandler.removeCallbacks(stallWatch)
     }
 
     /** Volume buttons start and stop recording, like a camera's record button. */
@@ -435,6 +454,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     private fun updateSettings(new: CaptureSettings, rebind: Boolean) {
+        stallRecoveries = 0
         val lutChanged = new.activeLutId != settings.activeLutId || new.activeProfile != settings.activeProfile
         settings = new
         SettingsStore.save(this, new)
@@ -961,6 +981,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun onCameraBound() {
         val cam = camera ?: return
         bound = true
+        boundAt = SystemClock.elapsedRealtime()
         val c = CameraCaps(cam)
         caps = c
         lastReadout = null
@@ -1116,6 +1137,41 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     // endregion
 
+    private fun checkForStall() {
+        val cam = camera ?: return
+        if (!bound || isRecording || highSpeedBound || countdownRunning) return
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - boundAt < 3000) return
+        // Two rescues per camera start at most, so a phone that's simply slow isn't toggled forever.
+        if (stallRecoveries >= 2) return
+
+        val previewStalled = effectAttached && now - lutProcessor.lastDrawAt > 2500
+        val cameraStalled = now - lastReadoutAt > 2500
+        if (!previewStalled && !cameraStalled) return
+        stallRecoveries++
+
+        when {
+            effectAttached -> {
+                // The GPU pass goes first: if it hangs it can also hold up the camera.
+                livePreviewBroken = true
+                Toast.makeText(this, R.string.lut_preview_unavailable, Toast.LENGTH_LONG).show()
+                bindCamera()
+            }
+            settings.activeProfile == RecordProfile.LOG && caps?.logSupported == true && !logCurveBroken -> {
+                logCurveBroken = true
+                Toast.makeText(this, R.string.log_stalled, Toast.LENGTH_LONG).show()
+                val lut = if (settings.lutId == Luts.REC709) Luts.NONE else settings.lutId
+                updateSettings(settings.copy(profile = RecordProfile.STANDARD, lutId = lut), rebind = true)
+            }
+            else -> {
+                // Unknown hiccup: reopening the camera usually clears it.
+                cam.cameraControl.cancelFocusAndMetering()
+                bindCamera()
+            }
+        }
+    }
+
     private fun applyManual() {
         val cam = camera ?: return
         val c = caps ?: return
@@ -1128,6 +1184,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             return
         }
         val fps = settings.captureFps
+        if (logCurveBroken && settings.activeProfile == RecordProfile.LOG) return
         ProControls.apply(cam, c, activeManual, settings.activeProfile, fps, lastReadout, priorityIso, priorityShutterNs)
         updateReadouts()
         openParam?.let { buildControlPanel(it) }
@@ -1561,7 +1618,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 RecordProfile.entries.forEach { profile ->
                     val enabled = when (profile) {
                         RecordProfile.STANDARD -> true
-                        RecordProfile.LOG -> c.logSupported
+                        RecordProfile.LOG -> c.logSupported && !logCurveBroken
                         RecordProfile.HLG -> hlgSupported && !settings.dual
                     }
                     pills.addView(Glass.pill(this, profile.label, profile == settings.profile) {
@@ -1592,7 +1649,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                         ).apply { topMargin = dp(10f).toInt() }
                     })
                 }
-                if (!c.logSupported) note(getString(R.string.log_unsupported))
+                if (!c.logSupported || logCurveBroken) note(getString(R.string.log_unsupported))
                 if (!hlgSupported) note(getString(R.string.hlg_unsupported))
             }
             Param.LUT -> {

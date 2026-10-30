@@ -45,7 +45,6 @@ class LutPreviewProcessor : SurfaceProcessor {
     private var pbuffer: EGLSurface = EGL14.EGL_NO_SURFACE
 
     private var program = 0
-    private var cameraTexture = 0
     private var lutTexture = 0
     private var lutSize = 0
     private var aPosition = 0
@@ -62,6 +61,13 @@ class LutPreviewProcessor : SurfaceProcessor {
     private var inputHeight = 1
 
     private var input: SurfaceTexture? = null
+
+    /** Each camera input gets its own GL texture, so an old one being torn down never touches the new. */
+    private val inputTextures = HashMap<SurfaceTexture, Int>()
+
+    /** When a frame was last drawn to the screen (elapsedRealtime), so a stalled preview can be noticed. */
+    @Volatile var lastDrawAt = 0L
+        private set
     private val outputs = LinkedHashMap<SurfaceOutput, EGLSurface>()
     private val surfaceMatrix = FloatArray(16)
     private val textureMatrix = FloatArray(16)
@@ -111,7 +117,10 @@ class LutPreviewProcessor : SurfaceProcessor {
             request.willNotProvideSurface()
             return
         }
-        val texture = SurfaceTexture(cameraTexture)
+        EGL14.eglMakeCurrent(display, pbuffer, pbuffer, context)
+        val textureId = createCameraTexture()
+        val texture = SurfaceTexture(textureId)
+        inputTextures[texture] = textureId
         texture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
         inputWidth = request.resolution.width
         inputHeight = request.resolution.height
@@ -121,6 +130,12 @@ class LutPreviewProcessor : SurfaceProcessor {
             if (input == texture) input = null
             texture.release()
             surface.release()
+            inputTextures.remove(texture)?.let { id ->
+                if (!released) {
+                    EGL14.eglMakeCurrent(display, pbuffer, pbuffer, context)
+                    GLES30.glDeleteTextures(1, intArrayOf(id), 0)
+                }
+            }
         }
         texture.setOnFrameAvailableListener({ drawFrame(it) }, handler)
         input = texture
@@ -136,6 +151,13 @@ class LutPreviewProcessor : SurfaceProcessor {
             output.close()
         }
         val eglSurface = EGL14.eglCreateWindowSurface(display, config, surface, intArrayOf(EGL14.EGL_NONE), 0)
+        if (eglSurface == EGL14.EGL_NO_SURFACE) {
+            output.close()
+            return
+        }
+        // Never wait for the screen to take a frame: if the preview surface is being swapped
+        // out (camera restarting), a blocking swap would freeze this thread and the preview.
+        if (EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context)) EGL14.eglSwapInterval(display, 0)
         outputs[output] = eglSurface
     }
 
@@ -143,14 +165,21 @@ class LutPreviewProcessor : SurfaceProcessor {
 
     private fun drawFrame(texture: SurfaceTexture) {
         if (released || texture != input) return
+        val textureId = inputTextures[texture] ?: return
         EGL14.eglMakeCurrent(display, pbuffer, pbuffer, context)
-        texture.updateTexImage()
+        try {
+            texture.updateTexImage()
+        } catch (e: RuntimeException) {
+            // The surface was abandoned between the frame callback and now.
+            return
+        }
         texture.getTransformMatrix(surfaceMatrix)
         pendingLut?.let {
             uploadLut(it)
             pendingLut = null
         }
-        if (lutTexture == 0) return
+        // Never sit on a blank preview waiting for a LUT: draw through a do-nothing one.
+        if (lutTexture == 0) uploadLut(Luts.identity)
 
         for ((output, eglSurface) in outputs) {
             if (!EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context)) continue
@@ -159,7 +188,7 @@ class LutPreviewProcessor : SurfaceProcessor {
             GLES30.glUseProgram(program)
 
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-            GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTexture)
+            GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, lutTexture)
             GLES30.glUniformMatrix4fv(uTexMatrix, 1, false, textureMatrix, 0)
@@ -180,8 +209,19 @@ class LutPreviewProcessor : SurfaceProcessor {
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
 
             EGLExt.eglPresentationTimeANDROID(display, eglSurface, texture.timestamp)
-            EGL14.eglSwapBuffers(display, eglSurface)
+            if (EGL14.eglSwapBuffers(display, eglSurface)) lastDrawAt = android.os.SystemClock.elapsedRealtime()
         }
+    }
+
+    private fun createCameraTexture(): Int {
+        val ids = IntArray(1)
+        GLES30.glGenTextures(1, ids, 0)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, ids[0])
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        return ids[0]
     }
 
     private fun uploadLut(cube: LutCube) {
@@ -247,15 +287,6 @@ class LutPreviewProcessor : SurfaceProcessor {
         GLES30.glUseProgram(program)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uCamera"), 0)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uLut"), 1)
-
-        val ids = IntArray(1)
-        GLES30.glGenTextures(1, ids, 0)
-        cameraTexture = ids[0]
-        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTexture)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
     }
 
     private fun buildProgram(vertex: String, fragment: String): Int {

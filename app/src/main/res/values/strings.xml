@@ -126,4 +126,5 @@
     <string name="phone_fps">Frame rates</string>
     <string name="phone_slowmo">Slow motion</string>
     <string name="phone_dual">Front + Back together</string>
+    <string name="log_stalled">This phone\'s camera stops when given DF-Log\'s tone curve, so DF-Log is off for now. Use HLG 10-bit for grading instead.</string>
 </resources>
