@@ -15,6 +15,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.SingleColorLut
+import androidx.media3.effect.SpeedChangeEffect
 import androidx.media3.effect.VideoCompositorSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
@@ -63,6 +64,8 @@ data class ExportJob(
     /** The recording is HLG HDR: tone-map to standard range (LUTs and compositing are SDR). */
     val hdrSource: Boolean,
     val codec: VideoCodec,
+    /** 1 = real time; otherwise time-lapse / hyperlapse speed-up (sound is dropped). */
+    val speed: Int = 1,
     val quality: ExportQuality,
     val keepOriginal: Boolean,
     val baseName: String,
@@ -177,7 +180,13 @@ object DualExporter {
             job.lut?.let { listOf<Effect>(SingleColorLut.createFromCube(it.toArgbCube())) } ?: emptyList()
         val inset = job.inset
 
-        val mainEffects = mutableListOf<Effect>(
+        // Time-lapse first, so later effects see the already sped-up timeline.
+        fun speedEffects(): List<Effect> =
+            if (job.speed > 1) listOf(SpeedChangeEffect(job.speed.toFloat())) else emptyList()
+
+        val mainEffects = mutableListOf<Effect>()
+        mainEffects += speedEffects()
+        mainEffects += listOf(
             crop.toMedia3Crop(),
             Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT),
         )
@@ -185,6 +194,7 @@ object DualExporter {
 
         if (inset == null) {
             val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(job.main.file)))
+                .setRemoveAudio(job.speed > 1)
                 .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
                 .build()
             val composition = Composition.Builder(EditedMediaItemSequence(item))
@@ -202,9 +212,12 @@ object DualExporter {
         mainEffects += InsetCutoutEffect(insetRect, border)
 
         val mainItem = EditedMediaItem.Builder(clippedItem(job.main, inset.durationNs))
+            .setRemoveAudio(job.speed > 1)
             .setEffects(Effects(emptyList<AudioProcessor>(), mainEffects))
             .build()
-        val insetEffects = mutableListOf<Effect>(
+        val insetEffects = mutableListOf<Effect>()
+        insetEffects += speedEffects()
+        insetEffects += listOf<Effect>(
             Presentation.createForWidthAndHeight(insetW, insetH, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP),
         )
         insetEffects += lutEffects()

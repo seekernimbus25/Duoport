@@ -32,6 +32,27 @@
     <string name="camera_error">Couldn\'t start the camera: %1$s</string>
     <string name="record_failed">Recording failed (code %1$d). Please try again.</string>
 
+    <string name="torch">Torch</string>
+    <string name="self_timer">Self-timer</string>
+    <string name="timer_off">Self-timer off</string>
+    <string name="timer_on">Recording starts %1$d s after you press record</string>
+    <string name="night">Night</string>
+    <string name="night_on">Night: the camera brightens dark scenes (may lower the frame rate)</string>
+    <string name="night_off">Night off</string>
+    <string name="night_needs_auto">Night needs automatic exposure. Set shutter and ISO to Auto first.</string>
+    <string name="ae_af_lock">AE / AF LOCK  ✕</string>
+    <string name="exposure_meter">EXP %1$s</string>
+    <string name="shutter_angle">Show as shutter angle (180°)</string>
+    <string name="false_color">False colour (exposure map)</string>
+    <string name="histogram">Histogram + exposure meter</string>
+    <string name="level">Horizon level</string>
+    <string name="center_mark">Centre mark</string>
+    <string name="safe_area">Safe area (90%)</string>
+    <string name="grid">Grid (thirds)</string>
+    <string name="monitor_note">Monitoring aids are only drawn on screen, never recorded. Long-press the picture to lock exposure and focus.</string>
+    <string name="monitor_unavailable">Zebras, peaking and false colour aren\'t available in Front + Back or HLG HDR.</string>
+    <string name="lut_bake">Bake LUT into videos (off = for viewing only)</string>
+
     <!-- LUTs -->
     <string name="import_lut">+ Import .cube</string>
     <string name="lut_imported">LUT imported</string>

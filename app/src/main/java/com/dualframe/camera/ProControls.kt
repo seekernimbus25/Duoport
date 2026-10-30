@@ -32,9 +32,18 @@ data class ManualState(
     val evIndex: Int = 0,
     val whiteBalance: WhiteBalance = WhiteBalance.AUTO,
     val whiteBalanceLocked: Boolean = false,
+    /** Manual colour temperature; overrides [whiteBalance] presets when set. */
+    val kelvin: Int? = null,
+    /** -50 (green) .. +50 (magenta), used with [kelvin]. */
+    val tint: Int = 0,
     val focusDiopters: Float? = null,
+    /** Exposure held where it is (long-press on the picture), while still on auto. */
+    val aeLocked: Boolean = false,
 ) {
     val manualExposure get() = iso != null || shutterNs != null
+    /** Exactly one of shutter / ISO is set: the other one follows the light (priority mode). */
+    val shutterPriority get() = shutterNs != null && iso == null
+    val isoPriority get() = iso != null && shutterNs == null
     val isAllAuto get() = this == ManualState()
 }
 
@@ -63,6 +72,11 @@ class CameraCaps(camera: Camera) {
         val modes = info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: IntArray(0)
         WhiteBalance.entries.filter { it == WhiteBalance.AUTO || it.awbMode in modes }
     }
+
+    @Suppress("UNCHECKED_CAST")
+    val kelvinWb = KelvinWhiteBalance { key -> info.getCameraCharacteristic(key as CameraCharacteristics.Key<Any>) }
+
+    val hasFlash: Boolean = camera.cameraInfo.hasFlashUnit()
 
     val logSupported: Boolean =
         (info.getCameraCharacteristic(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: IntArray(0))
@@ -102,6 +116,15 @@ class CameraCaps(camera: Camera) {
         val SHUTTER_DENOMINATORS = listOf(
             24, 25, 30, 48, 50, 60, 100, 120, 125, 180, 250, 500, 1000, 2000, 4000, 8000,
         )
+        /** Shutter angles a cinema camera offers. */
+        val SHUTTER_ANGLES = listOf(11.25f, 22.5f, 45f, 90f, 144f, 172.8f, 180f, 270f, 360f)
+    }
+
+    /** Shutter angles that fit the sensor at [fps], with their exposure time. */
+    fun shutterAngles(fps: Int): List<Pair<Float, Long>> {
+        val r = shutterRange ?: return emptyList()
+        return SHUTTER_ANGLES.map { it to (it / 360.0 * 1_000_000_000.0 / fps).toLong() }
+            .filter { it.second in r.lower..r.upper }
     }
 }
 
@@ -109,6 +132,10 @@ class CameraCaps(camera: Camera) {
 @OptIn(ExperimentalCamera2Interop::class)
 object ProControls {
 
+    /**
+     * [priorityIso] / [priorityShutterNs] are the values the exposure loop picked for whichever
+     * side is still on auto in shutter- or ISO-priority mode (Camera2 has no such mode itself).
+     */
     fun apply(
         camera: Camera,
         caps: CameraCaps,
@@ -116,16 +143,22 @@ object ProControls {
         profile: RecordProfile,
         fps: Int,
         lastReadout: Readout?,
+        priorityIso: Int? = null,
+        priorityShutterNs: Long? = null,
     ) {
         val options = CaptureRequestOptions.Builder()
 
         if (state.manualExposure && caps.manualSensor) {
-            // Camera2 has no shutter- or ISO-priority mode, so whichever value is still "auto"
-            // is frozen at what the camera was using, keeping brightness where it was.
+            // Until the exposure loop has an opinion, start from what the camera was using,
+            // scaled so the picture keeps its brightness.
             val measuredIso = lastReadout?.iso ?: 100
             val measuredShutter = lastReadout?.shutterNs ?: (1_000_000_000L / (fps * 2))
-            val shutter = state.shutterNs ?: measuredShutter
-            val iso = state.iso ?: run {
+            val maxShutter = 1_000_000_000L / fps
+            val shutter = (state.shutterNs ?: priorityShutterNs ?: run {
+                val iso = state.iso ?: measuredIso
+                (measuredShutter * measuredIso.toDouble() / iso).toLong()
+            }).let { ns -> caps.shutterRange?.let { ns.coerceIn(it.lower, minOf(it.upper, maxShutter)) } ?: ns }
+            val iso = state.iso ?: priorityIso ?: run {
                 val scaled = measuredIso * measuredShutter.toDouble() / shutter
                 val range = caps.isoRange
                 if (range == null) measuredIso else scaled.roundToInt().coerceIn(range.lower, range.upper)
@@ -136,7 +169,20 @@ object ProControls {
             options.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, 1_000_000_000L / fps)
         }
 
-        if (state.whiteBalance != WhiteBalance.AUTO) {
+        if (!state.manualExposure && state.aeLocked) {
+            options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
+        }
+
+        val kelvin = state.kelvin?.let { caps.kelvinWb.solve(it, state.tint) }
+        if (kelvin != null) {
+            options.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            options.setCaptureRequestOption(
+                CaptureRequest.COLOR_CORRECTION_MODE,
+                CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX,
+            )
+            options.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_GAINS, kelvin.gains)
+            options.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_TRANSFORM, kelvin.transform)
+        } else if (state.whiteBalance != WhiteBalance.AUTO) {
             options.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, state.whiteBalance.awbMode)
         }
         if (state.whiteBalanceLocked) {
@@ -175,6 +221,22 @@ object Labels {
     }
 
     fun iso(iso: Int?) = if (iso == null) "--" else "$iso"
+
+    /** 180° rather than 1/60: how cinema cameras describe motion blur. */
+    fun angle(ns: Long?, fps: Int): String {
+        if (ns == null || ns <= 0) return "--"
+        val deg = ns / 1e9 * fps * 360
+        return if (abs(deg - deg.roundToInt()) < 0.05) "${deg.roundToInt()}°" else "%.1f°".format(deg)
+    }
+
+    fun kelvin(k: Int) = "${k}K"
+
+    /** Exposure offset like a light meter: "+0.7", "−1.3", "±0". */
+    fun stops(v: Float): String = when {
+        abs(v) < 0.05f -> "±0"
+        v > 0 -> "+%.1f".format(v)
+        else -> "−%.1f".format(-v)
+    }
 
     fun focus(diopters: Float?): String = when {
         diopters == null -> "--"

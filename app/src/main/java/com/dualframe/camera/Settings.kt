@@ -106,6 +106,53 @@ enum class RecordProfile(val label: String, val description: String) {
     HLG("HLG HDR", "10-bit HDR (HEVC). The original is kept as HDR; your cut videos are converted to standard range."),
 }
 
+enum class Stabilization(val label: String, val description: String) {
+    OFF("Off", "Widest picture, no digital cropping"),
+    STANDARD("Standard", "Smooths handheld shake, slightly tighter picture"),
+    ENHANCED("Enhanced", "Strongest smoothing for walking shots (like Action mode), tighter picture"),
+}
+
+/** Bitrate of the camera recording itself (the master the videos are cut from). */
+enum class RecordBitrate(val label: String, val factor: Float) {
+    STANDARD("Standard", 1.0f),
+    HIGH("High", 1.6f),
+    MAX("Max", 2.4f);
+
+    fun bitsPerSecond(resolution: CameraResolution): Int {
+        val base = when (resolution) {
+            CameraResolution.UHD -> 45_000_000
+            CameraResolution.FHD -> 17_000_000
+            CameraResolution.HD -> 10_000_000
+        }
+        return (base * factor).toInt()
+    }
+}
+
+enum class PeakColor(val label: String, val r: Float, val g: Float, val b: Float) {
+    RED("Red", 1f, 0.2f, 0.2f),
+    GREEN("Green", 0.25f, 1f, 0.35f),
+    BLUE("Blue", 0.3f, 0.6f, 1f),
+    YELLOW("Yellow", 1f, 0.9f, 0.2f),
+    WHITE("White", 1f, 1f, 1f),
+}
+
+/** Exposure and focus aids drawn over the preview only (never recorded). */
+data class Monitoring(
+    /** Zebra stripes above this brightness in percent; 0 = off. */
+    val zebra: Int = 0,
+    /** Focus peaking: 0 off, 1 low, 2 high sensitivity. */
+    val peaking: Int = 0,
+    val peakColor: PeakColor = PeakColor.RED,
+    val falseColor: Boolean = false,
+    val histogram: Boolean = true,
+    val level: Boolean = false,
+    val centerMark: Boolean = false,
+    val safeArea: Boolean = false,
+) {
+    /** Anything that needs the GPU preview pass. */
+    val needsShader get() = zebra > 0 || peaking > 0 || falseColor
+}
+
 enum class VideoCodec(val label: String, val mimeType: String) {
     H264("H.264", "video/avc"),
     HEVC("HEVC", "video/hevc"),
@@ -126,7 +173,25 @@ data class CaptureSettings(
     /** See [Luts]: "none", a built-in id, or "custom:<file name>". */
     val lutId: String = Luts.NONE,
     val codec: VideoCodec = VideoCodec.H264,
-    val stabilization: Boolean = false,
+    val monitoring: Monitoring = Monitoring(),
+    /** Show and set shutter as an angle (180°) instead of a time (1/60). */
+    val shutterAngle: Boolean = false,
+    /** False: the LUT is only for viewing; the videos stay as recorded. */
+    val bakeLut: Boolean = true,
+    val recordBitrate: RecordBitrate = RecordBitrate.HIGH,
+    val volumeKeysRecord: Boolean = true,
+    val mirrorFront: Boolean = true,
+    /** File names start with this, then the take number. */
+    val clipName: String = "DualFrame",
+    /** Self-timer before recording starts, in seconds (0 = off). */
+    val timerSeconds: Int = 0,
+    val stabilization: Stabilization = Stabilization.OFF,
+    /** Low Light Boost: the camera brightens dark scenes (may lower the frame rate). */
+    val night: Boolean = false,
+    /** 1 = normal; otherwise the finished videos play this many times faster (time-lapse). */
+    val timelapse: Int = 1,
+    /** Time-lapse while walking/driving: forces the strongest stabilization while recording. */
+    val hyperlapse: Boolean = false,
     val grid: Boolean = false,
     val keepOriginal: Boolean = false,
     val dual: Boolean = false,
@@ -135,9 +200,15 @@ data class CaptureSettings(
 ) {
     val isPro get() = mode == CaptureMode.PRO
 
+    val isHyperlapse get() = hyperlapse && timelapse > 1
+
+    /** Hyperlapse needs the steadiest picture the phone can give. */
+    val effectiveStabilization get() = if (isHyperlapse) Stabilization.ENHANCED else stabilization
+
     /** Auto mode always records the phone's own look, whatever Pro is set to. */
     val activeProfile get() = if (isPro) profile else RecordProfile.STANDARD
     val activeLutId get() = if (isPro) lutId else Luts.NONE
+    val activeMonitoring get() = if (isPro) monitoring else Monitoring(histogram = false)
 
     /** Formats in a fixed, predictable order. */
     val orderedFormats: List<OutputFormat> get() = OutputFormat.entries.filter { it in outputs }
@@ -169,7 +240,27 @@ object SettingsStore {
             profile = enumOr(p.getString("profile", null), d.profile),
             lutId = p.getString("lutId", null) ?: d.lutId,
             codec = enumOr(p.getString("codec", null), d.codec),
-            stabilization = p.getBoolean("stabilization", d.stabilization),
+            monitoring = Monitoring(
+                zebra = p.getInt("zebra", d.monitoring.zebra),
+                peaking = p.getInt("peaking", d.monitoring.peaking),
+                peakColor = enumOr(p.getString("peakColor", null), d.monitoring.peakColor),
+                falseColor = p.getBoolean("falseColor", d.monitoring.falseColor),
+                histogram = p.getBoolean("histogram", d.monitoring.histogram),
+                level = p.getBoolean("level", d.monitoring.level),
+                centerMark = p.getBoolean("centerMark", d.monitoring.centerMark),
+                safeArea = p.getBoolean("safeArea", d.monitoring.safeArea),
+            ),
+            shutterAngle = p.getBoolean("shutterAngle", d.shutterAngle),
+            bakeLut = p.getBoolean("bakeLut", d.bakeLut),
+            recordBitrate = enumOr(p.getString("recordBitrate", null), d.recordBitrate),
+            volumeKeysRecord = p.getBoolean("volumeKeysRecord", d.volumeKeysRecord),
+            mirrorFront = p.getBoolean("mirrorFront", d.mirrorFront),
+            clipName = p.getString("clipName", null) ?: d.clipName,
+            timerSeconds = p.getInt("timerSeconds", d.timerSeconds),
+            stabilization = enumOr(p.getString("stabilizationMode", null), d.stabilization),
+            night = p.getBoolean("night", d.night),
+            timelapse = p.getInt("timelapse", d.timelapse),
+            hyperlapse = p.getBoolean("hyperlapse", d.hyperlapse),
             grid = p.getBoolean("grid", d.grid),
             keepOriginal = p.getBoolean("keepOriginal", d.keepOriginal),
             dual = p.getBoolean("dual", d.dual),
@@ -189,13 +280,39 @@ object SettingsStore {
             .putString("profile", s.profile.name)
             .putString("lutId", s.lutId)
             .putString("codec", s.codec.name)
-            .putBoolean("stabilization", s.stabilization)
+            .putInt("zebra", s.monitoring.zebra)
+            .putInt("peaking", s.monitoring.peaking)
+            .putString("peakColor", s.monitoring.peakColor.name)
+            .putBoolean("falseColor", s.monitoring.falseColor)
+            .putBoolean("histogram", s.monitoring.histogram)
+            .putBoolean("level", s.monitoring.level)
+            .putBoolean("centerMark", s.monitoring.centerMark)
+            .putBoolean("safeArea", s.monitoring.safeArea)
+            .putBoolean("shutterAngle", s.shutterAngle)
+            .putBoolean("bakeLut", s.bakeLut)
+            .putString("recordBitrate", s.recordBitrate.name)
+            .putBoolean("volumeKeysRecord", s.volumeKeysRecord)
+            .putBoolean("mirrorFront", s.mirrorFront)
+            .putString("clipName", s.clipName)
+            .putInt("timerSeconds", s.timerSeconds)
+            .putString("stabilizationMode", s.stabilization.name)
+            .putBoolean("night", s.night)
+            .putInt("timelapse", s.timelapse)
+            .putBoolean("hyperlapse", s.hyperlapse)
             .putBoolean("grid", s.grid)
             .putBoolean("keepOriginal", s.keepOriginal)
             .putBoolean("dual", s.dual)
             .putString("insetCorner", s.insetCorner.name)
             .putInt("lensFacing", s.lensFacing)
             .apply()
+    }
+
+    /** Take numbers keep counting across launches, like a slate. */
+    fun nextTake(context: Context): Int {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val take = p.getInt("take", 0) + 1
+        p.edit().putInt("take", take).apply()
+        return take
     }
 
     private inline fun <reified E : Enum<E>> enumOr(name: String?, default: E): E =

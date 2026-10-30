@@ -87,6 +87,9 @@ class LutCube(val size: Int, val rgb: FloatArray) {
 }
 
 object Luts {
+    /** A LUT that changes nothing, for when only the monitoring aids need the shader. */
+    val identity: LutCube by lazy { LutCube.bake(2) { it } }
+
     const val NONE = "none"
     /** Only offered with DF-Log: just turns the flat log picture back into normal contrast. */
     const val REC709 = "rec709"

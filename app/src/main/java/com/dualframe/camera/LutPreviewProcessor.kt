@@ -24,7 +24,8 @@ import java.nio.FloatBuffer
 import java.util.concurrent.Executor
 
 /**
- * Shows the chosen LUT live in the viewfinder. Camera frames arrive on an OpenGL texture, a
+ * Shows the chosen LUT live in the viewfinder, plus the monitoring aids a cinema camera has:
+ * zebra stripes, focus peaking and false colour. Camera frames arrive on an OpenGL texture, a
  * shader looks each pixel up in a 3D LUT texture, and the result is drawn to the preview.
  * Only the preview goes through here: the recording stays untouched and the same LUT is
  * applied when the videos are made, so the original can always be re-graded.
@@ -52,6 +53,13 @@ class LutPreviewProcessor : SurfaceProcessor {
     private var uTexMatrix = 0
     private var uLutScale = 0
     private var uLutOffset = 0
+    private var uTexel = 0
+    private var uZebra = 0
+    private var uPeak = 0
+    private var uPeakColor = 0
+    private var uFalseColor = 0
+    private var inputWidth = 1
+    private var inputHeight = 1
 
     private var input: SurfaceTexture? = null
     private val outputs = LinkedHashMap<SurfaceOutput, EGLSurface>()
@@ -59,6 +67,7 @@ class LutPreviewProcessor : SurfaceProcessor {
     private val textureMatrix = FloatArray(16)
 
     @Volatile private var pendingLut: LutCube? = null
+    @Volatile private var monitoring = Monitoring(histogram = false)
     private var released = false
 
     init {
@@ -68,6 +77,11 @@ class LutPreviewProcessor : SurfaceProcessor {
     /** Swap the LUT; takes effect on the next frame. */
     fun setLut(cube: LutCube) {
         pendingLut = cube
+    }
+
+    /** Zebras / peaking / false colour; takes effect on the next frame. */
+    fun setMonitoring(value: Monitoring) {
+        monitoring = value
     }
 
     fun release() {
@@ -99,6 +113,8 @@ class LutPreviewProcessor : SurfaceProcessor {
         }
         val texture = SurfaceTexture(cameraTexture)
         texture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
+        inputWidth = request.resolution.width
+        inputHeight = request.resolution.height
         val surface = Surface(texture)
         request.provideSurface(surface, executor) {
             texture.setOnFrameAvailableListener(null)
@@ -150,6 +166,12 @@ class LutPreviewProcessor : SurfaceProcessor {
             // Sample LUT texel centres so the ends of the range map exactly.
             GLES30.glUniform1f(uLutScale, (lutSize - 1f) / lutSize)
             GLES30.glUniform1f(uLutOffset, 0.5f / lutSize)
+            val m = monitoring
+            GLES30.glUniform2f(uTexel, 1f / inputWidth, 1f / inputHeight)
+            GLES30.glUniform1f(uZebra, if (m.zebra > 0) m.zebra.coerceAtMost(99) / 100f else 0f)
+            GLES30.glUniform1f(uPeak, when (m.peaking) { 1 -> 0.32f; 2 -> 0.18f; else -> 0f })
+            GLES30.glUniform3f(uPeakColor, m.peakColor.r, m.peakColor.g, m.peakColor.b)
+            GLES30.glUniform1f(uFalseColor, if (m.falseColor) 1f else 0f)
 
             GLES30.glEnableVertexAttribArray(aPosition)
             GLES30.glVertexAttribPointer(aPosition, 2, GLES30.GL_FLOAT, false, 0, QUAD)
@@ -217,6 +239,11 @@ class LutPreviewProcessor : SurfaceProcessor {
         uTexMatrix = GLES30.glGetUniformLocation(program, "uTexMatrix")
         uLutScale = GLES30.glGetUniformLocation(program, "uLutScale")
         uLutOffset = GLES30.glGetUniformLocation(program, "uLutOffset")
+        uTexel = GLES30.glGetUniformLocation(program, "uTexel")
+        uZebra = GLES30.glGetUniformLocation(program, "uZebra")
+        uPeak = GLES30.glGetUniformLocation(program, "uPeak")
+        uPeakColor = GLES30.glGetUniformLocation(program, "uPeakColor")
+        uFalseColor = GLES30.glGetUniformLocation(program, "uFalseColor")
         GLES30.glUseProgram(program)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uCamera"), 0)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uLut"), 1)
@@ -279,6 +306,8 @@ void main() {
 }
 """
 
+        // Zebras and false colour judge the camera's own signal (before the LUT), like a
+        // camera monitor. Peaking uses a Sobel edge filter on brightness.
         const val FRAGMENT_SHADER = """#version 300 es
 #extension GL_OES_EGL_image_external_essl3 : require
 precision mediump float;
@@ -286,11 +315,46 @@ uniform samplerExternalOES uCamera;
 uniform mediump sampler3D uLut;
 uniform float uLutScale;
 uniform float uLutOffset;
+uniform vec2 uTexel;
+uniform float uZebra;
+uniform float uPeak;
+uniform vec3 uPeakColor;
+uniform float uFalseColor;
 in vec2 vTexCoord;
 out vec4 outColor;
+
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+float lumaAt(vec2 offset) { return luma(texture(uCamera, vTexCoord + offset * uTexel).rgb); }
+
+vec3 falseColor(float y) {
+  if (y < 0.025) return vec3(0.45, 0.0, 0.65);           // crushed black
+  if (y < 0.10) return vec3(0.05, 0.3, 1.0);             // deep shadow
+  if (y > 0.38 && y < 0.44) return vec3(0.15, 0.8, 0.25); // middle grey
+  if (y > 0.55 && y < 0.62) return vec3(1.0, 0.55, 0.68); // skin
+  if (y > 0.97) return vec3(1.0, 0.12, 0.12);            // clipping
+  if (y > 0.93) return vec3(1.0, 0.88, 0.15);            // about to clip
+  return vec3(y * 0.85);
+}
+
 void main() {
-  vec3 c = clamp(texture(uCamera, vTexCoord).rgb, 0.0, 1.0);
-  outColor = vec4(texture(uLut, c * uLutScale + uLutOffset).rgb, 1.0);
+  vec3 cam = clamp(texture(uCamera, vTexCoord).rgb, 0.0, 1.0);
+  float y = luma(cam);
+  vec3 c = uFalseColor > 0.5 ? falseColor(y) : texture(uLut, cam * uLutScale + uLutOffset).rgb;
+
+  if (uPeak > 0.0) {
+    float tl = lumaAt(vec2(-1.0, -1.0)); float t = lumaAt(vec2(0.0, -1.0)); float tr = lumaAt(vec2(1.0, -1.0));
+    float l = lumaAt(vec2(-1.0, 0.0));                                       float r = lumaAt(vec2(1.0, 0.0));
+    float bl = lumaAt(vec2(-1.0, 1.0)); float b = lumaAt(vec2(0.0, 1.0));  float br = lumaAt(vec2(1.0, 1.0));
+    float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+    float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
+    if (length(vec2(gx, gy)) > uPeak) c = mix(c, uPeakColor, 0.85);
+  }
+
+  if (uZebra > 0.0 && y >= uZebra) {
+    float stripe = mod(gl_FragCoord.x + gl_FragCoord.y, 16.0);
+    c = stripe < 6.0 ? mix(c, vec3(1.0), 0.8) : mix(c, vec3(0.0), 0.55);
+  }
+  outColor = vec4(c, 1.0);
 }
 """
     }

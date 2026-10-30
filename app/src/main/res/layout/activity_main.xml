@@ -75,27 +75,32 @@
                 android:src="@drawable/ic_picture_in_picture_alt"
                 android:tint="@color/icon_tint" />
 
-            <!-- Shown while recording. -->
-            <LinearLayout
-                android:id="@+id/timer_row"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:background="@drawable/bg_timer"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingHorizontal="14dp"
-                android:paddingVertical="6dp"
-                android:visibility="gone">
+            <ImageButton
+                android:id="@+id/night_button"
+                style="@style/DF.IconButton"
+                android:layout_gravity="center_vertical|start"
+                android:layout_marginStart="116dp"
+                android:contentDescription="@string/night"
+                android:src="@drawable/ic_bedtime"
+                android:tint="@color/icon_tint" />
 
-                <TextView
-                    android:id="@+id/timer"
-                    style="@style/DF.Text.Value"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="00:00:00"
-                    android:textSize="16sp" />
-            </LinearLayout>
+            <ImageButton
+                android:id="@+id/torch_button"
+                style="@style/DF.IconButton"
+                android:layout_gravity="center_vertical|end"
+                android:layout_marginEnd="116dp"
+                android:contentDescription="@string/torch"
+                android:src="@drawable/ic_flashlight_off"
+                android:tint="@color/icon_tint" />
+
+            <ImageButton
+                android:id="@+id/timer_button"
+                style="@style/DF.IconButton"
+                android:layout_gravity="center_vertical|end"
+                android:layout_marginEnd="58dp"
+                android:contentDescription="@string/self_timer"
+                android:src="@drawable/ic_timer_off"
+                android:tint="@color/icon_tint" />
 
             <ImageButton
                 android:id="@+id/settings_button"
@@ -104,6 +109,28 @@
                 android:contentDescription="@string/settings"
                 android:src="@drawable/ic_tune" />
         </FrameLayout>
+
+        <!-- Shown while recording, in place of the format pills. -->
+        <LinearLayout
+            android:id="@+id/timer_row"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:background="@drawable/bg_timer"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="6dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/timer"
+                style="@style/DF.Text.Value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00:00"
+                android:textSize="16sp" />
+        </LinearLayout>
 
         <!-- The videos being made. Tap one to move its frame. -->
         <HorizontalScrollView
@@ -137,6 +164,51 @@
                 android:paddingHorizontal="12dp" />
         </HorizontalScrollView>
 
+        <!-- Pro: histogram and how far exposure is from a balanced picture. -->
+        <LinearLayout
+            android:id="@+id/monitor_row"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="16dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/exposure_meter"
+                style="@style/DF.Text.Label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="10dp"
+                android:shadowColor="#99000000"
+                android:shadowRadius="4"
+                android:textColor="@color/text_primary" />
+
+            <com.dualframe.camera.HistogramView
+                android:id="@+id/histogram"
+                android:layout_width="112dp"
+                android:layout_height="52dp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/ae_lock_pill"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_glass_pill"
+            android:drawablePadding="6dp"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:letterSpacing="0.14"
+            android:paddingHorizontal="14dp"
+            android:text="@string/ae_af_lock"
+            android:textColor="@color/accent"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
         <LinearLayout
             android:id="@+id/meter_row"
             android:layout_width="wrap_content"
@@ -153,16 +225,11 @@
                 android:layout_height="wrap_content"
                 android:text="@string/audio_level" />
 
-            <com.google.android.material.progressindicator.LinearProgressIndicator
+            <com.dualframe.camera.AudioMeterView
                 android:id="@+id/audio_meter"
-                android:layout_width="96dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
-                android:max="100"
-                app:indicatorColor="@color/accent"
-                app:trackColor="#26FFFFFF"
-                app:trackCornerRadius="2dp"
-                app:trackThickness="4dp" />
+                android:layout_width="120dp"
+                android:layout_height="6dp"
+                android:layout_marginStart="10dp" />
         </LinearLayout>
 
         <TextView
@@ -372,6 +439,18 @@
                 android:src="@drawable/ic_cameraswitch" />
         </FrameLayout>
     </LinearLayout>
+
+    <!-- Self-timer countdown. -->
+    <TextView
+        android:id="@+id/countdown"
+        style="@style/DF.Text.Title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:shadowColor="#99000000"
+        android:shadowRadius="12"
+        android:textSize="120sp"
+        android:visibility="gone" />
 
     <!-- ───────────── Overlays ───────────── -->
     <LinearLayout

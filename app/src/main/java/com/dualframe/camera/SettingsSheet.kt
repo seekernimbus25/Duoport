@@ -175,13 +175,97 @@ class SettingsSheet(
         choices(CameraResolution.entries, draft.cameraResolution, { it.label }) {
             draft = draft.copy(cameraResolution = it)
         }
-        toggle("Stabilization", "Smoother handheld video, slightly tighter picture", draft.stabilization) {
+        root.addView(Glass.section(context, "Camera bitrate"))
+        choices(RecordBitrate.entries, draft.recordBitrate, { it.label }) { draft = draft.copy(recordBitrate = it) }
+        root.addView(Glass.caption(context, "Data rate of the original recording. Higher survives grading better.").apply {
+            setPadding(0, dp(6f), 0, 0)
+        })
+
+        root.addView(Glass.section(context, "Stabilization"))
+        val stabNote = Glass.caption(context, draft.stabilization.description)
+        choices(Stabilization.entries, draft.stabilization, { it.label }) {
             draft = draft.copy(stabilization = it)
+            stabNote.text = it.description
         }
+        root.addView(stabNote.apply { setPadding(0, dp(6f), 0, 0) })
+
+        root.addView(Glass.section(context, "Speed"))
+        val speedNote = Glass.caption(context, "")
+        val factors = flow()
+        fun describe() {
+            speedNote.text = when {
+                draft.timelapse == 1 -> "Videos play back in real time."
+                draft.hyperlapse -> "Hyperlapse: walk, drive or pan while recording. Strongest stabilization is used and " +
+                    "the videos play ${draft.timelapse}× faster without sound. The original stays real-time."
+                else -> "Time-lapse: keep the phone still (a tripod helps). The videos play ${draft.timelapse}× faster " +
+                    "without sound. The original stays real-time."
+            }
+            factors.visibility = if (draft.timelapse == 1) View.GONE else View.VISIBLE
+        }
+        val kinds = listOf("Normal", "Time-lapse", "Hyperlapse")
+        val kind = when {
+            draft.timelapse == 1 -> "Normal"
+            draft.hyperlapse -> "Hyperlapse"
+            else -> "Time-lapse"
+        }
+        choices(kinds, kind, { it }) {
+            draft = when (it) {
+                "Normal" -> draft.copy(timelapse = 1, hyperlapse = false)
+                "Hyperlapse" -> draft.copy(timelapse = draft.timelapse.takeIf { t -> t > 1 } ?: 10, hyperlapse = true)
+                else -> draft.copy(timelapse = draft.timelapse.takeIf { t -> t > 1 } ?: 10, hyperlapse = false)
+            }
+            for (i in 0 until factors.childCount) {
+                factors.getChildAt(i).isSelected = (factors.getChildAt(i).tag as Int) == draft.timelapse
+            }
+            describe()
+        }
+        listOf(5, 10, 15, 30).forEach { f ->
+            factors.addView(Glass.pill(context, "${f}×", f == draft.timelapse).apply {
+                tag = f
+                setOnClickListener {
+                    for (i in 0 until factors.childCount) factors.getChildAt(i).isSelected = false
+                    isSelected = true
+                    draft = draft.copy(timelapse = f)
+                    describe()
+                }
+            })
+        }
+        factors.setPadding(0, dp(8f), 0, 0)
+        root.addView(factors)
+        root.addView(speedNote.apply { setPadding(0, dp(6f), 0, 0) })
+        describe()
     }
 
     private fun extras() {
+        root.addView(Glass.section(context, "Clip name"))
+        val name = android.widget.EditText(context).apply {
+            setText(draft.clipName)
+            setSingleLine()
+            setTextColor(ContextCompat.getColor(context, R.color.text_primary))
+            setHintTextColor(ContextCompat.getColor(context, R.color.text_tertiary))
+            hint = "DualFrame"
+            background = ContextCompat.getDrawable(context, R.drawable.bg_glass_card)
+            setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    draft = draft.copy(clipName = s?.toString()?.trim().orEmpty().ifEmpty { "DualFrame" })
+                }
+            })
+        }
+        root.addView(name)
+        root.addView(Glass.caption(context, "Files are named like a slate: name, take number, format.").apply {
+            setPadding(0, dp(6f), 0, 0)
+        })
+
         root.addView(Glass.section(context, "Extras"))
+        toggle("Volume buttons record", "Press either volume button to start or stop", draft.volumeKeysRecord) {
+            draft = draft.copy(volumeKeysRecord = it)
+        }
+        toggle("Mirror the front camera", "Record selfies the way the preview shows them", draft.mirrorFront) {
+            draft = draft.copy(mirrorFront = it)
+        }
         toggle("Grid lines", null, draft.grid) { draft = draft.copy(grid = it) }
         toggle("Keep the original recording", "Also saves the uncut file (always useful with Log or HDR)", draft.keepOriginal) {
             draft = draft.copy(keepOriginal = it)

@@ -31,6 +31,8 @@ class FrameOverlayView @JvmOverloads constructor(
     interface Listener {
         fun onTapToFocus(x: Float, y: Float)
         fun onPinch(scaleFactor: Float)
+        /** Long-press: lock exposure and focus on that point. */
+        fun onLongPress(x: Float, y: Float)
         /** The frames moved or were laid out again (also fires after every draw-affecting change). */
         fun onFramesChanged()
     }
@@ -78,6 +80,27 @@ class FrameOverlayView @JvmOverloads constructor(
         }
 
     var grid = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Small cross in the centre of the selected frame. */
+    var centerMark = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** 90% "safe area" of the selected frame, where text and faces won't be cropped by apps. */
+    var safeArea = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Phone roll in degrees for the horizon level, or null to hide it. */
+    var levelDegrees: Float? = null
         set(value) {
             field = value
             invalidate()
@@ -200,6 +223,26 @@ class FrameOverlayView @JvmOverloads constructor(
             canvas.drawRect(it, insetPaint)
         }
 
+        if (active != null) {
+            val box = boxes[active]
+            if (box != null) {
+                if (safeArea) {
+                    val dx = box.width() * 0.05f
+                    val dy = box.height() * 0.05f
+                    canvas.drawRect(box.left + dx, box.top + dy, box.right - dx, box.bottom - dy, guidePaint)
+                }
+                if (centerMark) {
+                    val cx = box.centerX()
+                    val cy = box.centerY()
+                    val arm = 12f * density
+                    canvas.drawLine(cx - arm, cy, cx + arm, cy, markPaint)
+                    canvas.drawLine(cx, cy - arm, cx, cy + arm, markPaint)
+                }
+            }
+        }
+
+        levelDegrees?.let { roll -> drawLevel(canvas, roll) }
+
         val pad = 10f * density
         formats.forEachIndexed { index, format ->
             val box = boxes[format] ?: return@forEachIndexed
@@ -227,12 +270,49 @@ class FrameOverlayView @JvmOverloads constructor(
         }
     }
 
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f * density
+        color = Color.argb(120, 255, 255, 255)
+        pathEffect = DashPathEffect(floatArrayOf(4f * density, 4f * density), 0f)
+    }
+    private val markPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        strokeWidth = 1.5f * density
+        color = Color.argb(200, 255, 255, 255)
+    }
+    private val levelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        strokeWidth = 2f * density
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    /**
+     * A horizon line through the centre that tilts with the phone and turns champagne when
+     * it is level (within half a degree), with fixed ticks to line it up against.
+     */
+    private fun drawLevel(canvas: Canvas, roll: Float) {
+        val cx = content.centerX()
+        val cy = content.centerY()
+        val half = content.width() * 0.18f
+        val levelled = kotlin.math.abs(roll) < 0.5f
+        levelPaint.color = if (levelled) Color.rgb(216, 185, 138) else Color.argb(220, 255, 255, 255)
+        canvas.drawLine(cx - half - 26 * density, cy, cx - half - 10 * density, cy, levelPaint)
+        canvas.drawLine(cx + half + 10 * density, cy, cx + half + 26 * density, cy, levelPaint)
+        canvas.save()
+        canvas.rotate(-roll, cx, cy)
+        canvas.drawLine(cx - half, cy, cx + half, cy, levelPaint)
+        canvas.restore()
+    }
+
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
 
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             listener?.onTapToFocus(e.x, e.y)
             return true
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            if (!scaling) listener?.onLongPress(e.x, e.y)
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
