@@ -57,7 +57,7 @@ class Shot(
     var takesStarted = 0
 
     /** The chosen take, else the latest good one, else the latest unrated one. */
-    fun pick(): ShotShotTake? = takes.firstOrNull { it.number == chosen }
+    fun pick(): ShotTake? = takes.firstOrNull { it.number == chosen }
         ?: takes.lastOrNull { it.good == true }
         ?: takes.lastOrNull { it.good != false }
 
