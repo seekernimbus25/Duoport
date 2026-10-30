@@ -104,7 +104,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private lateinit var previewView: PreviewView
     private lateinit var insetFrame: FrameLayout
     private lateinit var insetPreview: PreviewView
-    private lateinit var overlay: FrameOverlayView
+    private lateinit var frameOverlay: FrameOverlayView
     private lateinit var teleprompter: TeleprompterView
     private lateinit var recordButton: ImageButton
     private lateinit var flipButton: ImageButton
@@ -175,7 +175,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         previewView = findViewById(R.id.preview)
         insetFrame = findViewById(R.id.inset_frame)
         insetPreview = findViewById(R.id.inset_preview)
-        overlay = findViewById(R.id.overlay)
+        frameOverlay = findViewById(R.id.overlay)
         teleprompter = findViewById(R.id.teleprompter)
         recordButton = findViewById(R.id.record_button)
         flipButton = findViewById(R.id.flip_button)
@@ -203,7 +203,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         resultPanel = findViewById(R.id.result_panel)
         resultList = findViewById(R.id.result_list)
 
-        overlay.listener = this
+        frameOverlay.listener = this
         buildReadouts()
         buildCornerChips()
         applySettingsToUi()
@@ -279,8 +279,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         dualButton.isChecked = settings.dual
         cornerRow.isVisible = settings.dual
         (cornerChips.getChildAt(settings.insetCorner.ordinal) as? Chip)?.isChecked = true
-        overlay.grid = settings.grid
-        overlay.formats = settings.orderedFormats
+        frameOverlay.grid = settings.grid
+        frameOverlay.formats = settings.orderedFormats
         buildFormatChips()
 
         val filter = Looks.previewFilter(settings.look)
@@ -536,9 +536,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         lastReadout = null
 
         val frame = if (dualKind == DualKind.NONE) settings.cameraFrame else CameraFrame.FULL_4_3
-        overlay.sourceAspect = frame.portraitAspect
-        overlay.movable = dualKind != DualKind.COMPOSITED
-        overlay.insetCorner = if (dualKind == DualKind.SEPARATE) settings.insetCorner else null
+        frameOverlay.sourceAspect = frame.portraitAspect
+        frameOverlay.movable = dualKind != DualKind.COMPOSITED
+        frameOverlay.insetCorner = if (dualKind == DualKind.SEPARATE) settings.insetCorner else null
         insetFrame.isVisible = dualKind == DualKind.SEPARATE
         hintText.setText(if (dualKind == DualKind.COMPOSITED) R.string.hint_dual_fixed else R.string.hint_frames)
         positionInsetPreview()
@@ -598,7 +598,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         var w = if (crop.isEmpty) info.resolution.width else crop.width()
         var h = if (crop.isEmpty) info.resolution.height else crop.height()
         if (info.rotationDegrees % 180 != 0) w = h.also { h = w }
-        overlay.sourceAspect = w.toFloat() / h
+        frameOverlay.sourceAspect = w.toFloat() / h
         val label = if (dualKind == DualKind.NONE) settings.cameraFrame.label else getString(R.string.front_and_back)
         infoText.text = getString(R.string.recording_size, w, h, label)
     }
@@ -689,7 +689,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 inset = insetTake,
                 insetCorner = settings.insetCorner,
                 outputs = settings.orderedFormats.map { it to settings.outputs.getValue(it) },
-                placement = overlay.placement,
+                placement = frameOverlay.placement,
                 look = settings.look,
                 quality = settings.exportQuality,
                 keepOriginal = settings.keepOriginal,
@@ -706,7 +706,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         listOf<View>(flipButton, dualButton, settingsButton).forEach { it.isEnabled = !recording }
         for (i in 0 until cornerChips.childCount) cornerChips.getChildAt(i).isEnabled = !recording
         hintText.isVisible = !recording
-        overlay.locked = recording
+        frameOverlay.locked = recording
     }
 
     private fun formatDuration(nanos: Long): String {
@@ -739,15 +739,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         positionInsetPreview()
         for (i in 0 until formatChips.childCount) {
             val chip = formatChips.getChildAt(i) as? Chip ?: continue
-            if (chip.tag is OutputFormat) chip.isChecked = chip.tag == overlay.selected
+            if (chip.tag is OutputFormat) chip.isChecked = chip.tag == frameOverlay.selected
         }
     }
 
     /** The live second-camera preview sits exactly where the inset goes in the selected format. */
     private fun positionInsetPreview() {
         if (dualKind != DualKind.SEPARATE) return
-        val format = overlay.selected ?: return
-        val r = overlay.insetOnScreen(format) ?: return
+        val format = frameOverlay.selected ?: return
+        val r = frameOverlay.insetOnScreen(format) ?: return
         val lp = insetFrame.layoutParams as FrameLayout.LayoutParams
         lp.width = r.width().roundToInt()
         lp.height = r.height().roundToInt()
@@ -1052,10 +1052,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 tag = format
                 isCheckable = true
                 isCheckedIconVisible = false
-                isChecked = format == overlay.selected
+                isChecked = format == frameOverlay.selected
                 chipStrokeWidth = dp(1.5f)
                 chipStrokeColor = ColorStateList.valueOf(format.color)
-                setOnClickListener { overlay.selected = format }
+                setOnClickListener { frameOverlay.selected = format }
             })
         }
         formatChips.addView(Chip(this).apply {
@@ -1076,7 +1076,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     if (corner != settings.insetCorner) {
                         // The fallback mode bakes the inset in, so it needs the camera reopened.
                         updateSettings(settings.copy(insetCorner = corner), rebind = dualKind == DualKind.COMPOSITED)
-                        if (dualKind == DualKind.SEPARATE) overlay.insetCorner = corner
+                        if (dualKind == DualKind.SEPARATE) frameOverlay.insetCorner = corner
                     }
                 }
             })
