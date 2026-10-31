@@ -265,6 +265,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var lenses: List<Lens> = emptyList()
     private var mainLensMm = 0
     private var lockedLens: Lens? = null
+    /** Zoom kept inside this range while a lens in a multi-lens camera is locked. */
+    private var lockedZoom: ClosedFloatingPointRange<Float>? = null
 
     /** Slow-motion frame rates this camera can record (60 normally, 120 / 240 in high-speed mode). */
     private var slowRates: List<Int> = emptyList()
@@ -1228,6 +1230,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         observedCamera?.cameraInfo?.zoomState?.removeObservers(this)
         observedCamera = cam
         zoomStopsShown = emptyList()
+        val zoomNow = cam.cameraInfo.zoomState.value
+        lockedZoom = lockedLens?.let {
+            Lenses.zoomRange(it, lenses, mainLensMm, zoomNow?.minZoomRatio ?: 0f, zoomNow?.maxZoomRatio ?: Float.MAX_VALUE)
+        }
+        lockedZoom?.let { cam.cameraControl.setZoomRatio(it.start) }
         cam.cameraInfo.zoomState.observe(this) { updateZoom(it) }
 
         // Manual values this camera can't do are dropped rather than silently ignored.
@@ -1888,7 +1895,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     override fun onPinch(scaleFactor: Float) {
         val cam = camera ?: return
         val zoom = cam.cameraInfo.zoomState.value ?: return
-        cam.cameraControl.setZoomRatio((zoom.zoomRatio * scaleFactor).coerceIn(zoom.minZoomRatio, zoom.maxZoomRatio))
+        cam.cameraControl.setZoomRatio(clampZoom(zoom.zoomRatio * scaleFactor, zoom))
     }
 
     override fun onFramesChanged() {
@@ -2532,8 +2539,18 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private var zoomStopsShown: List<Float> = emptyList()
 
-    /** Just two buttons: the ultra-wide (if there is one) and 1×, which shows the live zoom. */
+    /** Within the camera's zoom range and, while a lens is locked, within that lens. */
+    private fun clampZoom(ratio: Float, state: ZoomState): Float {
+        val clamped = ratio.coerceIn(state.minZoomRatio, state.maxZoomRatio)
+        return lockedZoom?.let { clamped.coerceIn(it.start, it.endInclusive) } ?: clamped
+    }
+
+    /**
+     * Just two buttons: the ultra-wide (if there is one) and 1×, which shows the live zoom.
+     * With a lens locked, only that lens's button.
+     */
     private fun zoomStops(state: ZoomState): List<Float> {
+        lockedZoom?.let { return listOf((it.start * 10).roundToInt() / 10f) }
         val stops = mutableListOf<Float>()
         if (state.minZoomRatio < 0.95f) stops += (state.minZoomRatio * 10).roundToInt() / 10f
         stops += 1f
@@ -2547,7 +2564,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             zoomCapsule.removeAllViews()
             stops.forEach { ratio ->
                 zoomCapsule.addView(Glass.pill(this, zoomText(ratio)) {
-                    camera?.cameraControl?.setZoomRatio(ratio.coerceAtLeast(state.minZoomRatio))
+                    camera?.cameraControl?.setZoomRatio(clampZoom(ratio, state))
                 }.apply {
                     tag = ratio
                     background = ContextCompat.getDrawable(context, R.drawable.bg_glass_circle)
@@ -2556,7 +2573,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             }
         }
         // Below 1× the wide button lights up; from 1× up, the 1× button shows the exact zoom.
-        val nearest = if (state.zoomRatio < 0.95f && stops.size > 1) stops.first() else 1f
+        val nearest = when {
+            stops.size == 1 -> stops.first()
+            state.zoomRatio < 0.95f -> stops.first()
+            else -> 1f
+        }
         for (i in 0 until zoomCapsule.childCount) {
             val pill = zoomCapsule.getChildAt(i) as TextView
             val ratio = pill.tag as Float
@@ -2564,7 +2585,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             pill.isSelected = active
             pill.text = if (active) zoomText(state.zoomRatio) else zoomText(ratio)
         }
-        val focal = lockedLens?.equivalentMm?.takeIf { it > 0 }?.toFloat() ?: caps?.equivalentFocalMm
+        // A lens locked by zoom shares the main lens's scale; a stand-alone one has its own.
+        val ownFocal = lockedLens?.takeIf { lockedZoom == null }?.equivalentMm?.takeIf { it > 0 }?.toFloat()
+        val focal = ownFocal ?: caps?.equivalentFocalMm
         zoomLabel.text = focal?.let { "${(it * state.zoomRatio).roundToInt()} mm" } ?: ""
     }
 

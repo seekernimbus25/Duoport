@@ -87,11 +87,30 @@ object Lenses {
         return runCatching { equivalentMm(manager.getCameraCharacteristics(id)) }.getOrDefault(0)
     }
 
-    fun selector(lens: Lens): CameraSelector {
-        val builder = CameraSelector.Builder()
-            .addCameraFilter { infos -> infos.filter { cameraId(it) == lens.cameraId } }
-        if (lens.physicalId != null) builder.setPhysicalCameraId(lens.physicalId)
-        return builder.build()
+    /**
+     * A lens inside a multi-lens camera opens that whole camera: asking for the physical lens
+     * alone is ignored by some phones (Pixel 9a streams from whichever lens the zoom picks), so
+     * the lock is done with [zoomRange] instead.
+     */
+    fun selector(lens: Lens): CameraSelector = CameraSelector.Builder()
+        .addCameraFilter { infos -> infos.filter { cameraId(it) == lens.cameraId } }
+        .build()
+
+    /**
+     * The zoom ratios that stay on [lens] inside its multi-lens camera, or null for a stand-alone
+     * lens. Ratios are relative to the main lens ([mainMm]); each lens runs up to just below the
+     * next one, where the phone would switch.
+     */
+    fun zoomRange(lens: Lens, all: List<Lens>, mainMm: Int, minZoom: Float, maxZoom: Float): ClosedFloatingPointRange<Float>? {
+        if (lens.physicalId == null || lens.equivalentMm <= 0 || mainMm <= 0) return null
+        val ratios = all.filter { it.cameraId == lens.cameraId && it.physicalId != null && it.equivalentMm > 0 }
+            .map { it.equivalentMm.toFloat() / mainMm }
+            .sorted()
+        val own = lens.equivalentMm.toFloat() / mainMm
+        val start = own.coerceIn(minZoom, maxZoom)
+        val next = ratios.firstOrNull { it > own + 0.05f }
+        val end = (next?.let { it * 0.98f } ?: maxZoom).coerceIn(start, maxZoom)
+        return start..end
     }
 
     private fun cameraId(info: CameraInfo): String? = runCatching { Camera2CameraInfo.from(info).cameraId }.getOrNull()
