@@ -58,25 +58,65 @@ class FrameOverlayView @JvmOverloads constructor(
     /** The scene's true width / height, which the format frames are cut from. */
     private val frameAspect get() = desqueezed(sourceAspect, desqueeze)
 
+    /** Where Follow me is taking each frame; the frames glide there every screen refresh. */
+    private var followTargets: Map<OutputFormat, Pair<Float, Float>> = emptyMap()
+    private var lastGlideNanos = 0L
+
     /**
-     * Auto-reframe: glide every frame toward the face at ([x], [y]) (0..1 of the recorded
-     * picture), ignoring small movements so the frames don't drift with every nod.
+     * Auto-reframe: aim every frame at the face at ([x], [y]) (0..1 of the recorded picture),
+     * ignoring small movements so the frames don't drift with every nod.
      */
     fun follow(x: Float, y: Float) {
         val aspect = frameAspect
-        var centers = placement.centers
+        var targets = followTargets
         for (format in formats) {
-            val current = placement.rect(format, aspect)
             val (tx, ty) = Reframe.target(format, aspect, x, y)
-            val dx = tx - current.centerX
-            val dy = ty - current.centerY
-            if (kotlin.math.abs(dx) < Reframe.DEAD_ZONE && kotlin.math.abs(dy) < Reframe.DEAD_ZONE) continue
-            centers = centers + (format to (current.centerX + dx * FOLLOW_RATE to current.centerY + dy * FOLLOW_RATE))
+            val (ax, ay) = targets[format] ?: placement.rect(format, aspect).let { it.centerX to it.centerY }
+            if (kotlin.math.abs(tx - ax) < Reframe.DEAD_ZONE && kotlin.math.abs(ty - ay) < Reframe.DEAD_ZONE) {
+                if (format !in targets) targets = targets + (format to (ax to ay))
+                continue
+            }
+            targets = targets + (format to (tx to ty))
         }
-        if (centers !== placement.centers) {
-            placement = FramePlacement(centers).clamped(aspect)
-            changed()
+        val wasGliding = followTargets.isNotEmpty()
+        followTargets = targets
+        if (!wasGliding) {
+            lastGlideNanos = System.nanoTime()
+            postOnAnimation(glide)
         }
+    }
+
+    /** One screen refresh of gliding toward [followTargets], quick enough to keep pace with a walk. */
+    private val glide = object : Runnable {
+        override fun run() {
+            val targets = followTargets
+            if (targets.isEmpty()) return
+            val now = System.nanoTime()
+            val a = 1f - kotlin.math.exp(-(now - lastGlideNanos) / FOLLOW_TAU_NANOS)
+            lastGlideNanos = now
+            val aspect = frameAspect
+            var centers = placement.centers
+            var settled = true
+            for ((format, target) in targets) {
+                if (format !in formats) continue
+                val current = placement.rect(format, aspect)
+                val dx = target.first - current.centerX
+                val dy = target.second - current.centerY
+                if (kotlin.math.abs(dx) < 0.001f && kotlin.math.abs(dy) < 0.001f) continue
+                settled = false
+                centers = centers + (format to (current.centerX + dx * a to current.centerY + dy * a))
+            }
+            if (centers !== placement.centers) {
+                placement = FramePlacement(centers).clamped(aspect)
+                changed()
+            }
+            if (settled) followTargets = emptyMap() else postOnAnimation(this)
+        }
+    }
+
+    private fun stopGlide() {
+        followTargets = emptyMap()
+        removeCallbacks(glide)
     }
 
     var placement = FramePlacement()
@@ -146,8 +186,8 @@ class FrameOverlayView @JvmOverloads constructor(
         }
 
     private companion object {
-        /** Share of the remaining distance a frame moves per tracking update (~15 a second). */
-        const val FOLLOW_RATE = 0.12f
+        /** Follow me's glide time constant: a frame covers ~2/3 of the way to the face in this time. */
+        const val FOLLOW_TAU_NANOS = 200_000_000f
     }
 
     private val density = resources.displayMetrics.density
@@ -185,6 +225,7 @@ class FrameOverlayView @JvmOverloads constructor(
     }
 
     fun resetPlacement() {
+        stopGlide()
         placement = FramePlacement().clamped(frameAspect)
         changed()
     }
@@ -375,6 +416,7 @@ class FrameOverlayView @JvmOverloads constructor(
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
             val format = selected
             if (locked || !movable || scaling || format == null || content.width() <= 0f) return false
+            stopGlide()
             placement = placement.moved(format, -distanceX / content.width(), -distanceY / content.height(), frameAspect)
             changed()
             return true
