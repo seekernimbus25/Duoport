@@ -257,6 +257,7 @@ adb shell am force-stop com.dualframe.camera       # kill the app
 | GR-03 🤖 | P0 | Save the graded copy | The new file matches the preview; the original is unchanged |
 | GR-04 🤖 | P1 | Grade an HDR clip | Saves (tone-mapped) without failing |
 | GR-05 🤖 | P0 | No grading controls on the camera screen | Grading is library-only (as decided) |
+| GR-06 🤖👤 | P1 | Colour wheels (Lift, Gamma, Gain, Offset) and scopes (waveform, RGB parade, vectorscope, histogram) | Wheels are round with a draggable dot and a master slider; double-tap resets; scopes update live as you grade and move the way Resolve's do (warmer gain → parade red rises, vectorscope leans toward R/Yl) |
 
 ## 19. Design editor (library → ⋯ → Design)
 | ID | Pri | Test | Expected |

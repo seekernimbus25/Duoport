@@ -111,8 +111,9 @@ class GradeActivity : AppCompatActivity() {
         })
         column.addView(header)
 
-        val playerView = PlayerView(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
-        column.addView(playerView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.42f))
+        val playerView = layoutInflater.inflate(R.layout.grade_player, column, false) as PlayerView
+        column.addView(playerView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.36f))
+        column.addView(scopeStrip())
 
         val scroll = NestedScrollView(this)
         val body = LinearLayout(this).apply {
@@ -120,7 +121,7 @@ class GradeActivity : AppCompatActivity() {
             setPadding(dp(20f), dp(4f), dp(20f), dp(40f))
         }
         scroll.addView(body)
-        column.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.58f))
+        column.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.64f))
 
         body.addView(Glass.section(this, getString(R.string.grade_look)))
         looks = ChipGroup(this).apply {
@@ -160,6 +161,7 @@ class GradeActivity : AppCompatActivity() {
             insets
         }
 
+        startScopes(playerView)
         player = ExoPlayer.Builder(this).build().also {
             playerView.player = it
             it.repeatMode = Player.REPEAT_MODE_ALL
@@ -168,6 +170,65 @@ class GradeActivity : AppCompatActivity() {
             it.play()
         }
     }
+
+    // region Scopes
+
+    private lateinit var scope: ScopeView
+    private val scopePrefs by lazy { getSharedPreferences("grade_screen", MODE_PRIVATE) }
+
+    /** Scope picker and the scope itself, between the picture and the controls. */
+    private fun scopeStrip(): View {
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12f), dp(6f), dp(12f), 0)
+        }
+        scope = ScopeView(this).apply {
+            mode = ScopeMode.entries.firstOrNull { it.name == scopePrefs.getString("scope", null) } ?: ScopeMode.WAVEFORM
+            contentDescription = getString(R.string.grade_scopes)
+        }
+        val pills = ChipGroup(this).apply {
+            isSingleLine = true
+            chipSpacingHorizontal = dp(6f)
+        }
+        fun drawPills() {
+            pills.removeAllViews()
+            ScopeMode.entries.forEach { m ->
+                pills.addView(Glass.pill(this, m.label, m == scope.mode) {
+                    scope.mode = m
+                    scopePrefs.edit().putString("scope", m.name).apply()
+                    scope.visibility = if (m == ScopeMode.OFF) View.GONE else View.VISIBLE
+                    drawPills()
+                }.apply { minHeight = dp(34f) })
+            }
+        }
+        drawPills()
+        strip.addView(android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(pills)
+        })
+        scope.visibility = if (scope.mode == ScopeMode.OFF) View.GONE else View.VISIBLE
+        strip.addView(scope, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(132f)).apply { topMargin = dp(6f) })
+        return strip
+    }
+
+    /** Reads the graded picture back from the player a few times a second and feeds the scope. */
+    private fun startScopes(playerView: PlayerView) {
+        lifecycleScope.launch {
+            while (true) {
+                delay(180)
+                if (scope.mode == ScopeMode.OFF || !scope.isShown) continue
+                val texture = playerView.videoSurfaceView as? android.view.TextureView ?: continue
+                if (!texture.isAvailable || texture.width == 0) continue
+                val w = 192
+                val h = (w * texture.height / texture.width.toFloat()).toInt().coerceIn(32, 400)
+                val frame = runCatching { texture.getBitmap(w, h) }.getOrNull() ?: continue
+                withContext(Dispatchers.Default) { scope.analyse(frame) }
+                frame.recycle()
+            }
+        }
+    }
+
+    // endregion
 
     private fun readSize() {
         val r = MediaMetadataRetriever()

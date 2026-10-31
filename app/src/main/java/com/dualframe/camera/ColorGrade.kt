@@ -54,6 +54,14 @@ data class ColorGrade(
     val midAmount: Int = 0,
     val highlightHue: Int = 40,
     val highlightAmount: Int = 0,
+    // Offset wheel (the whole picture), and the master control under each wheel, -100..100:
+    // lift raises or lowers the blacks, gamma the midtones, gain the highlights, offset everything.
+    val offsetHue: Int = 0,
+    val offsetAmount: Int = 0,
+    val liftLum: Int = 0,
+    val gammaLum: Int = 0,
+    val gainLum: Int = 0,
+    val offsetLum: Int = 0,
     /** Per colour (see [HSL_COLOURS]): hue shift, saturation, lightness, each -100..100. 24 values. */
     val hsl: List<Int> = List(24) { 0 },
     val vignette: Int = 0,
@@ -62,7 +70,7 @@ data class ColorGrade(
 ) {
     /** Nothing in the LUT part changes the picture. */
     val colourIsNeutral: Boolean
-        get() = copy(vignette = 0, grain = 0, sharpen = 0, shadowHue = 210, midHue = 30, highlightHue = 40) == ColorGrade()
+        get() = copy(vignette = 0, grain = 0, sharpen = 0, shadowHue = 210, midHue = 30, highlightHue = 40, offsetHue = 0) == ColorGrade()
 
     val hasFinish get() = vignette != 0 || grain != 0 || sharpen != 0
 
@@ -107,6 +115,21 @@ data class ColorGrade(
             r = sCurve(r, k); g = sCurve(g, k); b = sCurve(b, k)
         }
 
+        // Wheel masters: lift / gamma / gain / offset, per channel like a primary corrector.
+        if (liftLum != 0 || gammaLum != 0 || gainLum != 0 || offsetLum != 0) {
+            val lift = liftLum / 100f * 0.25f
+            val gainK = 1f + gainLum / 100f * 0.5f
+            val gammaK = 2f.pow(-gammaLum / 100f)
+            val offset = offsetLum / 100f * 0.2f
+            fun lgg(v: Float): Float {
+                var x = v * gainK
+                x += lift * (1f - x.coerceIn(0f, 1f))
+                if (gammaLum != 0) x = x.coerceIn(0f, 1f).pow(gammaK)
+                return x + offset
+            }
+            r = lgg(r); g = lgg(g); b = lgg(b)
+        }
+
         // Colour wheels: tint shadows, midtones and highlights without changing brightness.
         val l2 = luma(r, g, b)
         fun wheel(hue: Int, amount: Int, weight: Float) {
@@ -121,6 +144,7 @@ data class ColorGrade(
         wheel(shadowHue, shadowAmount, (1f - l2) * (1f - l2))
         wheel(midHue, midAmount, 1f - abs(2f * l2 - 1f))
         wheel(highlightHue, highlightAmount, l2 * l2)
+        wheel(offsetHue, offsetAmount, 0.75f)
 
         // Per-colour hue / saturation / lightness.
         if (hsl.any { it != 0 }) {
@@ -167,7 +191,7 @@ data class ColorGrade(
     fun encode(): String = (listOf(
         exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, saturation, vibrance, fade,
         shadowHue, shadowAmount, midHue, midAmount, highlightHue, highlightAmount, vignette, grain, sharpen,
-    ) + hsl).joinToString(",")
+    ) + hsl + listOf(offsetHue, offsetAmount, liftLum, gammaLum, gainLum, offsetLum)).joinToString(",")
 
     companion object {
         val HSL_COLOURS = listOf(
@@ -184,6 +208,9 @@ data class ColorGrade(
                 shadowHue = v[11], shadowAmount = v[12], midHue = v[13], midAmount = v[14],
                 highlightHue = v[15], highlightAmount = v[16], vignette = v[17], grain = v[18], sharpen = v[19],
                 hsl = v.drop(20).take(24).let { if (it.size == 24) it else List(24) { 0 } },
+                offsetHue = v.getOrElse(44) { 0 }, offsetAmount = v.getOrElse(45) { 0 },
+                liftLum = v.getOrElse(46) { 0 }, gammaLum = v.getOrElse(47) { 0 },
+                gainLum = v.getOrElse(48) { 0 }, offsetLum = v.getOrElse(49) { 0 },
             )
         }
 
@@ -361,13 +388,8 @@ class GradeControls(
                 slider("Fade", 0, 100, g.fade) { set(grade.copy(fade = it)) }
             }
             2 -> {
-                note("Tint the shadows, midtones and highlights, like the colour wheels in an editor. Teal shadows + warm highlights is the classic film look.")
-                slider("Shadows hue", 0, 359, g.shadowHue, { "$it°" }) { set(grade.copy(shadowHue = it)) }
-                slider("Shadows amount", 0, 100, g.shadowAmount) { set(grade.copy(shadowAmount = it)) }
-                slider("Midtones hue", 0, 359, g.midHue, { "$it°" }) { set(grade.copy(midHue = it)) }
-                slider("Midtones amount", 0, 100, g.midAmount) { set(grade.copy(midAmount = it)) }
-                slider("Highlights hue", 0, 359, g.highlightHue, { "$it°" }) { set(grade.copy(highlightHue = it)) }
-                slider("Highlights amount", 0, 100, g.highlightAmount) { set(grade.copy(highlightAmount = it)) }
+                note("Drag a wheel's dot towards a colour to push that part of the picture; the slider under it makes it brighter or darker. Double-tap a wheel to reset it. Teal lift + warm gain is the classic film look.")
+                wheels()
             }
             3 -> {
                 note("Pick a colour, then shift its hue, saturation or lightness (greys aren't touched).")
@@ -393,6 +415,65 @@ class GradeControls(
                 slider("Film grain", 0, 100, g.grain) { set(grade.copy(grain = it)) }
             }
         }
+    }
+
+    /** Lift / Gamma / Gain / Offset wheels, two by two, each with its master slider. */
+    private fun wheels() {
+        val grid = android.widget.GridLayout(context).apply { columnCount = 2 }
+        val screen = context.resources.displayMetrics.widthPixels
+        val cell = (screen - dp(40f)) / 2 - dp(8f)
+        data class W(val name: String, val hue: Int, val amount: Int, val lum: Int, val setColour: (Int, Int) -> ColorGrade, val setLum: (Int) -> ColorGrade)
+        val g = grade
+        listOf(
+            W("Lift", g.shadowHue, g.shadowAmount, g.liftLum, { h, a -> grade.copy(shadowHue = h, shadowAmount = a) }, { grade.copy(liftLum = it) }),
+            W("Gamma", g.midHue, g.midAmount, g.gammaLum, { h, a -> grade.copy(midHue = h, midAmount = a) }, { grade.copy(gammaLum = it) }),
+            W("Gain", g.highlightHue, g.highlightAmount, g.gainLum, { h, a -> grade.copy(highlightHue = h, highlightAmount = a) }, { grade.copy(gainLum = it) }),
+            W("Offset", g.offsetHue, g.offsetAmount, g.offsetLum, { h, a -> grade.copy(offsetHue = h, offsetAmount = a) }, { grade.copy(offsetLum = it) }),
+        ).forEach { w ->
+            val column = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(4f), dp(10f), dp(4f), 0)
+            }
+            val readout = TextView(context).apply {
+                setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
+                textSize = 11f
+                gravity = Gravity.CENTER
+            }
+            fun describe(hue: Int, amount: Int, lum: Int) {
+                readout.text = (if (amount == 0) "neutral" else "$hue° · $amount") + "   ·   " + (if (lum > 0) "+$lum" else "$lum")
+            }
+            column.addView(Glass.label(context, w.name.uppercase()).apply { gravity = Gravity.CENTER })
+            val wheel = ColorWheelView(context).apply {
+                set(w.hue, w.amount)
+                contentDescription = "${w.name} colour wheel"
+            }
+            var lum = w.lum
+            wheel.onChange = { h, a ->
+                describe(h, a, lum)
+                this@GradeControls.set(w.setColour(h, a))
+            }
+            column.addView(wheel, LinearLayout.LayoutParams(cell, cell))
+            column.addView(readout)
+            column.addView(Slider(context).apply {
+                valueFrom = -100f
+                valueTo = 100f
+                stepSize = 1f
+                value = w.lum.coerceIn(-100, 100).toFloat()
+                contentDescription = "${w.name} master"
+                trackActiveTintList = ColorStateList.valueOf(ContextCompat.getColor(context, R.color.accent))
+                trackInactiveTintList = ColorStateList.valueOf(0x26FFFFFF)
+                setTickVisible(false)
+                addOnChangeListener { _, v, fromUser ->
+                    lum = v.toInt()
+                    describe(wheel.hue, wheel.amount, lum)
+                    if (fromUser) this@GradeControls.set(w.setLum(lum))
+                }
+            }, LinearLayout.LayoutParams(cell, ViewGroup.LayoutParams.WRAP_CONTENT))
+            describe(w.hue, w.amount, w.lum)
+            grid.addView(column)
+        }
+        container.addView(grid)
     }
 
     private fun set(new: ColorGrade) {

@@ -195,6 +195,7 @@
     <string name="grade_default_name">My grade</string>
     <string name="grade">Grade</string>
     <string name="grade_title">Colour grade</string>
+    <string name="grade_scopes">Video scope of the graded picture</string>
     <string name="grade_saving">Grading…</string>
     <string name="grade_saved_copy">Saved a graded copy to your library. The original is unchanged.</string>
     <string name="grade_look">Look</string>

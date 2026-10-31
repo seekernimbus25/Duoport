@@ -1910,6 +1910,33 @@ def gr04(t):
     back()
 
 
+@test("GR-06", "Colour wheels and scopes in the grade screen")
+def gr06(t):
+    fresh_camera()
+    library_open()
+    open_first_video()
+    player_menu("Grade")
+    sleep(2)
+    for m in ["Waveform", "RGB parade", "Vectorscope", "Histogram"]:
+        n = find(text=m, timeout=3)
+        t.check(n is not None, f"{m} scope option")
+        if n:
+            tap_xy(n.cx, n.cy)
+            sleep(1.5)
+            t.shot(m.replace(" ", "_"))
+    tap(text="Wheels")
+    sleep(1)
+    wheels = [n for n in dump() if "colour wheel" in n.desc]
+    t.check(len(wheels) >= 2, f"colour wheels shown ({len(wheels)})")
+    if wheels:
+        w = wheels[0]
+        swipe(w.cx, w.cy, w.cx - (w.x2 - w.x1) // 3, w.cy - (w.y2 - w.y1) // 3, 600)
+        sleep(1.5)
+        t.shot("wheel_dragged")
+    t.check(in_app(), "no crash")
+    back()
+
+
 @test("GR-05", "No grading controls on the camera screen")
 def gr05(t):
     fresh_camera()
