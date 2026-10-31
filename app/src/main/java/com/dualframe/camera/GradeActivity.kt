@@ -123,20 +123,11 @@ class GradeActivity : AppCompatActivity() {
         column.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.58f))
 
         body.addView(Glass.section(this, getString(R.string.grade_look)))
-        val looks = ChipGroup(this).apply {
+        looks = ChipGroup(this).apply {
             chipSpacingHorizontal = dp(8f)
             chipSpacingVertical = dp(8f)
         }
-        Luts.available(this, RecordProfile.STANDARD).forEach { lut ->
-            looks.addView(Glass.pill(this, lut.name, lut.id == lutId).apply {
-                setOnClickListener {
-                    for (i in 0 until looks.childCount) looks.getChildAt(i).isSelected = false
-                    isSelected = true
-                    lutId = lut.id
-                    refresh()
-                }
-            })
-        }
+        buildLooks()
         body.addView(looks)
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         body.addView(controls)
@@ -217,6 +208,23 @@ class GradeActivity : AppCompatActivity() {
     }
 
     /** Keeps this grade as a look of its own: it shows under Look here and can be exported as a .cube. */
+    private lateinit var looks: ChipGroup
+
+    /** The look pills; rebuilt after "Save as my look" so the new look shows up right away. */
+    private fun buildLooks() {
+        looks.removeAllViews()
+        Luts.available(this, RecordProfile.STANDARD).forEach { lut ->
+            looks.addView(Glass.pill(this, lut.name, lut.id == lutId).apply {
+                setOnClickListener {
+                    for (i in 0 until looks.childCount) looks.getChildAt(i).isSelected = false
+                    isSelected = true
+                    lutId = lut.id
+                    refresh()
+                }
+            })
+        }
+    }
+
     private fun saveAsLook() {
         val input = android.widget.EditText(this).apply {
             setText(getString(R.string.grade_default_name))
@@ -240,6 +248,7 @@ class GradeActivity : AppCompatActivity() {
                         if (saved != null) R.string.grade_look_saved else R.string.grade_look_failed,
                         Toast.LENGTH_LONG,
                     ).show()
+                    if (saved != null) buildLooks()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)

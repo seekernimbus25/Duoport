@@ -174,10 +174,9 @@ def scroll_to(text=None, desc=None, rid=None, contains=False, max_swipes=10, reg
     x, top, bottom = region or (w // 2, int(h * 0.35), int(h * 0.85))
     for i in range(max_swipes + 1):
         n = find(text, desc, rid, contains, timeout=0, nodes=dump())
-        if n is not None and top - 50 <= n.cy <= bottom + 150:
+        # Anywhere comfortably on screen will do (not under the status or navigation bar).
+        if n is not None and h * 0.07 <= n.cy <= h * 0.93:
             return n
-        if n is not None and n.cy > bottom:
-            pass
         swipe(x, bottom, x, top, 400)
     return find(text, desc, rid, contains, timeout=1)
 
@@ -218,8 +217,8 @@ def in_app():
 
 
 def launch(extra=""):
-    ashell(f"am start -W -n {MAIN} {extra}", timeout=60)
-    sleep(3)
+    ashell(f"am start -n {MAIN} {extra}", timeout=30)
+    sleep(4)
 
 
 def force_stop():
@@ -520,7 +519,7 @@ def player_menu(item_text):
 
 
 def pick_document(filename, timeout=10):
-    """Picks [filename] in the system file picker (Downloads)."""
+    """Picks [filename] in the system file picker: searches for it and taps the first result."""
     end = time.time() + timeout
     while time.time() < end:
         nodes = dump()
@@ -529,30 +528,42 @@ def pick_document(filename, timeout=10):
         sleep(1)
     n = find(text=filename, timeout=2)
     if n is None:
-        # Open the side drawer and go to Downloads.
-        menu = find(desc="Show roots", timeout=2)
-        if menu:
-            tap_xy(menu.cx, menu.cy)
+        s = find(desc="Search", timeout=3)
+        if s:
+            tap_xy(s.cx, s.cy)
             sleep(1)
-        d = find(text="Downloads", timeout=3) or find(text="Download", timeout=1)
-        if d:
-            tap_xy(d.cx, d.cy)
-            sleep(2)
-        n = find(text=filename, timeout=4)
+            type_text(filename.rsplit(".", 1)[0])
+            key(66)
+            sleep(3)
+        n = find(text=filename, timeout=3)
         if n is None:
-            # Search box as a last resort.
-            s = find(desc="Search", timeout=2)
-            if s:
-                tap_xy(s.cx, s.cy)
-                type_text(filename.split(".")[0])
-                key(66)
-                sleep(2)
-                n = find(text=filename, timeout=4)
+            # Grid view shows thumbnails without names: take the first result.
+            items = [x for x in dump() if x.rid in ("item_root", "thumbnail", "icon_thumb", "icon_mime_lg", "item_icon")]
+            if items:
+                n = items[0]
+            else:
+                head = next((x for x in D_last() if x.text in ("Images", "Videos", "Documents", "Audio", "Files")), None)
+                if head is not None:
+                    tap_xy(head.x1 + 120, head.y2 + 150)
+                    sleep(2)
+                    return
     if n is None:
         screenshot(f"picker_missing_{filename}")
         raise AssertionError(f"file picker: {filename} not found")
     tap_xy(n.cx, n.cy)
     sleep(2)
+
+
+def D_last():
+    return _last_dump
+
+
+def is_slider(n):
+    return any(k in n.cls for k in ("SeekBar", "Slider", "ProgressBar")) and n.x2 - n.x1 > 200
+
+
+def sliders():
+    return [n for n in dump() if is_slider(n)]
 
 
 # endregion

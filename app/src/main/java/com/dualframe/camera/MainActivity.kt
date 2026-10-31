@@ -392,6 +392,18 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         infoText = findViewById(R.id.info)
         hintText = findViewById(R.id.hint)
         controlPanel = findViewById(R.id.control_panel)
+        // Back closes an open Pro panel first instead of leaving the camera.
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (openParam != null) {
+                    closeControlPanel()
+                    return
+                }
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
+        })
         cornerRow = findViewById(R.id.corner_row)
         cornerChips = findViewById(R.id.corner_chips)
         zoomCapsule = findViewById(R.id.zoom_capsule)
