@@ -1077,35 +1077,72 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             Attempt(null, false, false, settings.cameraResolution, false, effect != null, false),
             Attempt(null, false, false, CameraResolution.FHD, false, false, false),
         ).distinct()
+        fun bind(attempt: Attempt): VideoCapture<Recorder>? = try {
+            analysisUseCase = null
+            val preview = buildPreview(settings.cameraFrame, attempt.fps, previewView, readouts = true, attempt.enhanced)
+            val capture = buildCapture(
+                qualitiesFrom(attempt.resolution), settings.cameraFrame, attempt.fps, attempt.standard, attempt.hdr,
+                bitrate = if (attempt.resolution == settings.cameraResolution) bitrate else null,
+                codecSource = attempt.hdr && hlgViaCodecs,
+            )
+            val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(capture)
+            if (attempt.analysis) group.addUseCase(buildAnalysis())
+            if (attempt.effect && effect != null) group.addEffect(effect)
+            camera = provider.bindToLifecycle(this, selector, group.build())
+            capture
+        } catch (e: Exception) {
+            provider.unbindAll()
+            null
+        }
+
         for (attempt in attempts) {
-            try {
-                val preview = buildPreview(settings.cameraFrame, attempt.fps, previewView, readouts = true, attempt.enhanced)
-                val capture = buildCapture(
-                    qualitiesFrom(attempt.resolution), settings.cameraFrame, attempt.fps, attempt.standard, attempt.hdr,
-                    bitrate = if (attempt.resolution == settings.cameraResolution) bitrate else null,
-                    codecSource = attempt.hdr && hlgViaCodecs,
-                )
-                val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(capture)
-                if (attempt.analysis) group.addUseCase(buildAnalysis())
-                if (attempt.effect && effect != null) group.addEffect(effect)
-                camera = provider.bindToLifecycle(this, selector, group.build())
-                mainCapture = capture
-                effectAttached = attempt.effect && effect != null
-                if (attempt.fps != fps && fps != 30) {
-                    Toast.makeText(this, getString(R.string.fps_fallback, fps), Toast.LENGTH_LONG).show()
-                }
-                if (hdr && !attempt.hdr) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
-                if (analysisWanted && !attempt.analysis) {
-                    monitorRow.isVisible = false
-                    if (settings.activeAutoReframe) Toast.makeText(this, R.string.follow_unavailable, Toast.LENGTH_LONG).show()
-                }
-                return true
-            } catch (e: Exception) {
+            var used = attempt
+            var capture = bind(attempt) ?: continue
+            var pausedForResolution = false
+            // Some phones (Pixel 9a) can't stream preview + a big recording + analysis side by side, so
+            // CameraX shares one preview-sized stream for preview and video: 4K comes out 1600×1200 or
+            // 720×1280. The chosen resolution wins: drop the analysis if that actually records bigger.
+            val monitoredArea = recordArea(capture)
+            if (attempt.analysis && monitoredArea in 1 until targetArea(attempt.resolution) / 2) {
                 provider.unbindAll()
+                val plain = attempt.copy(analysis = false)
+                val plainCapture = bind(plain)
+                if (plainCapture != null && recordArea(plainCapture) > monitoredArea) {
+                    used = plain
+                    capture = plainCapture
+                    pausedForResolution = true
+                } else {
+                    provider.unbindAll()
+                    capture = bind(attempt) ?: continue
+                }
             }
+            mainCapture = capture
+            effectAttached = used.effect && effect != null
+            if (used.fps != fps && fps != 30) {
+                Toast.makeText(this, getString(R.string.fps_fallback, fps), Toast.LENGTH_LONG).show()
+            }
+            if (hdr && !used.hdr) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
+            if (analysisWanted && !used.analysis) {
+                monitorRow.isVisible = false
+                when {
+                    pausedForResolution -> Toast.makeText(this, R.string.monitoring_paused_resolution, Toast.LENGTH_LONG).show()
+                    settings.activeAutoReframe -> Toast.makeText(this, R.string.follow_unavailable, Toast.LENGTH_LONG).show()
+                }
+            }
+            return true
         }
         if (!quiet) Toast.makeText(this, getString(R.string.camera_error, "no supported setup"), Toast.LENGTH_LONG).show()
         return false
+    }
+
+    /** Pixels in the recording CameraX settled on, 0 if it hasn't said yet. */
+    private fun recordArea(capture: VideoCapture<Recorder>): Int =
+        capture.resolutionInfo?.resolution?.let { it.width * it.height } ?: 0
+
+    private fun targetArea(resolution: CameraResolution): Int = when (resolution) {
+        CameraResolution.UHD -> 3840 * 2160
+        CameraResolution.FHD -> 1920 * 1080
+        CameraResolution.HD -> 1280 * 720
     }
 
     private fun frontAndBackPair(provider: ProcessCameraProvider): Pair<CameraInfo, CameraInfo>? {
