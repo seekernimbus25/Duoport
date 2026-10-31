@@ -415,6 +415,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     closeControlPanel()
                     return
                 }
+                // And the "saved" card, back to the camera.
+                if (DualExporter.state.value is ExportState.Done) {
+                    DualExporter.acknowledge()
+                    return
+                }
                 isEnabled = false
                 onBackPressedDispatcher.onBackPressed()
                 isEnabled = true
@@ -2866,7 +2871,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun rateLastTake(good: Boolean, next: Boolean) {
         val p = shotProject ?: return
-        val (shotId, take) = lastShotTake ?: return
+        val (shotId, take) = takeToRate(p) ?: return
         ShotLists.rate(this, p.id, shotId, take, good)
         lastShotTake = null
         val message = when {
@@ -2877,6 +2882,18 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
         shotProject = ShotLists.active(this)
         if (next) moveShot(1) else refreshShots()
+    }
+
+    /**
+     * The take the card asks about: the one just shot, or (after the app was closed) the current
+     * shot's newest take if it was made in the last half hour and hasn't been rated.
+     */
+    private fun takeToRate(p: ShotProject): Pair<Long, Int>? {
+        val shot = p.currentShot ?: return null
+        lastShotTake?.let { last -> return last.takeIf { it.first == shot.id } }
+        val newest = shot.takes.maxByOrNull { it.number } ?: return null
+        val recent = System.currentTimeMillis() - newest.createdAt < 30 * 60_000L
+        return if (newest.good == null && recent) shot.id to newest.number else null
     }
 
     /** Shows or hides the shot card and puts the current shot's lines on the teleprompter. */
@@ -2909,7 +2926,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             }
             return
         }
-        shotBanner.bind(p, isRecording, lastShotTake?.takeIf { it.first == p.currentShot?.id }?.second)
+        shotBanner.bind(p, isRecording, takeToRate(p)?.second)
         Glass.show(shotBanner, true)
         val shot = p.currentShot
         if (shot?.id != shownShotId && !isRecording) {

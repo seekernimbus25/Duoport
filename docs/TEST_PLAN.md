@@ -138,7 +138,7 @@ adb shell am force-stop com.dualframe.camera       # kill the app
 | PROF-04 🤖 | P0 | HLG 10-bit can be picked (on phones that support it) | Selectable; recording works (old build-8 bug) |
 | PROF-05 🤖 | P0 | HLG files | Original: `hevc`, 10-bit, `arib-std-b67`, `bt2020`. Cut videos are 10-bit HDR when "HDR cuts" is on, otherwise standard range |
 | PROF-06 🤖 | P1 | HDR fallback | On a phone that can't encode edited HDR: cuts come out in standard range, a note says so, and the 10-bit original is saved |
-| PROF-07 🤖 | P1 | Log/HDR originals | Always kept, whatever "Keep original" is set to |
+| PROF-07 🤖 | P1 | Log/HDR originals | Saved only when "Keep the original" is on (one shape in, one video out) |
 
 ## 7. LUTs and looks
 | ID | Pri | Test | Expected |

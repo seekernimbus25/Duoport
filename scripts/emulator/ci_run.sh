@@ -16,6 +16,9 @@ adb shell svc power stayon true
 # No system "isn't responding" dialogs over the app.
 adb shell settings put global hide_error_dialogs 1
 adb shell wm dismiss-keyguard
+# No on-screen keyboard: it covers dialog buttons and autocorrects typed text. adb's key
+# events still type into the focused field without one.
+for ime in $(adb shell ime list -s | tr -d '\r'); do adb shell ime disable "$ime" || true; done
 adb install -r -g "$NEW_APK" | tee "$OUT_DIR/install.txt"
 ONLY_ARGS=()
 if [ -n "${ONLY:-}" ]; then ONLY_ARGS=(--only "$ONLY"); fi

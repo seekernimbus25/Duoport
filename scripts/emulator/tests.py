@@ -293,6 +293,9 @@ def cam07(t):
 @test("CAM-08", "Night button")
 def cam08(t):
     fresh_camera()
+    if find(rid="night_button", timeout=3) is None:
+        # Only shown when the camera offers low-light boost, which the emulator's doesn't.
+        raise NeedsPhone("the emulator camera has no low-light boost, so the Night button is hidden (correct)")
     tap(rid="night_button")
     sleep(1.5)
     t.shot("night_auto")
@@ -577,7 +580,9 @@ def rec10(t):
     tmcd = [s for s in info.get("streams", []) if s.get("codec_tag_string") == "tmcd" or s.get("codec_type") == "data"]
     tags = info.get("format", {}).get("tags", {})
     t.note(f"streams: {[s.get('codec_type') + ':' + str(s.get('codec_tag_string')) for s in info.get('streams', [])]} tags: {tags}")
-    t.soft(bool(tmcd) or "timecode" in str(info), "timecode present in the cut video")
+    # Written as XMP (xmpDM:startTimeCode), which ffprobe doesn't list: look in the file itself.
+    xmp = b"startTimeCode" in open(local, "rb").read()
+    t.soft(bool(tmcd) or xmp, "time-of-day timecode (XMP) in the cut video")
     settings_toggle("Keep the original", False)
     close_results()
 
@@ -630,8 +635,10 @@ def prof02(t):
             tap_xy(n.cx, n.cy)
             sleep(2.5)
             back()
+            if find(text="Import .cube", contains=True, timeout=1):
+                back()
             d, _ = preview_live(f"log_{name[:4]}")
-            t.check(d > 0.3, f"preview live after {name} (diff {d:.2f})")
+            t.check(d > 0.05, f"preview live after {name} (diff {d:.2f})")
             open_param("Look (LUT)")
     back()
     pick_profile("Standard")
@@ -649,7 +656,7 @@ def prof03(t):
         raise NeedsPhone("DF-Log not offered by the emulator camera")
     tap_xy(n.cx, n.cy)
     sleep(2)
-    s = scroll_to(text="Save", contains=True, max_swipes=3) or find(text="LUT", contains=True)
+    s = scroll_to(text="Save DF-Log", contains=True, max_swipes=3)
     t.shot("profile_panel")
     if s:
         tap_xy(s.cx, s.cy)
@@ -681,7 +688,7 @@ def prof06(t):
     pass
 
 
-@test("PROF-07", "Log/HDR originals always kept")
+@test("PROF-07", "Log: original only when 'Keep the original' is on")
 def prof07(t):
     fresh_camera()
     settings_toggle("Keep the original", False)
@@ -689,7 +696,7 @@ def prof07(t):
         raise NeedsPhone("DF-Log not offered by the emulator camera")
     set_formats(["9:16"], "720p")
     new = record(3)
-    t.check(any("original" in n for n in new), f"original kept with Log: {new}")
+    t.check(not any("original" in n for n in new), f"one shape in, one video out with Log: {new}")
     close_results()
     pick_profile("Standard")
     to_auto()
@@ -751,7 +758,11 @@ def lut02(t):
         tap_xy(n.cx, n.cy)
         sleep(2)
         t.shot("using_imported")
-        n = find(text="warm_test", contains=True, timeout=2) or n
+        # Picking a look closes the panel; long-press the chip in the panel, not the strip cell.
+        if find(text="Import .cube", contains=True, timeout=1) is None:
+            open_param("Look (LUT)")
+        chips = find_all(text="warm_test", contains=True)
+        n = max(chips, key=lambda c: c.cy) if chips else n
         long_press(n, 1600)
         sleep(1)
         t.shot("long_press")
@@ -759,7 +770,8 @@ def lut02(t):
         if d:
             tap_xy(d.cx, d.cy)
             sleep(1)
-        t.check(find(text="warm_test", contains=True, timeout=2) is None, "deleted after long-press")
+        sleep(1)
+        t.check(len(find_all(text="warm_test", contains=True)) == 0, "deleted after long-press")
     back()
     to_auto()
 
@@ -782,13 +794,39 @@ def lut03(t):
 @test("LUT-04", "Bake LUT off: preview only")
 def lut04(t):
     fresh_camera()
-    open_settings()
-    n = scroll_to(text="Bake", contains=True, max_swipes=16) or scroll_to(text="look into", contains=True, max_swipes=4)
+    pick_profile("Standard")
+    set_formats(["9:16"], "720p")
+    to_pro()
+    open_param("Look (LUT)")
+    tap(text="Noir")
+    sleep(1.5)
+    if find(text="Import .cube", contains=True, timeout=1) is None:
+        open_param("Look (LUT)")
+    sw = scroll_to(text="Apply LUT to videos", contains=True, max_swipes=2)
     t.shot("bake_option")
-    close_sheet()
-    if n is None:
-        raise Skip("no 'bake LUT' switch found in Settings (check where it lives)")
-    t.note(f"found: {n.text}")
+    if sw is None:
+        back()
+        raise AssertionError("'Apply LUT to videos and photos' switch not in the Look panel")
+    if sw.checked:
+        tap_xy(sw.cx, sw.cy)
+        sleep(1)
+    back()
+    new = record(3)
+    png = frame_png(pull(f"{MOVIES}/{new[-1]}"), 1, "LUT-04_view_only")
+    r, g, b = image_mean(png)
+    t.check(max(abs(r - g), abs(g - b)) >= 6, f"view-only Noir: the video keeps its colour (rgb {r:.0f},{g:.0f},{b:.0f})")
+    close_results()
+    # Back to the default: looks baked in, no look.
+    open_param("Look (LUT)")
+    sw = scroll_to(text="Apply LUT to videos", contains=True, max_swipes=2)
+    if sw is not None and not sw.checked:
+        tap_xy(sw.cx, sw.cy)
+        sleep(1)
+    tap(text="None", required=False)
+    sleep(1)
+    if find(text="Import .cube", contains=True, timeout=1):
+        back()
+    to_auto()
 
 
 # ───────────────────────── 8. Frame rates ─────────────────────────
@@ -918,7 +956,7 @@ def pro09(t):
     for label, codec in [("HEVC", "hevc"), ("H.264", "h264")]:
         open_settings()
         scroll_to(text="Codec", max_swipes=8)
-        n = find(text=label, contains=True, timeout=2) or find(text="H.265", contains=True, timeout=1)
+        n = scroll_to(text=label, max_swipes=2)  # the chip itself, not the note under it
         if n is None:
             close_sheet()
             t.check(False, f"{label} option")
@@ -1093,7 +1131,7 @@ def ana01(t):
     settings_toggle("Keep the original", True)
     open_settings()
     scroll_to(text="Anamorphic lens", max_swipes=12)
-    n = find(text="2.0×", timeout=2) or find(text="2×", timeout=1) or find(text="2.0", contains=True, timeout=1)
+    n = scroll_to(text="2.0×", max_swipes=3)
     t.shot("anamorphic_options")
     if n is None:
         close_sheet()
@@ -1596,9 +1634,16 @@ def lib02(t):
     sleep(2)
     t.shot("playing")
     w, h = screen_size()
-    tap_xy(w // 2, h // 2)
+    # The controls fade after a few seconds, so tap and look straight away (twice if they were just hiding).
+    ok = False
+    for _ in range(3):
+        tap_xy(w // 2, h // 2)
+        nodes = dump()
+        ok = find(rid="more", timeout=0, nodes=nodes) is not None and find(rid="share", timeout=0, nodes=nodes) is not None
+        if ok:
+            break
     t.shot("controls")
-    t.check(find(rid="more", timeout=2) is not None and find(rid="share", timeout=1) is not None, "player with its controls")
+    t.check(ok, "player with its controls")
     back()
     back()
 
@@ -1679,10 +1724,11 @@ def ed01(t):
     open_first_video()
     player_menu("Trim or join")
     t.shot("editor")
-    sliders = sliders()
-    t.check(bool(sliders), "trim handles shown")
-    if sliders:
-        s = sliders[0]
+    scroll_to(text="Clip 1", contains=True, max_swipes=3)
+    found = sliders()
+    t.check(bool(found), "trim handles shown")
+    if found:
+        s = found[0]
         swipe(s.x1 + 30, s.cy, s.x1 + (s.x2 - s.x1) // 4, s.cy, 500)
         swipe(s.x2 - 30, s.cy, s.x2 - (s.x2 - s.x1) // 4, s.cy, 500)
     t.shot("trimmed")
@@ -1891,7 +1937,8 @@ def gr03(t):
 def gr04(t):
     fresh_camera()
     library_open()
-    hlg = next((n for n in dump() if n.rid == "duration" and n.text in ("0:06", "00:06")), None)
+    # The 6 s HLG clip was imported first, so it's far down the library by now.
+    hlg = scroll_to(text="0:06", rid="duration", max_swipes=20)
     if hlg is None:
         raise Skip("HLG test clip not found")
     tap_xy(hlg.cx, hlg.cy - 80)
@@ -1954,22 +2001,24 @@ def open_design():
     open_first_video()
     player_menu("Edit: timeline, music, captions, grade, design")
     sleep(3)
-    tap(text="Templates", required=False)
-    sleep(1)
+    design_tab("Templates")
 
 
 def design_tab(name):
+    """Taps a tool in the editor's bottom toolbar (labelled by content description), scrolling it both ways."""
     w, h = screen_size()
-    for _ in range(4):
-        n = find(text=name, timeout=1)
+    for i in range(8):
+        n = find(desc=name, timeout=1)
         if n:
             tap_xy(n.cx, n.cy)
             sleep(1)
             return n
-        # Tabs scroll sideways.
-        tabs = find(text="Edit", timeout=0, nodes=D._last_dump) or find(text="Templates", timeout=0, nodes=D._last_dump)
-        y = tabs.cy if tabs else int(h * 0.95)
-        swipe(int(w * 0.8), y, int(w * 0.2), y, 300)
+        tools = [x for x in D._last_dump if x.desc in ("Edit", "Audio", "Text", "Captions", "Stickers", "Templates", "Canvas", "Logo")]
+        y = tools[0].cy if tools else int(h * 0.93)
+        if i < 4:
+            swipe(int(w * 0.8), y, int(w * 0.2), y, 300)
+        else:
+            swipe(int(w * 0.2), y, int(w * 0.8), y, 300)
     raise AssertionError(f"design tab {name} not found")
 
 
@@ -2023,20 +2072,25 @@ def des03(t):
     tap_xy(n.cx, n.cy)
     sleep(1)
     type_text("Emu template")
+    # adb typing on the emulator sometimes swaps letters; use whatever the field ended up with.
+    field = next((x for x in dump() if "EditText" in x.cls), None)
+    name = (field.text if field and field.text else "Emu template").strip()
     tap(text="Save")
     sleep(2)
     t.shot("saved")
-    t.check(find(text="template", contains=True, timeout=4) is not None, "my template listed")
+    t.check(find(text=name, contains=True, timeout=4) is not None, f"my template listed ({name})")
     back()
     open_design()
     sleep(3)
-    m = next((x for x in dump() if "template" in x.text.lower() and x.text not in ("Templates",) and "Save" not in x.text), None)
+    m = scroll_to(text=name, contains=True, max_swipes=3)
     t.check(m is not None, "template there for another video")
     if m:
         long_press(m)
-        tap(text="Delete", required=False)
         sleep(1)
-        t.check(not any("template" in x.text.lower() and x.text != "Templates" and "Save" not in x.text and "Tap one" not in x.text for x in dump()), "deleted")
+        t.shot("delete_dialog")
+        tap(text="Delete", required=False)
+        sleep(1.5)
+        t.check(find(text=name, contains=True, timeout=1) is None, "deleted")
     b = find(text="Dreamy heart", timeout=2)
     if b:
         long_press(b)
@@ -2401,6 +2455,14 @@ def shots_screen():
     sleep(2)
 
 
+def open_list(name="Morning tea"):
+    """Opens the list, unless the shots button already went straight into it (tapping the
+    title there renames it)."""
+    if find(text="Add a shot", timeout=1) is None:
+        tap(text=name)
+        sleep(1.5)
+
+
 @test("SL-01", "New shot list")
 def sl01(t):
     shots_screen()
@@ -2449,8 +2511,7 @@ def sl03(t):
 @test("SL-02", "Add a shot by hand")
 def sl02(t):
     shots_screen()
-    tap(text="Morning tea")
-    sleep(1.5)
+    open_list()
     tap(text="Add a shot")
     sleep(1)
     t.shot("add_dialog")
@@ -2462,14 +2523,14 @@ def sl02(t):
     tap(text="Save")
     sleep(1.5)
     t.shot("added")
+    t.check(find(text="Shot size / angle", timeout=1) is None, "dialog closed")
     t.check(scroll_to(text="Steam rising", contains=True, max_swipes=4) is not None, "new shot listed")
 
 
 @test("SL-04", "Edit, move, delete a shot; rename")
 def sl04(t):
     shots_screen()
-    tap(text="Morning tea")
-    sleep(1.5)
+    open_list()
     n = scroll_to(text="Steam rising", contains=True, max_swipes=4)
     tap_xy(n.cx, n.cy)
     sleep(1)
@@ -2489,8 +2550,7 @@ def sl04(t):
 @test("SL-05", "Shoot: camera switches to the list's shapes, card shows the shot")
 def sl05(t):
     shots_screen()
-    tap(text="Morning tea")
-    sleep(1.5)
+    open_list()
     # Shapes: 9:16 + 16:9.
     for lab in ["9:16", "16:9"]:
         n = find(text=lab, timeout=2)
@@ -2614,8 +2674,7 @@ def sl12(t):
 @test("SL-13", "Assemble → Join all shapes now")
 def sl13(t):
     shots_screen()
-    tap(text="Morning tea")
-    sleep(1.5)
+    open_list()
     tap(text="Assemble")
     sleep(1)
     t.shot("assemble_menu")
@@ -2635,8 +2694,7 @@ def sl13(t):
 @test("SL-14", "Assemble → Trim and join 9:16 in the editor")
 def sl14(t):
     shots_screen()
-    tap(text="Morning tea")
-    sleep(1.5)
+    open_list()
     tap(text="Assemble")
     tap(text="Trim and join 9:16", contains=True)
     sleep(3)
@@ -2665,6 +2723,8 @@ def sl16(t):
     while time.time() < end and len(set(movies()) - before) < 2:
         sleep(5)
     launch()
+    sleep(2)
+    close_results()
     tap(text="List")
     sleep(2)
     t.shot("list")

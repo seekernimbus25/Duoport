@@ -124,7 +124,8 @@ def match(n, text=None, desc=None, rid=None, contains=False):
     def eq(a, b):
         if b is None:
             return True
-        return (b.lower() in a.lower()) if contains else a == b
+        # Case-blind: section headers are drawn in capitals (textAllCaps) and dump that way.
+        return (b.lower() in a.lower()) if contains else a.lower() == b.lower()
     return eq(n.text, text) and eq(n.desc, desc) and (rid is None or n.rid == rid)
 
 
@@ -189,7 +190,14 @@ def scroll_tap(text=None, desc=None, rid=None, contains=False, max_swipes=10, re
     return n
 
 
-def back():
+def back(force=False):
+    """Back key. On the bare camera screen it would leave the app, so it's skipped there unless
+    [force]: picking an option already closes a Pro panel, and tests often press Back after."""
+    if not force:
+        nodes = dump()
+        rids = {n.rid for n in nodes if n.visible}
+        if "record_button" in rids and not rids & {"control_panel", "result_panel", "export_panel"}:
+            return
     ashell("input keyevent 4")
     sleep(0.8)
 
@@ -350,10 +358,13 @@ def preview_live(tag):
     """Two screenshots a second apart; the emulated camera moves, so a live preview differs."""
     w, h = screen_size()
     box = (0, int(h * 0.2), w, int(h * 0.6))
+    # The emulated back scene drifts slowly, so look over a few seconds; a frozen preview stays at 0.
     a = screenshot(f"{tag}_live_a")
-    sleep(1.5)
-    b = screenshot(f"{tag}_live_b")
-    d = image_diff(a, b, box)
+    d = 0.0
+    for i in range(2):
+        sleep(1.5)
+        b = screenshot(f"{tag}_live_b")
+        d = max(d, image_diff(a, b, box))
     return d, a
 
 
@@ -403,6 +414,7 @@ def close_results():
 
 
 def open_settings():
+    close_results()  # the "saved" card sits over the camera controls
     tap(rid="settings_button")
     sleep(1.5)
 
@@ -662,6 +674,11 @@ def run(only=None):
             t.note(traceback.format_exc(limit=3))
             try:
                 t.shot("error")
+                # What was on screen, for working out why a control wasn't found.
+                with open(os.path.join(OUT, f"ui_{tid}.txt"), "w") as f:
+                    for n in dump():
+                        if n.visible and (n.text or n.desc or n.rid):
+                            f.write(f"{n.cx},{n.cy} rid={n.rid} text={n.text!r} desc={n.desc!r} checked={n.checked}\n")
             except Exception:
                 pass
         c = crashes()
