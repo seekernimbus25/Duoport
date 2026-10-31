@@ -5,6 +5,8 @@ import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaCodecList
@@ -292,7 +294,18 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var subjectTracker: SubjectTracker? = null
     private val exposureAnalyzer = ExposureAnalyzer { stats -> runOnUiThread { onExposureStats(stats) } }
     private var analysisUseCase: ImageAnalysis? = null
+    private var previewUseCase: Preview? = null
     private val trackSamples = mutableListOf<SubjectSample>()
+
+    /** Follow me without an analysis stream (paused for the resolution): faces come from the preview. */
+    private var previewTracking = false
+    private var previewTrackBusy = false
+    private val previewTrackTick = object : Runnable {
+        override fun run() {
+            trackFromPreview()
+            if (previewTracking) statusHandler.postDelayed(this, PREVIEW_TRACK_MS)
+        }
+    }
     @Volatile private var recordStartNanos = 0L
 
     /** Frames in a row where the camera reported it wasn't using the DF-Log curve. */
@@ -523,6 +536,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         stallRecoveries = 0
         statusHandler.postDelayed(stallWatch, 1000)
         if (orientationListener.canDetectOrientation()) orientationListener.enable()
+        if (previewTracking) statusHandler.post(previewTrackTick)
         refreshShots()
     }
 
@@ -531,6 +545,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         sensorManager?.unregisterListener(levelListener)
         statusHandler.removeCallbacks(statusTick)
         statusHandler.removeCallbacks(stallWatch)
+        statusHandler.removeCallbacks(previewTrackTick)
         orientationListener.disable()
     }
 
@@ -764,6 +779,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun bindWith(provider: ProcessCameraProvider) {
         if (isRecording) return
         this.provider = provider
+        stopPreviewTracking()
         provider.unbindAll()
         camera = null
         mainCapture = null
@@ -1081,6 +1097,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         fun bind(attempt: Attempt): VideoCapture<Recorder>? = try {
             analysisUseCase = null
             val preview = buildPreview(settings.cameraFrame, attempt.fps, previewView, readouts = true, attempt.enhanced)
+            previewUseCase = preview
             val capture = buildCapture(
                 qualitiesFrom(attempt.resolution), settings.cameraFrame, attempt.fps, attempt.standard, attempt.hdr,
                 bitrate = if (attempt.resolution == settings.cameraResolution) bitrate else null,
@@ -1125,7 +1142,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             if (hdr && !used.hdr) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
             if (analysisWanted && !used.analysis) {
                 monitorRow.isVisible = false
+                if (pausedForResolution && settings.activeAutoReframe) startPreviewTracking()
                 when {
+                    pausedForResolution && settings.activeAutoReframe -> if (settings.isPro) {
+                        Toast.makeText(this, R.string.histogram_paused_resolution, Toast.LENGTH_LONG).show()
+                    }
                     pausedForResolution -> Toast.makeText(this, R.string.monitoring_paused_resolution, Toast.LENGTH_LONG).show()
                     settings.activeAutoReframe -> Toast.makeText(this, R.string.follow_unavailable, Toast.LENGTH_LONG).show()
                 }
@@ -1580,6 +1601,70 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             synchronized(trackSamples) { trackSamples += SubjectSample(timeUs, px, py) }
         }
         runOnUiThread { frameOverlay.follow(px, py) }
+    }
+
+    private fun startPreviewTracking() {
+        previewTracking = true
+        statusHandler.removeCallbacks(previewTrackTick)
+        statusHandler.postDelayed(previewTrackTick, PREVIEW_TRACK_MS)
+    }
+
+    private fun stopPreviewTracking() {
+        previewTracking = false
+        statusHandler.removeCallbacks(previewTrackTick)
+    }
+
+    /** Grabs the preview, turns it the way the recording is, and looks for a face in it. */
+    private fun trackFromPreview() {
+        if (previewTrackBusy || !settings.activeAutoReframe) return
+        val shot = previewView.bitmap ?: return
+        val frame = runCatching { uprightPreviewFrame(shot) }.getOrNull()
+        shot.recycle()
+        if (frame == null) return
+        previewTrackBusy = true
+        val tracker = subjectTracker ?: SubjectTracker().also { subjectTracker = it }
+        tracker.track(frame) { x, y, found ->
+            previewTrackBusy = false
+            val aspect = frame.width.toFloat() / frame.height
+            frame.recycle()
+            if (found && previewTracking) onSubject(x, y, aspect)
+        }
+    }
+
+    /**
+     * The picture part of a preview grab (the preview is fitted, so it may have bars), small,
+     * turned upright for a sideways recording and un-mirrored like the recording.
+     */
+    private fun uprightPreviewFrame(shot: Bitmap): Bitmap {
+        val info = previewUseCase?.resolutionInfo
+        val shown = info?.let {
+            val r = it.resolution
+            if (it.rotationDegrees % 180 == 0) r.width.toFloat() / r.height else r.height.toFloat() / r.width
+        } ?: (shot.width.toFloat() / shot.height)
+        val vw = shot.width.toFloat()
+        val vh = shot.height.toFloat()
+        val (cw, ch) = if (vw / vh > shown) vh * shown to vh else vw to vw / shown
+        val left = ((vw - cw) / 2f).toInt()
+        val top = ((vh - ch) / 2f).toInt()
+        val width = cw.toInt().coerceIn(1, shot.width - left)
+        val height = ch.toInt().coerceIn(1, shot.height - top)
+
+        // The screen stays upright; a sideways recording is the preview turned a quarter.
+        var degrees = when (recordRotation) {
+            Surface.ROTATION_90 -> -90f
+            Surface.ROTATION_270 -> 90f
+            Surface.ROTATION_180 -> 180f
+            else -> 0f
+        }
+        // The front preview is a mirror; the recording only is when "mirror front" is on.
+        val unmirror = settings.lensFacing == CameraSelector.LENS_FACING_FRONT && !settings.mirrorFront
+        if (unmirror) degrees = -degrees
+        val scale = PREVIEW_TRACK_SIZE / maxOf(width, height)
+        val matrix = Matrix().apply {
+            postScale(if (unmirror) -scale else scale, scale)
+            postRotate(degrees)
+        }
+        return Bitmap.createBitmap(shot, left, top, width, height, matrix, true)
     }
 
     /**
@@ -2961,5 +3046,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private companion object {
         const val KEY_ASKED = "asked"
+
+        /** How often Follow me looks for a face in the preview when it has no analysis stream. */
+        const val PREVIEW_TRACK_MS = 200L
+
+        /** Long side of the preview copy the face detector gets. */
+        const val PREVIEW_TRACK_SIZE = 480f
     }
 }

@@ -1,5 +1,6 @@
 package com.dualframe.camera
 
+import android.graphics.Bitmap
 import android.graphics.Matrix
 import androidx.annotation.OptIn
 import androidx.camera.core.ExperimentalGetImage
@@ -43,7 +44,15 @@ class SubjectTracker {
         val rotation = proxy.imageInfo.rotationDegrees
         val w = (if (rotation % 180 == 0) proxy.width else proxy.height).toFloat()
         val h = (if (rotation % 180 == 0) proxy.height else proxy.width).toFloat()
-        detector.process(InputImage.fromMediaImage(media, rotation))
+        detect(InputImage.fromMediaImage(media, rotation), w, h, onDone)
+    }
+
+    /** Same, on an upright picture (a frame grabbed from the preview). */
+    fun track(bitmap: Bitmap, onDone: (x: Float, y: Float, found: Boolean) -> Unit) =
+        detect(InputImage.fromBitmap(bitmap, 0), bitmap.width.toFloat(), bitmap.height.toFloat(), onDone)
+
+    private fun detect(image: InputImage, w: Float, h: Float, onDone: (x: Float, y: Float, found: Boolean) -> Unit) {
+        detector.process(image)
             .addOnSuccessListener { faces ->
                 val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
                 if (face == null) {
