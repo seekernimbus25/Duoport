@@ -1062,6 +1062,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
         val bitrate = settings.recordMbps.takeIf { it > 0 }?.let { it * 1_000_000 }
         val analysisWanted = settings.isPro || settings.activeAutoReframe
+        // At 4K some phones (Pixel 9a) quietly share one square stream between the preview and
+        // the analysis, and the preview comes out squashed. Skip the analysis there: Follow me
+        // reads faces from the preview instead, and Pro's histogram pauses.
+        val analysisFits = settings.cameraResolution != CameraResolution.UHD
+        val analysisTried = analysisWanted && analysisFits
 
         val effect = if (wantsPreviewEffect() && !hdr) {
             LutPreviewEffect(lutProcessor) {
@@ -1087,8 +1092,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         )
         val fpsWanted = if (fpsOk) fps else null
         val attempts = listOf(
-            Attempt(fpsWanted, enhancedOk, standardOk && !enhancedOk, settings.cameraResolution, hdr, effect != null, analysisWanted),
-            Attempt(fpsWanted, false, standardOk, settings.cameraResolution, hdr, effect != null, analysisWanted),
+            Attempt(fpsWanted, enhancedOk, standardOk && !enhancedOk, settings.cameraResolution, hdr, effect != null, analysisTried),
+            Attempt(fpsWanted, false, standardOk, settings.cameraResolution, hdr, effect != null, analysisTried),
             Attempt(fpsWanted, false, standardOk, settings.cameraResolution, hdr, effect != null, false),
             Attempt(null, false, false, settings.cameraResolution, hdr, effect != null, false),
             Attempt(null, false, false, settings.cameraResolution, false, effect != null, false),
@@ -1142,13 +1147,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             if (hdr && !used.hdr) Toast.makeText(this, R.string.hlg_unsupported, Toast.LENGTH_LONG).show()
             if (analysisWanted && !used.analysis) {
                 monitorRow.isVisible = false
-                if (pausedForResolution && settings.activeAutoReframe) startPreviewTracking()
-                when {
-                    pausedForResolution && settings.activeAutoReframe -> if (settings.isPro) {
-                        Toast.makeText(this, R.string.histogram_paused_resolution, Toast.LENGTH_LONG).show()
-                    }
-                    pausedForResolution -> Toast.makeText(this, R.string.monitoring_paused_resolution, Toast.LENGTH_LONG).show()
-                    settings.activeAutoReframe -> Toast.makeText(this, R.string.follow_unavailable, Toast.LENGTH_LONG).show()
+                // Follow me doesn't need the analysis stream: it can find faces in the preview.
+                if (settings.activeAutoReframe) startPreviewTracking()
+                if (settings.isPro && (pausedForResolution || !analysisFits)) {
+                    Toast.makeText(this, R.string.histogram_paused_resolution, Toast.LENGTH_LONG).show()
                 }
             }
             return true
