@@ -17,7 +17,9 @@ permissions:
 
 jobs:
   emulator:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[emu')
+    # Not on main: fast-forwarding main to a tested commit would otherwise start the same run
+    # again and cancel the one in progress on the branch.
+    if: github.event_name == 'workflow_dispatch' || (github.ref != 'refs/heads/main' && contains(github.event.head_commit.message, '[emu'))
     runs-on: ubuntu-latest
     timeout-minutes: 340
     concurrency:
