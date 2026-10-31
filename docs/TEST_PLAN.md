@@ -208,6 +208,7 @@ adb shell am force-stop com.dualframe.camera       # kill the app
 | TP-03 🤖 | P1 | Starts scrolling when recording starts, stops when it stops | Yes |
 | TP-04 🤖👤 | P2 | Eye-contact mode | Narrow column right under the front camera |
 | TP-05 👤 | P1 | 🎙 Voice follow | Scrolls only while you talk, waits when you pause |
+| TP-07 👤 | P1 | Sideways teleprompter | Turn the phone sideways either way: the script turns to read upright and sits at the lens end, centred on the lens; with eye contact the lines are shorter; drag moves it anywhere on screen; upright again restores it. Also mid-take, and with "Record sideways" off |
 | TP-06 🤖 | P0 | Not burned into the video | Files are clean |
 
 ## 14. Photo mode

@@ -1737,11 +1737,23 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             in 0..30, in 330..359 -> Surface.ROTATION_0
             else -> return // in between, or upside down: keep what we have
         }
+        turnTeleprompter(rotation)
         val target = if (settings.activeFollowRotation && dualKind == DualKind.NONE) rotation else Surface.ROTATION_0
         if (target == recordRotation || isRecording || countdownRunning || !bound) return
         recordRotation = target
         applyRecordRotation()
         refreshSourceAspect()
+    }
+
+    /** The teleprompter reads upright however the phone is held, even mid-take. */
+    private fun turnTeleprompter(rotation: Int) {
+        teleprompter.turnTo(
+            when (rotation) {
+                Surface.ROTATION_90 -> 90f
+                Surface.ROTATION_270 -> -90f
+                else -> 0f
+            },
+        )
     }
 
     private fun applyRecordRotation() {

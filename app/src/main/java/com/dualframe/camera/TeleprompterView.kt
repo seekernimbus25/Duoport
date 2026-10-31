@@ -156,30 +156,68 @@ class TeleprompterView @JvmOverloads constructor(
     }
 
     private fun setEyeContact(on: Boolean) {
-        val parentView = parent as? View ?: return
-        val lp = layoutParams as? FrameLayout.LayoutParams ?: return
         eyeContact = on
         prefs.edit().putBoolean("eyeContact", on).apply()
         eyeButton?.setTextColor(if (on) Color.rgb(216, 185, 138) else Color.WHITE)
-        if (on) {
-            if (savedParams == null) savedParams = FrameLayout.LayoutParams(lp)
-            lp.width = (parentView.width * 0.5f).toInt().coerceAtLeast((240 * density).toInt())
-            lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            lp.topMargin = topInset + (4 * density).toInt()
-            lp.leftMargin = 0
-            lp.rightMargin = 0
-            text.gravity = Gravity.CENTER
-        } else {
-            savedParams?.let {
-                lp.width = it.width
-                lp.gravity = it.gravity
-                lp.topMargin = it.topMargin
-                lp.leftMargin = it.leftMargin
-                lp.rightMargin = it.rightMargin
-            }
-            text.gravity = Gravity.CENTER_HORIZONTAL
+        place()
+    }
+
+    /** Quarter-turn so the script reads upright with the phone held sideways: 0, 90 or -90. */
+    var turn = 0f
+        private set
+
+    /**
+     * The camera screen stays portrait (turning it would restart the camera), so with the phone
+     * sideways only the teleprompter turns to read upright. Sideways, the front lens sits in the
+     * middle of your left or right edge, so the script goes right there, centred on the lens,
+     * with short lines (shorter still with eye contact) so your eyes stay by the camera. Drag
+     * the handle to put it anywhere else.
+     */
+    fun turnTo(degrees: Float) {
+        if (degrees == turn) return
+        turn = degrees
+        place()
+    }
+
+    private fun place() {
+        val parentView = parent as? View ?: return
+        if (parentView.width == 0) {
+            post { place() }
+            return
         }
-        translationX = 0f
+        // The box as the layout has it, before any of this.
+        val base = savedParams ?: FrameLayout.LayoutParams(layoutParams as? FrameLayout.LayoutParams ?: return)
+            .also { savedParams = it }
+        val lp = FrameLayout.LayoutParams(base)
+        val w = parentView.width
+        val h = parentView.height
+        if (turn == 0f) {
+            if (eyeContact) {
+                lp.width = (w * 0.5f).toInt().coerceAtLeast((240 * density).toInt())
+                lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                lp.topMargin = topInset + (4 * density).toInt()
+                lp.leftMargin = 0
+                lp.rightMargin = 0
+            }
+            rotation = 0f
+            translationX = 0f
+        } else {
+            // Line length runs along the phone's long side; the box is laid out unturned and
+            // turned about its centre, so its centre is placed where the turned box should sit.
+            val long = (h * if (eyeContact) 0.32f else 0.45f).toInt()
+            val depth = minOf((base.height * 1.2f).toInt(), (w * 0.8f).toInt())
+            lp.width = long
+            lp.height = depth
+            lp.gravity = Gravity.CENTER
+            lp.setMargins(0, 0, 0, 0)
+            // Its end touches the lens end of the screen (the portrait top, under the status bar)
+            // and it's centred across, which is the lens's line.
+            // (FrameLayout moves a centred child up by the whole bottom margin.)
+            lp.bottomMargin = (h / 2 - long / 2 - topInset - (8 * density).toInt()).coerceAtLeast(0)
+            rotation = turn
+            translationX = 0f
+        }
+        text.gravity = if (eyeContact) Gravity.CENTER else Gravity.CENTER_HORIZONTAL
         translationY = 0f
         layoutParams = lp
     }
@@ -330,8 +368,15 @@ class TeleprompterView @JvmOverloads constructor(
                     var tx = startTx + e.rawX - startX
                     var ty = startTy + e.rawY - startY
                     if (parent != null) {
-                        tx = tx.coerceIn(-left.toFloat(), (parent.width - right).toFloat())
-                        ty = ty.coerceIn(-top.toFloat(), (parent.height - bottom).toFloat())
+                        // Keep what you see on screen; turned sideways, the box's on-screen width
+                        // and height are swapped.
+                        val turned = rotation % 180f != 0f
+                        val halfW = (if (turned) height else width) / 2f
+                        val halfH = (if (turned) width else height) / 2f
+                        val cx = (left + right) / 2f
+                        val cy = (top + bottom) / 2f
+                        if (halfW * 2 <= parent.width) tx = tx.coerceIn(halfW - cx, parent.width - halfW - cx)
+                        if (halfH * 2 <= parent.height) ty = ty.coerceIn(halfH - cy, parent.height - halfH - cy)
                     }
                     translationX = tx
                     translationY = ty
