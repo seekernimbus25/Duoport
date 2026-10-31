@@ -1587,20 +1587,23 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             proxy.close()
             return
         }
+        val seenNanos = SystemClock.elapsedRealtimeNanos()
         val rotated = proxy.imageInfo.rotationDegrees % 180 != 0
         val analysisAspect = if (rotated) proxy.height.toFloat() / proxy.width else proxy.width.toFloat() / proxy.height
         val tracker = subjectTracker ?: SubjectTracker().also { subjectTracker = it }
         tracker.track(proxy) { x, y, found ->
             proxy.close()
-            if (found) onSubject(x, y, analysisAspect)
+            if (found) onSubject(x, y, analysisAspect, seenNanos)
         }
     }
 
     /**
      * A face at ([x], [y]) in the analysis frame. The analysis and the recording may be cut
      * differently from the sensor (4:3 vs 16:9), so map it into the recorded picture first.
+     * [seenNanos] is when the picture was taken, not when the detector finished: the
+     * finished video's frame then moves with the person instead of a moment after.
      */
-    private fun onSubject(x: Float, y: Float, analysisAspect: Float) {
+    private fun onSubject(x: Float, y: Float, analysisAspect: Float, seenNanos: Long) {
         val recordAspect = frameOverlay.sourceAspect
         val (rx, ry) = if (recordAspect > analysisAspect) {
             val share = analysisAspect / recordAspect
@@ -1613,7 +1616,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val py = ry.coerceIn(0f, 1f)
         val start = recordStartNanos
         if (isRecording && start > 0L && pausedAtNanos == 0L) {
-            val timeUs = (SystemClock.elapsedRealtimeNanos() - start - pausedTotalNanos) / 1000
+            val timeUs = ((seenNanos - start - pausedTotalNanos) / 1000).coerceAtLeast(0L)
             synchronized(trackSamples) { trackSamples += SubjectSample(timeUs, px, py) }
         }
         runOnUiThread { frameOverlay.follow(px, py) }
@@ -1633,6 +1636,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     /** Grabs the preview, turns it the way the recording is, and looks for a face in it. */
     private fun trackFromPreview() {
         if (previewTrackBusy || !settings.activeAutoReframe) return
+        // The screen shows the camera a couple of frames late.
+        val seenNanos = SystemClock.elapsedRealtimeNanos() - PREVIEW_LAG_NANOS
         val shot = previewView.bitmap ?: return
         val frame = runCatching { uprightPreviewFrame(shot) }.getOrNull()
         shot.recycle()
@@ -1643,7 +1648,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             previewTrackBusy = false
             val aspect = frame.width.toFloat() / frame.height
             frame.recycle()
-            if (found && previewTracking) onSubject(x, y, aspect)
+            if (found && previewTracking) onSubject(x, y, aspect, seenNanos)
         }
     }
 
@@ -3170,5 +3175,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
         /** Long side of the preview copy the face detector gets. */
         const val PREVIEW_TRACK_SIZE = 720f
+
+        /** How far behind the camera the preview on screen is (about two frames). */
+        const val PREVIEW_LAG_NANOS = 70_000_000L
     }
 }

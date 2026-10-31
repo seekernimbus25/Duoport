@@ -103,8 +103,15 @@ object Reframe {
     /** Smoothing time constant of the path, each way (µs). */
     private const val PATH_TAU_US = 250_000f
 
-    /** A face lost for longer than this (µs): the frame waits, then moves to where it shows up again. */
-    private const val GAP_US = 600_000L
+    /**
+     * A face lost for longer than this (µs) has left the shot: the frame waits, then moves to
+     * where it shows up again. Shorter gaps are quick moves (the face blurs and isn't found),
+     * and the frame moves straight through them.
+     */
+    private const val GAP_US = 1_500_000L
+
+    /** How long the frame takes to move after a long gap (µs). */
+    private const val GAP_MOVE_US = 400_000L
 
     /**
      * Turns the face positions recorded during a take into a smooth path for one format:
@@ -136,7 +143,7 @@ object Reframe {
         for (i in 0 until n) {
             val time = sorted[i].timeUs
             if (i > 0 && time - times.last() > GAP_US) {
-                times += time - GAP_US / 2
+                times += time - GAP_MOVE_US
                 xs += xs.last()
                 ys += ys.last()
             }
