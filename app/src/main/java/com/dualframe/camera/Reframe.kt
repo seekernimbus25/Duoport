@@ -11,7 +11,6 @@ import androidx.media3.effect.MatrixTransformation
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
-import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.roundToInt
 
@@ -26,7 +25,7 @@ class SubjectTracker {
     private val detector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-            .setMinFaceSize(0.08f)
+            .setMinFaceSize(0.04f)
             .build()
     )
 
@@ -98,36 +97,94 @@ object Reframe {
         return fitted.centerX to fitted.centerY
     }
 
+    /** The path's dead zone: sways smaller than this (fraction of the picture) don't move the frame. */
+    private const val PATH_DEAD_ZONE = 0.02f
+
+    /** Smoothing time constant of the path, each way (µs). */
+    private const val PATH_TAU_US = 250_000f
+
+    /** A face lost for longer than this (µs): the frame waits, then moves to where it shows up again. */
+    private const val GAP_US = 600_000L
+
     /**
      * Turns the face positions recorded during a take into a smooth path for one format:
-     * hold still while the face moves a little, glide when it moves more, and smooth both
-     * forwards and backwards so the frame starts moving as the person does, not after.
+     * drop one-off misreads, ignore small sways without ever jumping, go all the way to the
+     * picture's edge when the face does, wait through gaps instead of drifting across them,
+     * and smooth forwards and backwards so the frame moves with the person, not after.
      */
     fun path(samples: List<SubjectSample>, format: OutputFormat, aspect: Float, start: NormRect): CropPath {
         if (samples.isEmpty()) return CropPath(longArrayOf(0), floatArrayOf(start.centerX), floatArrayOf(start.centerY))
         val sorted = samples.sortedBy { it.timeUs }
         val n = sorted.size
-        val t = LongArray(n) { sorted[it].timeUs }
         val x = FloatArray(n)
         val y = FloatArray(n)
-        // Dead zone: only take a new target when the face has really moved.
-        var cx = start.centerX
-        var cy = start.centerY
         for (i in 0 until n) {
             val (tx, ty) = target(format, aspect, sorted[i].x, sorted[i].y)
-            if (i == 0 || abs(tx - cx) > DEAD_ZONE) cx = tx
-            if (i == 0 || abs(ty - cy) > DEAD_ZONE) cy = ty
-            x[i] = cx
-            y[i] = cy
+            x[i] = tx
+            y[i] = ty
         }
-        smooth(t, x)
-        smooth(t, y)
-        return CropPath(t, x, y)
+        medianOf3(x)
+        medianOf3(y)
+        val low = CropMath.fit(aspect, format.aspect, 0f, 0f)
+        val high = CropMath.fit(aspect, format.aspect, 1f, 1f)
+        deadBand(x, low.centerX, high.centerX)
+        deadBand(y, low.centerY, high.centerY)
+
+        val times = ArrayList<Long>(n + 8)
+        val xs = ArrayList<Float>(n + 8)
+        val ys = ArrayList<Float>(n + 8)
+        for (i in 0 until n) {
+            val time = sorted[i].timeUs
+            if (i > 0 && time - times.last() > GAP_US) {
+                times += time - GAP_US / 2
+                xs += xs.last()
+                ys += ys.last()
+            }
+            times += time
+            xs += x[i]
+            ys += y[i]
+        }
+        val t = times.toLongArray()
+        val px = xs.toFloatArray()
+        val py = ys.toFloatArray()
+        smooth(t, px)
+        smooth(t, py)
+        return CropPath(t, px, py)
     }
 
-    /** Zero-lag smoothing: exponential smoothing run forwards, then backwards (time constant ~0.6 s). */
+    /** Replaces each value by the median of it and its neighbours: one wrong detection can't yank the frame. */
+    private fun medianOf3(v: FloatArray) {
+        if (v.size < 3) return
+        val src = v.copyOf()
+        for (i in 1 until v.size - 1) {
+            val a = src[i - 1]
+            val b = src[i]
+            val c = src[i + 1]
+            v[i] = maxOf(minOf(a, b), minOf(maxOf(a, b), c))
+        }
+    }
+
+    /**
+     * Follows only the part of each movement beyond the dead zone, so the frame holds through
+     * small sways and never jumps. At the picture's edge ([low] / [high]) it goes all the way.
+     */
+    private fun deadBand(v: FloatArray, low: Float, high: Float) {
+        var c = v[0]
+        for (i in v.indices) {
+            val target = v[i]
+            c = when {
+                target <= low + 1e-4f || target >= high - 1e-4f -> target
+                target - c > PATH_DEAD_ZONE -> target - PATH_DEAD_ZONE
+                c - target > PATH_DEAD_ZONE -> target + PATH_DEAD_ZONE
+                else -> c
+            }
+            v[i] = c
+        }
+    }
+
+    /** Zero-lag smoothing: exponential smoothing run forwards, then backwards. */
     private fun smooth(t: LongArray, v: FloatArray) {
-        val tau = 600_000f
+        val tau = PATH_TAU_US
         for (i in 1 until v.size) {
             val a = 1f - exp(-(t[i] - t[i - 1]) / tau)
             v[i] = v[i - 1] + (v[i] - v[i - 1]) * a

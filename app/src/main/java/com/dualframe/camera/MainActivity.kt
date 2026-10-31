@@ -1035,7 +1035,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                         AspectRatioStrategy(settings.cameraFrame.cameraRatio, AspectRatioStrategy.FALLBACK_RULE_AUTO)
                     )
                     .setResolutionStrategy(
-                        ResolutionStrategy(Size(320, 240), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
+                        ResolutionStrategy(Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
                     )
                     .build()
             )
@@ -3154,9 +3154,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         const val KEY_ASKED = "asked"
 
         /** How often Follow me looks for a face in the preview when it has no analysis stream. */
-        const val PREVIEW_TRACK_MS = 200L
+        const val PREVIEW_TRACK_MS = 150L
 
         /** Long side of the preview copy the face detector gets. */
-        const val PREVIEW_TRACK_SIZE = 480f
+        const val PREVIEW_TRACK_SIZE = 720f
     }
 }
