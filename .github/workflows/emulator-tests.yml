@@ -98,7 +98,15 @@ jobs:
           # Keep only the newest few result posts.
           gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' | grep '^emu-tests-' | tail -n +4 | \
             while read old; do gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true; done
-          gh release create "$TAG" results.zip REPORT.md --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
-            --title "Emulator test results ${{ github.run_number }} (not an app build)" \
-            --notes "Automated emulator test results for ${GITHUB_SHA::7}. Download results.zip for screenshots and logs."
+          # The report goes in the log first, so the results survive even if posting fails.
           head -c 60000 REPORT.md
+          NOTES="Automated emulator test results for ${GITHUB_SHA::7}. Download results.zip for screenshots and logs."
+          TITLE="Emulator test results ${{ github.run_number }} (not an app build)"
+          # Posting was once refused (403) for no clear reason: retry, then without --target.
+          for i in 1 2 3; do
+            gh release create "$TAG" results.zip REPORT.md --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+              --title "$TITLE" --notes "$NOTES" && exit 0
+            sleep 20
+          done
+          gh release create "$TAG" results.zip REPORT.md --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "$TITLE" --notes "$NOTES"

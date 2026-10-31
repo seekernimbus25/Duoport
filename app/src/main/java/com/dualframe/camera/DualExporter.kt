@@ -119,6 +119,10 @@ data class ExportJob(
     val captionReview: Boolean = false,
     /** The grade's vignette / grain / sharpening (its colour part is already in [lut]). */
     val grade: ColorGrade = ColorGrade(),
+    /** Paused stretches (ms from the start) and the whole time from start to stop, so a pause
+     *  the camera left in the file can be cut out. */
+    val pauses: List<LongRange> = emptyList(),
+    val wallMs: Long = 0,
 )
 
 /** One still photo to cut into every chosen shape. */
@@ -170,6 +174,8 @@ object DualExporter {
         _state.value = ExportState.Running(step = 1, total = job.outputs.size, format = first.first, progress = 0)
         scope.launch {
             val made = mutableListOf<File>()
+            // Everything after this (captions, cuts, the kept original) works on the closed-up take.
+            val job = closePauses(app, job)
             try {
                 val aspect = withContext(Dispatchers.IO) { displayAspect(job.main.file) }
                 val saved = mutableListOf<SavedVideo>()
@@ -348,6 +354,92 @@ object DualExporter {
         }
         return main
     }
+
+    /**
+     * Pause / resume normally leaves the paused time out of the file. If a camera kept recording
+     * through it (the file is about as long as the whole time from start to stop), the paused
+     * stretches are cut out here. If anything goes wrong the take is used as it is.
+     */
+    private suspend fun closePauses(context: Context, job: ExportJob): ExportJob {
+        val pausedMs = job.pauses.sumOf { it.last - it.first }
+        if (pausedMs < 500 || job.wallMs <= 0) return job
+        suspend fun close(take: Take): Take {
+            val fileMs = withContext(Dispatchers.IO) { durationMs(take.file) }
+            // Already closed up by the camera: about wallMs - pausedMs long.
+            if (fileMs <= 0 || fileMs < job.wallMs - pausedMs / 2) return take
+            val keep = mutableListOf<LongRange>()
+            var from = 0L
+            job.pauses.sortedBy { it.first }.forEach { p ->
+                if (p.first - from > 100) keep += from..p.first
+                from = maxOf(from, p.last)
+            }
+            if (fileMs - from > 100) keep += from..fileMs
+            if (keep.isEmpty()) return take
+            val out = File(take.file.parentFile, take.file.nameWithoutExtension + "_joined.mp4")
+            val items = keep.map { r ->
+                EditedMediaItem.Builder(
+                    MediaItem.Builder()
+                        .setUri(Uri.fromFile(take.file))
+                        .setClippingConfiguration(
+                            MediaItem.ClippingConfiguration.Builder()
+                                .setStartPositionMs(r.first)
+                                .setEndPositionMs(r.last)
+                                .build()
+                        )
+                        .build()
+                ).build()
+            }
+            val bitrate = withContext(Dispatchers.IO) { bitrateOf(take.file) }
+            val encoders = DefaultEncoderFactory.Builder(context).apply {
+                if (bitrate > 0) setRequestedVideoEncoderSettings(VideoEncoderSettings.Builder().setBitrate(bitrate).build())
+            }.build()
+            val finished = CompletableDeferred<Unit>()
+            withContext(Dispatchers.Main) {
+                Transformer.Builder(context)
+                    .setEncoderFactory(encoders)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                            finished.complete(Unit)
+                        }
+
+                        override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                            finished.completeExceptionally(exportException)
+                        }
+                    })
+                    .build()
+                    .start(Composition.Builder(EditedMediaItemSequence(items)).build(), out.absolutePath)
+            }
+            finished.await()
+            if (out.length() == 0L) error("joining the take produced no file")
+            withContext(Dispatchers.IO) { take.file.delete() }
+            return Take(out, take.durationNs)
+        }
+        return runCatching {
+            job.copy(main = close(job.main), inset = job.inset?.let { close(it) })
+        }.getOrElse { job }
+    }
+
+    private fun durationMs(file: File): Long = runCatching {
+        MediaMetadataRetriever().run {
+            try {
+                setDataSource(file.absolutePath)
+                extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            } finally {
+                release()
+            }
+        }
+    }.getOrDefault(0L)
+
+    private fun bitrateOf(file: File): Int = runCatching {
+        MediaMetadataRetriever().run {
+            try {
+                setDataSource(file.absolutePath)
+                extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull() ?: 0
+            } finally {
+                release()
+            }
+        }
+    }.getOrDefault(0)
 
     /** width / height of the video as it is meant to be displayed (rotation applied). */
     private fun displayAspect(file: File): Float {

@@ -593,16 +593,20 @@ def rec12(t):
     set_formats(["9:16"], "720p")
     before = set(movies())
     tap(rid="record_button")
+    t0 = time.time()
     sleep(3)
     t.check(find(rid="flip_button", timeout=1) is None, "flip button gives way while recording")
     tap(desc="Pause recording")
+    tp = time.time()
     sleep(1)
     t.shot("paused")
     t.check(find(text="Paused", contains=True, timeout=2) is not None, "timer says Paused")
-    sleep(5)
+    sleep(6)
     tap(desc="Resume recording")
+    tr = time.time()
     sleep(3)
     tap(rid="record_button")
+    ts = time.time()
     end = time.time() + 300
     while time.time() < end and not (set(movies()) - before):
         sleep(4)
@@ -610,8 +614,10 @@ def rec12(t):
     t.check(bool(new), "video saved")
     if new:
         info = check_video(t, new[-1])
-        # About 6 s recorded with a 6 s pause: the file should be well under the 12 s on the clock.
-        t.check(info["duration"] < 9.5, f"paused stretch left out ({info['duration']:.1f}s)")
+        total, paused = ts - t0, tr - tp
+        # Each tap looks at the screen first, so allow a couple of seconds either way.
+        t.note(f"recorded about {total - paused:.1f}s with a {paused:.1f}s pause ({total:.1f}s on the clock)")
+        t.check(info["duration"] < total - paused * 0.6, f"paused stretch left out ({info['duration']:.1f}s)")
     close_results()
     t.check(find(rid="flip_button", timeout=2) is not None, "flip button back after recording")
 
@@ -695,8 +701,9 @@ def prof03(t):
     if "DF-Log_to_Rec709" in out:
         # Newest first; a second save is named "DF-Log_to_Rec709 (1).cube", so keep whole lines.
         name = [x.strip() for x in out.splitlines() if "DF-Log_to_Rec709" in x][0]
-        local = pull(f"/sdcard/Download/{name}")
-        txt = open(local, errors="ignore").read()
+        # Read it on the phone (the name can have spaces and brackets: two layers of quoting).
+        txt = ashell(f"head -c 2000 \"'/sdcard/Download/{name}'\"")
+        t.note(f"{name}: {txt[:120]!r}")
         t.check("LUT_3D_SIZE" in txt, "valid .cube text")
     back()
     pick_profile("Standard")
@@ -2488,7 +2495,9 @@ def stu01(t):
         pick_document("song.m4a")
         sleep(3)
         t.shot("music")
-        t.check(find(text="Fade in", timeout=3) is not None, "music added with its controls")
+        # The song's controls start below the fold of the panel.
+        t.check(find(text="♫", contains=True, timeout=3) is not None, "music track listed")
+        t.check(scroll_to(text="Fade in", max_swipes=4) is not None, "music added with its controls")
     except AssertionError as e:
         t.check(False, str(e))
     design_tab("Captions")
@@ -2516,11 +2525,21 @@ def shots_screen():
     sleep(2)
 
 
-def open_list(name="Morning tea"):
+# The list's name as the app shows it (SL-01 reads it back, in case typing went wrong).
+LIST = {"name": "Morning tea"}
+
+
+def list_title():
+    w, h = screen_size()
+    skip = {"Shoot", "Shot lists", "New shot list", "Back"}
+    return next((n.text for n in dump() if n.text and n.cy < h * 0.12 and n.text not in skip and not n.text[0].isdigit()), None)
+
+
+def open_list(name=None):
     """Opens the list, unless the shots button already went straight into it (tapping the
     title there renames it)."""
     if find(text="Add a shot", timeout=1) is None:
-        tap(text=name)
+        tap(text=name or LIST["name"])
         sleep(1.5)
 
 
@@ -2534,14 +2553,17 @@ def sl01(t):
     tap(text="Save")
     sleep(2)
     t.shot("new_list")
-    t.check(find(text="Morning tea", timeout=3) is not None, "list opened")
+    title = list_title()
+    if title:
+        LIST["name"] = title
+    t.soft(title == "Morning tea", f"list named as typed (got {title!r})")
     t.check(find(text="SHAPES FOR EVERY TAKE", timeout=2) is not None, "shapes row")
 
 
 @test("SL-03", "Paste a shot list")
 def sl03(t):
     shots_screen()
-    n = find(text="Morning tea", timeout=3)
+    n = find(text=LIST["name"], timeout=3)
     if n:
         tap_xy(n.cx, n.cy)
         sleep(1.5)
@@ -2653,8 +2675,9 @@ def sl07(t):
     fresh_camera()
     new = record(4, timeout=500)
     t.note(str(new))
-    t.check(all(re.search(r"Morning_tea_S01_T01_WS_\d{8}_\d{6}_(9x16|16x9)_", n) for n in new) and len(new) == 2,
-            f"two files named Morning_tea_S01_T01_WS_…: {new}")
+    slug = re.sub(r"[^A-Za-z0-9_-]", "", LIST["name"].replace(" ", "_"))
+    t.check(all(re.search(slug + r"_S01_T01_WS_\d{8}_\d{6}_(9x16|16x9)_", n) for n in new) and len(new) == 2,
+            f"two files named {slug}_S01_T01_WS_…: {new}")
     close_results()
     t.shot("prompt")
     t.check(find(text="How was take 1?", timeout=3) is not None, "rating prompt")

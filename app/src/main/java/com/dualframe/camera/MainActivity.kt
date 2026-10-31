@@ -312,6 +312,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
      *  Follow me path stays on the file's own clock, which skips the paused time. */
     @Volatile private var pausedAtNanos = 0L
     @Volatile private var pausedTotalNanos = 0L
+    /** The paused stretches, in ms from the start, in case the camera leaves them in the file. */
+    private val pauseRanges = mutableListOf<LongRange>()
 
     /** Frames in a row where the camera reported it wasn't using the DF-Log curve. */
     @Volatile private var tonemapIgnored = 0
@@ -1939,6 +1941,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         recordStartNanos = 0L
         pausedAtNanos = 0L
         pausedTotalNanos = 0L
+        pauseRanges.clear()
         synchronized(trackSamples) { trackSamples.clear() }
         mainTake = null
         insetTake = null
@@ -1979,7 +1982,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             if (pausedAtNanos == 0L) pausedAtNanos = now
             teleprompter.pause()
         } else {
-            if (pausedAtNanos != 0L) pausedTotalNanos += now - pausedAtNanos
+            if (pausedAtNanos != 0L) {
+                pausedTotalNanos += now - pausedAtNanos
+                pauseRanges += msSinceStart(pausedAtNanos)..msSinceStart(now)
+            }
             pausedAtNanos = 0L
             if (teleprompter.isVisible) teleprompter.play()
         }
@@ -2006,6 +2012,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         pauseButton.contentDescription = getString(if (paused) R.string.resume_recording else R.string.pause_recording)
     }
 
+    private fun msSinceStart(nanos: Long) = ((nanos - recordStartNanos) / 1_000_000).coerceAtLeast(0)
+
     private fun timerLabel(recordedNanos: Long): String {
         val time = formatDuration(recordedNanos)
         return if (pausedAtNanos != 0L) getString(R.string.recording_paused, time) else time
@@ -2014,6 +2022,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun onAllRecordingsFinished(lastError: Int) {
         mainRecording = null
         insetRecording = null
+        val endNanos = SystemClock.elapsedRealtimeNanos()
+        // Stopped while paused: that last stretch counts as paused too.
+        if (pausedAtNanos != 0L) pauseRanges += msSinceStart(pausedAtNanos)..msSinceStart(endNanos)
+        val pauses = pauseRanges.toList()
+        val wallMs = if (recordStartNanos > 0L) msSinceStart(endNanos) else 0L
         pausedAtNanos = 0L
         timerText.animate().cancel()
         timerText.alpha = 1f
@@ -2055,6 +2068,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 captions = settings.captions,
                 captionStyle = CaptionStyle.load(this),
                 captionReview = settings.captionReview,
+                pauses = pauses,
+                wallMs = wallMs,
                 track = if (settings.activeAutoReframe && dualKind == DualKind.NONE) {
                     synchronized(trackSamples) { trackSamples.toList() }
                 } else {
