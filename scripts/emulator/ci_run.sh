@@ -18,7 +18,14 @@ adb shell settings put global hide_error_dialogs 1
 adb shell wm dismiss-keyguard
 # No on-screen keyboard: it covers dialog buttons and autocorrects typed text. adb's key
 # events still type into the focused field without one.
-for ime in $(adb shell ime list -s | tr -d '\r'); do adb shell ime disable "$ime" || true; done
+# (Disabling the input method alone didn't stick, so the keyboard apps are disabled.)
+adb shell ime list -s -a >> "$OUT_DIR/device.txt"
+for ime in $(adb shell ime list -s -a | tr -d '\r'); do
+  adb shell ime disable "$ime" || true
+  adb shell pm disable-user --user 0 "${ime%%/*}" || true
+done
+adb shell settings put secure show_ime_with_hard_keyboard 0
+adb shell ime list -s >> "$OUT_DIR/device.txt"
 adb install -r -g "$NEW_APK" | tee "$OUT_DIR/install.txt"
 ONLY_ARGS=()
 if [ -n "${ONLY:-}" ]; then ONLY_ARGS=(--only "$ONLY"); fi

@@ -696,13 +696,23 @@ def prof03(t):
     if s:
         tap_xy(s.cx, s.cy)
         sleep(2)
-    out = ashell("ls -t /sdcard/Download")
+    out = ""
+    for _ in range(10):  # the toast comes when the file is written
+        out = ashell("ls -t /sdcard/Download")
+        if "DF-Log_to_Rec709" in out:
+            break
+        sleep(2)
     t.check("DF-Log_to_Rec709" in out, "cube saved in Downloads")
     if "DF-Log_to_Rec709" in out:
         # Newest first; a second save is named "DF-Log_to_Rec709 (1).cube", so keep whole lines.
         name = [x.strip() for x in out.splitlines() if "DF-Log_to_Rec709" in x][0]
         # Read it on the phone (the name can have spaces and brackets: two layers of quoting).
-        txt = ashell(f"head -c 2000 \"'/sdcard/Download/{name}'\"")
+        txt = ""
+        for _ in range(5):
+            txt = ashell(f"head -c 2000 \"'/sdcard/Download/{name}'\"")
+            if txt.strip():
+                break
+            sleep(2)
         t.note(f"{name}: {txt[:120]!r}")
         t.check("LUT_3D_SIZE" in txt, "valid .cube text")
     back()
@@ -2535,6 +2545,15 @@ def list_title():
     return next((n.text for n in dump() if n.text and n.cy < h * 0.12 and n.text not in skip and not n.text[0].isdigit()), None)
 
 
+def focus_field():
+    """Taps the first text box and waits: typing straight into a dialog that is still opening can
+    land letters out of order."""
+    box = next((x for x in dump() if "EditText" in x.cls), None)
+    if box:
+        tap_xy(box.cx, box.cy)
+        sleep(0.8)
+
+
 def open_list(name=None):
     """Opens the list, unless the shots button already went straight into it (tapping the
     title there renames it)."""
@@ -2549,6 +2568,7 @@ def sl01(t):
     t.shot("lists")
     tap(text="New shot list")
     sleep(1)
+    focus_field()
     type_text("Morning tea")
     tap(text="Save")
     sleep(2)
@@ -2738,8 +2758,9 @@ def sl12(t):
     t.shot("list_with_takes")
     txt = " ".join(n.text for n in dump())
     t.check("T1 ✓" in txt, "take 1 good")
-    t.check("T2 ✓ ★" in txt or "T2 ✓" in txt, "take 2 good (★ = latest good)")
-    t.check("T3 ✗" in txt or "T4" in txt, "take marked no good shown")
+    # SL-09 rated take 1 good, SL-10 take 2 no good, SL-08 take 3 good (so it's the one used).
+    t.check("T2 ✗" in txt, "take 2 marked no good")
+    t.check("T3 ✓ ★" in txt, "take 3 good and used (★)")
     n = find(text="T1 ✓", timeout=2)
     if n:
         tap_xy(n.cx, n.cy)

@@ -2612,6 +2612,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         lifecycleScope.launch {
             val saved = withContext(Dispatchers.IO) {
                 runCatching {
+                    // Work the LUT out first (it takes a moment), so the file never sits empty.
+                    val cube = Luts.logToRec709CubeText().toByteArray()
                     val values = ContentValues().apply {
                         put(MediaStore.Downloads.DISPLAY_NAME, "DF-Log_to_Rec709.cube")
                         put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
@@ -2619,7 +2621,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     }
                     val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                         ?: error("Downloads unavailable")
-                    contentResolver.openOutputStream(uri)!!.use { it.write(Luts.logToRec709CubeText().toByteArray()) }
+                    contentResolver.openOutputStream(uri)!!.use { it.write(cube) }
                 }.isSuccess
             }
             Toast.makeText(
