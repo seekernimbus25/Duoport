@@ -690,18 +690,22 @@ def prof03(t):
         back()
         raise NeedsPhone("DF-Log not offered by the emulator camera")
     tap_xy(n.cx, n.cy)
-    sleep(2)
-    s = scroll_to(text="Save DF-Log", contains=True, max_swipes=3)
+    # Picking DF-Log restarts the camera and rebuilds this panel: let it settle, then find the
+    # button again right before tapping (and once more if no file shows up).
+    sleep(5)
     t.shot("profile_panel")
-    if s:
-        tap_xy(s.cx, s.cy)
-        sleep(2)
     out = ""
-    for _ in range(10):  # the toast comes when the file is written
-        out = ashell("ls -t /sdcard/Download")
+    for attempt in range(2):
+        s = scroll_to(text="Save DF-Log", contains=True, max_swipes=3)
+        if s:
+            tap_xy(s.cx, s.cy)
+        for _ in range(8):
+            sleep(2)
+            out = ashell("ls -t /sdcard/Download")
+            if "DF-Log_to_Rec709" in out:
+                break
         if "DF-Log_to_Rec709" in out:
             break
-        sleep(2)
     t.check("DF-Log_to_Rec709" in out, "cube saved in Downloads")
     if "DF-Log_to_Rec709" in out:
         # Newest first; a second save is named "DF-Log_to_Rec709 (1).cube", so keep whole lines.
@@ -2637,13 +2641,13 @@ def sl04(t):
     n = scroll_to(text="Steam rising", contains=True, max_swipes=4)
     tap_xy(n.cx, n.cy)
     sleep(1)
-    tap(text="Move up")
+    scroll_tap(text="Move up", max_swipes=5)  # under the script and notes boxes
     sleep(1.5)
     t.shot("moved_up")
     n = scroll_to(text="Steam rising", contains=True, max_swipes=4)
     tap_xy(n.cx, n.cy)
     sleep(1)
-    tap(text="Delete shot")
+    scroll_tap(text="Delete shot", max_swipes=5)
     tap(text="Delete")
     sleep(1.5)
     t.check(find(text="Steam rising", contains=True, timeout=2) is None, "shot deleted")
