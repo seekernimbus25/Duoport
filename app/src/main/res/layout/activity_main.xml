@@ -471,6 +471,17 @@
                 android:layout_gravity="center_vertical|end"
                 android:contentDescription="@string/flip_camera"
                 android:src="@drawable/ic_cameraswitch" />
+
+            <!-- Takes the flip button's place while recording. -->
+            <ImageButton
+                android:id="@+id/pause_button"
+                style="@style/DF.IconButton"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_gravity="center_vertical|end"
+                android:contentDescription="@string/pause_recording"
+                android:src="@drawable/ic_pause"
+                android:visibility="gone" />
         </FrameLayout>
     </LinearLayout>
 

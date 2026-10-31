@@ -140,6 +140,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private lateinit var teleprompter: TeleprompterView
     private lateinit var recordButton: ImageButton
     private lateinit var flipButton: ImageButton
+    private lateinit var pauseButton: ImageButton
     private lateinit var scriptButton: ImageButton
 
     // Shot list mode: the shot list being shot, and the take just recorded (shot id, take).
@@ -307,6 +308,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
     }
     @Volatile private var recordStartNanos = 0L
+    /** Pause: when it began (0 = not paused) and how long all pauses so far lasted, so the
+     *  Follow me path stays on the file's own clock, which skips the paused time. */
+    @Volatile private var pausedAtNanos = 0L
+    @Volatile private var pausedTotalNanos = 0L
 
     /** Frames in a row where the camera reported it wasn't using the DF-Log curve. */
     @Volatile private var tonemapIgnored = 0
@@ -386,6 +391,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         teleprompter = findViewById(R.id.teleprompter)
         recordButton = findViewById(R.id.record_button)
         flipButton = findViewById(R.id.flip_button)
+        pauseButton = findViewById(R.id.pause_button)
+        pauseButton.setOnClickListener { togglePause() }
         scriptButton = findViewById(R.id.script_button)
         dualButton = findViewById(R.id.dual_button)
         settingsButton = findViewById(R.id.settings_button)
@@ -1603,8 +1610,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val px = rx.coerceIn(0f, 1f)
         val py = ry.coerceIn(0f, 1f)
         val start = recordStartNanos
-        if (isRecording && start > 0L) {
-            val timeUs = (SystemClock.elapsedRealtimeNanos() - start) / 1000
+        if (isRecording && start > 0L && pausedAtNanos == 0L) {
+            val timeUs = (SystemClock.elapsedRealtimeNanos() - start - pausedTotalNanos) / 1000
             synchronized(trackSamples) { trackSamples += SubjectSample(timeUs, px, py) }
         }
         runOnUiThread { frameOverlay.follow(px, py) }
@@ -1777,9 +1784,15 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                         setRecordingUi(true)
                     }
                 }
+                is VideoRecordEvent.Pause -> {
+                    if (isMain) onPausedChanged(true, event.recordingStats.recordedDurationNanos)
+                }
+                is VideoRecordEvent.Resume -> {
+                    if (isMain) onPausedChanged(false, event.recordingStats.recordedDurationNanos)
+                }
                 is VideoRecordEvent.Status -> {
                     if (isMain) {
-                        timerText.text = formatDuration(event.recordingStats.recordedDurationNanos)
+                        timerText.text = timerLabel(event.recordingStats.recordedDurationNanos)
                         val level = event.recordingStats.audioStats.audioAmplitude
                         audioMeter.update(level)
                         teleprompter.onVoiceLevel(level)
@@ -1924,6 +1937,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         baseName = slateName()
         recordingStartMs = System.currentTimeMillis()
         recordStartNanos = 0L
+        pausedAtNanos = 0L
+        pausedTotalNanos = 0L
         synchronized(trackSamples) { trackSamples.clear() }
         mainTake = null
         insetTake = null
@@ -1946,9 +1961,62 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         insetRecording?.stop()
     }
 
+    /** Pause / resume: one file, with the paused stretch left out. */
+    private fun togglePause() {
+        val main = mainRecording ?: return
+        if (pausedAtNanos == 0L) {
+            main.pause()
+            insetRecording?.pause()
+        } else {
+            main.resume()
+            insetRecording?.resume()
+        }
+    }
+
+    private fun onPausedChanged(paused: Boolean, recordedNanos: Long) {
+        val now = SystemClock.elapsedRealtimeNanos()
+        if (paused) {
+            if (pausedAtNanos == 0L) pausedAtNanos = now
+            teleprompter.pause()
+        } else {
+            if (pausedAtNanos != 0L) pausedTotalNanos += now - pausedAtNanos
+            pausedAtNanos = 0L
+            if (teleprompter.isVisible) teleprompter.play()
+        }
+        showPauseIcon(paused)
+        timerText.text = timerLabel(recordedNanos)
+        timerText.animate().cancel()
+        timerText.alpha = 1f
+        if (paused) {
+            timerText.animate().alpha(0.35f).setDuration(600).withEndAction(object : Runnable {
+                override fun run() {
+                    if (pausedAtNanos == 0L) return
+                    timerText.animate().alpha(if (timerText.alpha < 0.5f) 1f else 0.35f).setDuration(600).withEndAction(this).start()
+                }
+            }).start()
+        }
+    }
+
+    /** Pause bars while recording; a red dot to carry on when paused. */
+    private fun showPauseIcon(paused: Boolean) {
+        pauseButton.setImageResource(if (paused) R.drawable.ic_resume_dot else R.drawable.ic_pause)
+        pauseButton.imageTintList = android.content.res.ColorStateList.valueOf(
+            ContextCompat.getColor(this, if (paused) R.color.record_red else R.color.text_primary),
+        )
+        pauseButton.contentDescription = getString(if (paused) R.string.resume_recording else R.string.pause_recording)
+    }
+
+    private fun timerLabel(recordedNanos: Long): String {
+        val time = formatDuration(recordedNanos)
+        return if (pausedAtNanos != 0L) getString(R.string.recording_paused, time) else time
+    }
+
     private fun onAllRecordingsFinished(lastError: Int) {
         mainRecording = null
         insetRecording = null
+        pausedAtNanos = 0L
+        timerText.animate().cancel()
+        timerText.alpha = 1f
         setRecordingUi(false)
         teleprompter.pause()
         lastShotTake = if (mainTake != null) recordingShotTake else null
@@ -2003,6 +2071,10 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         Glass.show(meterRow, recording && settings.isPro && !highSpeedBound)
         formatScroller.isVisible = !recording
         if (recording) timerText.text = formatDuration(0)
+        // While recording, pause / resume sits where the flip button was (not for slow motion).
+        flipButton.isVisible = !recording
+        pauseButton.isVisible = recording && !highSpeedBound
+        showPauseIcon(false)
         listOf<View>(flipButton, dualButton, settingsButton, modeAuto, modePro).forEach {
             it.isEnabled = !recording
             it.animate().alpha(if (recording) 0.35f else 1f).setDuration(160).start()

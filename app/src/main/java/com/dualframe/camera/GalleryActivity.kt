@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.LruCache
@@ -12,16 +13,21 @@ import android.util.Size
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -158,6 +164,10 @@ class GalleryActivity : AppCompatActivity() {
     private lateinit var actionBar: LinearLayout
     private lateinit var actionText: TextView
 
+    /** The system's "allow DualFrame to delete these?" for videos made before a reinstall. */
+    private val deleteLauncher =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { load() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -195,37 +205,53 @@ class GalleryActivity : AppCompatActivity() {
         }
     }
 
-    /** Long-press picks videos; a glass bar at the bottom then offers Trim & join. */
+    /** Long-press picks videos; a glass bar at the bottom then offers delete, Trim & join and the editor. */
     private fun buildActionBar() {
         val d = { v: Float -> Glass.dp(this, v).toInt() }
+        val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
         actionBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.VERTICAL
             background = ContextCompat.getDrawable(context, R.drawable.bg_glass_panel)
             setPadding(d(20f), d(12f), d(12f), d(12f))
             visibility = View.GONE
         }
+        // Top row: how many, delete, cancel.
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
         actionText = Glass.body(this, "")
-        actionBar.addView(actionText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        actionBar.addView(Glass.pill(this, getString(android.R.string.cancel)) {
+        top.addView(actionText, LinearLayout.LayoutParams(0, wrap, 1f))
+        top.addView(ImageButton(this, null, 0, R.style.DF_IconButton).apply {
+            setImageResource(R.drawable.ic_delete)
+            imageTintList = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(context, R.color.record_red))
+            contentDescription = getString(R.string.delete)
+            setOnClickListener { confirmDeletePicked() }
+        }, LinearLayout.LayoutParams(d(44f), d(44f)))
+        top.addView(Glass.pill(this, getString(android.R.string.cancel)) {
             picked.clear()
             refreshPicked()
-        })
-        actionBar.addView(Glass.pill(this, getString(R.string.trim_and_join)) {
+        }, LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = d(8f) })
+        actionBar.addView(top)
+        // Second row: what to make from them.
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.END
+        }
+        actions.addView(Glass.pill(this, getString(R.string.trim_and_join)) {
             if (picked.isNotEmpty()) EditorActivity.open(this, picked.map { it.uri })
             picked.clear()
             refreshPicked()
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            marginStart = d(8f)
         })
         // The full editor: timeline, music, captions, grading and design on these clips together.
-        actionBar.addView(Glass.pill(this, getString(R.string.edit_together), selected = true) {
+        actions.addView(Glass.pill(this, getString(R.string.edit_together), selected = true) {
             val videos = picked.filter { !it.photo }.map { it.uri }
             if (videos.isNotEmpty()) DesignActivity.openAll(this, videos)
             picked.clear()
             refreshPicked()
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            marginStart = d(8f)
+        }, LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = d(8f) })
+        actionBar.addView(actions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, wrap).apply {
+            topMargin = d(8f)
         })
         findViewById<android.widget.FrameLayout>(R.id.root).addView(
             actionBar,
@@ -235,6 +261,39 @@ class GalleryActivity : AppCompatActivity() {
                 android.view.Gravity.BOTTOM,
             ),
         )
+    }
+
+    private fun confirmDeletePicked() {
+        val chosen = picked.toList()
+        if (chosen.isEmpty()) return
+        MaterialAlertDialogBuilder(this)
+            .setTitle(resources.getQuantityString(R.plurals.delete_picked_title, chosen.size, chosen.size))
+            .setMessage(R.string.delete_picked_message)
+            .setPositiveButton(R.string.delete) { _, _ -> deletePicked(chosen) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun deletePicked(chosen: List<GalleryVideo>) {
+        picked.clear()
+        refreshPicked()
+        lifecycleScope.launch {
+            // Ours are deleted straight away; ones from before a reinstall need the system to ask.
+            val notOurs = withContext(Dispatchers.IO) {
+                chosen.filter { video ->
+                    runCatching { contentResolver.delete(video.uri, null, null) <= 0 }.getOrDefault(true)
+                }
+            }
+            if (notOurs.isNotEmpty()) {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val sender = MediaStore.createDeleteRequest(contentResolver, notOurs.map { it.uri }).intentSender
+                    deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                } else {
+                    Toast.makeText(this@GalleryActivity, R.string.delete_failed, Toast.LENGTH_SHORT).show()
+                }
+            }
+            load()
+        }
     }
 
     private fun togglePicked(video: GalleryVideo) {

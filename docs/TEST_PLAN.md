@@ -128,6 +128,7 @@ adb shell am force-stop com.dualframe.camera       # kill the app
 | REC-09 🤖 | P1 | Audio gain (if set) | The audio level changes accordingly; no clipping at moderate gain |
 | REC-10 🤖 | P2 | Timecode | The original has a timecode track starting at the recording's time of day |
 | REC-11 🤖 | P1 | Stall watchdog | If the preview stops getting frames, it recovers by itself within ~2 s (watch logcat during switching modes) |
+| REC-12 🤖 | P0 | Pause / resume | While recording, the pause button sits where flip was; the timer blinks "Paused"; resume carries on in the same file, which leaves the paused time out |
 
 ## 6. Recording profiles (Pro)
 | ID | Pri | Test | Expected |
@@ -240,6 +241,7 @@ adb shell am force-stop com.dualframe.camera       # kill the app
 | LIB-03 🤖 | P1 | ⋯ menu: Grade, Add captions, Trim & join, Design, Open with | Each opens the right screen |
 | LIB-04 🤖 | P1 | Delete | Asks for confirmation (Android dialog on 11+); the video goes away |
 | LIB-05 🤖 | P1 | Long-press several → Trim & join | The editor opens with those clips in order |
+| LIB-06 🤖 | P1 | Long-press several → delete | The bin asks "Delete 2 videos?"; both go (Android asks too for videos from before a reinstall) |
 
 ## 17. Trim & join (library)
 | ID | Pri | Test | Expected |

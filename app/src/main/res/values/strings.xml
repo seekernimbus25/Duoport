@@ -94,6 +94,9 @@
     <string name="share_format">Share %1$s video</string>
     <string name="open_with">Open in…</string>
     <string name="delete">Delete</string>
+    <string name="pause_recording">Pause recording</string>
+    <string name="resume_recording">Resume recording</string>
+    <string name="recording_paused">%1$s · Paused</string>
     <string name="delete_title">Delete this video?</string>
     <string name="delete_message">It will be removed from your phone.</string>
     <string name="delete_failed">Couldn\'t delete this video.</string>
@@ -149,6 +152,11 @@
     <string name="captions_unsupported">This phone\'s speech engine doesn\'t offer %1$s on the device.</string>
     <string name="edit">Trim or join</string>
     <string name="trim_and_join">Trim &amp; join</string>
+    <plurals name="delete_picked_title">
+        <item quantity="one">Delete %d video?</item>
+        <item quantity="other">Delete %d videos?</item>
+    </plurals>
+    <string name="delete_picked_message">They will be removed from your phone.</string>
     <plurals name="picked_count">
         <item quantity="one">%d video picked</item>
         <item quantity="other">%d videos picked</item>

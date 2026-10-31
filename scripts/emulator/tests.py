@@ -587,6 +587,35 @@ def rec10(t):
     close_results()
 
 
+@test("REC-12", "Pause and resume while recording")
+def rec12(t):
+    fresh_camera()
+    set_formats(["9:16"], "720p")
+    before = set(movies())
+    tap(rid="record_button")
+    sleep(3)
+    t.check(find(rid="flip_button", timeout=1) is None, "flip button gives way while recording")
+    tap(desc="Pause recording")
+    sleep(1)
+    t.shot("paused")
+    t.check(find(text="Paused", contains=True, timeout=2) is not None, "timer says Paused")
+    sleep(5)
+    tap(desc="Resume recording")
+    sleep(3)
+    tap(rid="record_button")
+    end = time.time() + 300
+    while time.time() < end and not (set(movies()) - before):
+        sleep(4)
+    new = sorted(set(movies()) - before)
+    t.check(bool(new), "video saved")
+    if new:
+        info = check_video(t, new[-1])
+        # About 6 s recorded with a 6 s pause: the file should be well under the 12 s on the clock.
+        t.check(info["duration"] < 9.5, f"paused stretch left out ({info['duration']:.1f}s)")
+    close_results()
+    t.check(find(rid="flip_button", timeout=2) is not None, "flip button back after recording")
+
+
 @test("REC-11", "Preview recovers after switching modes quickly")
 def rec11(t):
     fresh_camera()
@@ -1700,6 +1729,33 @@ def lib05(t):
     t.shot("editor")
     t.check(find(text="2 clip(s)", contains=True, timeout=5) is not None, "editor has both clips")
     back()
+    back()
+
+
+@test("LIB-06", "Long-press several → delete them")
+def lib06(t):
+    fresh_camera()
+    # Two fresh clips to delete, so the test videos the other tests use stay.
+    set_formats(["9:16"], "720p")
+    made = []
+    for _ in range(2):
+        made += record(2)
+        close_results()
+    library_open()
+    before = set(movies())
+    items = [n for n in dump() if n.rid == "duration" and n.text != "Photo"]
+    long_press(Node_at(items[0]))
+    tap_xy(items[1].cx, items[1].cy - 80)
+    t.shot("picked")
+    tap(desc="Delete")
+    sleep(1)
+    t.shot("confirm")
+    t.check(find(text="Delete 2 videos?", timeout=3) is not None, "asks before deleting two")
+    tap(text="Delete")
+    sleep(3)
+    gone = before - set(movies())
+    t.check(len(gone) == 2 and gone <= set(made), f"the two picked videos deleted: {sorted(gone)}")
+    t.check(find(text="videos picked", contains=True, timeout=1) is None, "selection bar closed")
     back()
 
 
