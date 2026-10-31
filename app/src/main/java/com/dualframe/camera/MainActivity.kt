@@ -94,6 +94,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.imageview.ShapeableImageView
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.slider.LabelFormatter
 import com.google.android.material.slider.Slider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -2521,7 +2522,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             valueTo = (count - 1).toFloat()
             stepSize = 1f
             value = start.toFloat()
-            setLabelFormatter { label(it.roundToInt()) }
+            // The value is shown above the slider. The floating label lives in the window overlay and
+            // crashes if the panel is rebuilt while it's fading out (BaseSlider onAnimationEnd NPE).
+            labelBehavior = LabelFormatter.LABEL_GONE
             trackActiveTintList = ContextCompat.getColorStateList(context, R.color.accent)!!
             trackInactiveTintList = android.content.res.ColorStateList.valueOf(0x26FFFFFF)
             thumbTintList = ContextCompat.getColorStateList(context, R.color.text_primary)!!
