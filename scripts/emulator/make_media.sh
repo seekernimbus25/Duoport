@@ -23,6 +23,10 @@ ffmpeg -y -v error -f lavfi -i "smptehdbars=size=1920x1080:rate=30:duration=6" \
   -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc -tag:v hvc1 \
   -c:a aac -shortest hlg.mp4
 
+# A 20 s "song" for the editor's music track.
+ffmpeg -y -v error -f lavfi -i "sine=frequency=330:sample_rate=44100:duration=20" -f lavfi -i "sine=frequency=495:sample_rate=44100:duration=20" \
+  -filter_complex "[0][1]amix=inputs=2,volume=0.6" -c:a aac -b:a 128k song.m4a
+
 # Background video for the design editor.
 ffmpeg -y -v error -f lavfi -i "mandelbrot=size=720x1280:rate=30" -t 6 \
   -c:v libx264 -pix_fmt yuv420p -preset veryfast bg_video.mp4

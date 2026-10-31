@@ -476,6 +476,11 @@ class ShotListActivity : AppCompatActivity() {
             options += getString(R.string.shots_join_all, shapes.joinToString(" + ") { it.label }) to { joinAll(p, picks, shapes) }
         }
         labels.forEach { label ->
+            options += getString(R.string.shots_open_editor, label) to {
+                DesignActivity.openAll(this, picks.map { t -> (t.videos.firstOrNull { it.first == label } ?: t.videos.first()).second })
+            }
+        }
+        labels.forEach { label ->
             options += getString(R.string.shots_trim_join, label) to {
                 EditorActivity.open(this, picks.map { t -> (t.videos.firstOrNull { it.first == label } ?: t.videos.first()).second })
             }

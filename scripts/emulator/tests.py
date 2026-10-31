@@ -1608,7 +1608,7 @@ def lib03(t):
     fresh_camera()
     library_open()
     open_first_video()
-    for item, marker in [("Grade", "Light"), ("Trim or join", "Clips"), ("Design: background, text, stickers, logo", "Templates")]:
+    for item, marker in [("Grade", "Light"), ("Trim or join", "Clips"), ("Edit: timeline, music, captions, grade, design", "Templates")]:
         player_menu(item)
         t.shot(item[:6])
         t.check(find(text=marker, contains=True, timeout=6) is not None, f"{item} opens")
@@ -1952,8 +1952,10 @@ def open_design():
     fresh_camera()
     library_open()
     open_first_video()
-    player_menu("Design: background, text, stickers, logo")
+    player_menu("Edit: timeline, music, captions, grade, design")
     sleep(3)
+    tap(text="Templates", required=False)
+    sleep(1)
 
 
 def design_tab(name):
@@ -1965,8 +1967,8 @@ def design_tab(name):
             sleep(1)
             return n
         # Tabs scroll sideways.
-        tabs = find(text="Canvas", timeout=0, nodes=D._last_dump) or find(text="Templates", timeout=0, nodes=D._last_dump)
-        y = tabs.cy if tabs else int(h * 0.55)
+        tabs = find(text="Edit", timeout=0, nodes=D._last_dump) or find(text="Templates", timeout=0, nodes=D._last_dump)
+        y = tabs.cy if tabs else int(h * 0.95)
         swipe(int(w * 0.8), y, int(w * 0.2), y, 300)
     raise AssertionError(f"design tab {name} not found")
 
@@ -2066,7 +2068,7 @@ def des04(t):
 @test("DES-05", "Backgrounds: blur, colour, gradient, photo")
 def des05(t):
     open_design()
-    design_tab("Video")
+    design_tab("Mask")
     sl = sliders()
     if sl:
         swipe(sl[0].cx, sl[0].cy, sl[0].x1 + (sl[0].x2 - sl[0].x1) // 3, sl[0].cy, 400)  # make the video smaller
@@ -2089,7 +2091,7 @@ def des05(t):
 @test("DES-06", "Video background with soft blur")
 def des06(t):
     open_design()
-    design_tab("Video")
+    design_tab("Mask")
     sl = sliders()
     if sl:
         swipe(sl[0].cx, sl[0].cy, sl[0].x1 + (sl[0].x2 - sl[0].x1) // 3, sl[0].cy, 400)
@@ -2119,7 +2121,7 @@ def des06(t):
 @test("DES-07", "Move / size / rotate the video; reset")
 def des07(t):
     open_design()
-    design_tab("Video")
+    design_tab("Mask")
     sl = sliders()
     t.check(len(sl) >= 2, "size and rotate sliders")
     if len(sl) >= 2:
@@ -2136,7 +2138,7 @@ def des07(t):
 @test("DES-08", "Shapes and border")
 def des08(t):
     open_design()
-    design_tab("Video")
+    design_tab("Mask")
     sl = sliders()
     if sl:
         swipe(sl[0].cx, sl[0].cy, sl[0].x1 + (sl[0].x2 - sl[0].x1) // 2, sl[0].cy, 400)
@@ -2341,6 +2343,54 @@ def des17(t):
     t.note("covered by DES-06 + DES-11 on the emulator; the 1-minute 4K version runs on the phone")
     r = {x["id"]: x["status"] for x in D.RESULTS}
     t.check(r.get("DES-06") == "PASS" and r.get("DES-11") in ("PASS", "WARN"), f"DES-06 {r.get('DES-06')}, DES-11 {r.get('DES-11')}")
+
+
+# ───────────────────────── 19b. The editor (timeline, clips, music, captions) ─────────────────────────
+
+@test("STU-01", "Editor: timeline, split, speed, volume, music, captions, adjust; save")
+def stu01(t):
+    open_design()
+    design_tab("Edit")
+    sleep(1)
+    t.shot("edit_tool")
+    t.check(find(text="Split at playhead", timeout=3) is not None, "Edit tool shows clip actions")
+    # Scrub the timeline a bit, then split.
+    w, h = screen_size()
+    tl = find(text="Split at playhead", timeout=1)
+    play = find(desc="Play or pause", timeout=2)
+    if play:
+        swipe(w * 3 // 4, play.cy + 120, w // 4, play.cy + 120, 500)
+    tap(text="Split at playhead")
+    sleep(2)
+    t.shot("split")
+    t.check(find(text="Clip 2", contains=True, timeout=3) is not None, "split made a second clip")
+    tap(text="2×", required=False)
+    sleep(2)
+    t.shot("speed")
+    design_tab("Audio")
+    tap(text="+ Add music…", required=False)
+    try:
+        pick_document("song.m4a")
+        sleep(3)
+        t.shot("music")
+        t.check(find(text="Fade in", timeout=3) is not None, "music added with its controls")
+    except AssertionError as e:
+        t.check(False, str(e))
+    design_tab("Captions")
+    tap(text="Make captions", required=False)
+    sleep(6)
+    t.shot("captions")
+    t.check(find(text="words, timed", contains=True, timeout=5) is not None, "captions made from the clips")
+    design_tab("Adjust")
+    sleep(2)
+    tap(text="Vectorscope", required=False)
+    sleep(2)
+    t.shot("adjust")
+    new = design_save(t, timeout=900)
+    if new:
+        info = video_info(os.path.join(FILES, new[-1]))
+        t.check(info["audio"], "saved video has sound (clips + music)")
+    back()
 
 
 # ───────────────────────── 20. Shot lists ─────────────────────────
@@ -2764,7 +2814,7 @@ def push_test_assets():
         if os.path.exists(os.path.join(media, f)):
             adb(f"push '{os.path.join(media, f)}' {APP_FILES}/test_media/{f}", timeout=120)
     adb(f"push '{os.path.join(media, 'test_transcript.json')}' {APP_FILES}/test_transcript.json")
-    for f in ["warm_test.cube", "broken.cube", "bg_photo.jpg", "bg_video.mp4", "anim.gif", "logo.png", "TestFont.ttf"]:
+    for f in ["warm_test.cube", "broken.cube", "bg_photo.jpg", "bg_video.mp4", "anim.gif", "logo.png", "TestFont.ttf", "song.m4a"]:
         if os.path.exists(os.path.join(media, f)):
             adb(f"push '{os.path.join(media, f)}' /sdcard/Download/{f}")
     ashell("content call --method scan_volume --uri content://media --arg external_primary")

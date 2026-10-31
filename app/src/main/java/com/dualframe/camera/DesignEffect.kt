@@ -417,17 +417,24 @@ class DesignEffect(private val design: Design) : GlEffect {
  * [offsetUs] shifts the layer's times when an intro card plays first.
  */
 @OptIn(UnstableApi::class)
-class LayerOverlay(private val layer: Layer, private val offsetUs: Long = 0) : BitmapOverlay() {
+class LayerOverlay(
+    private val layer: Layer,
+    private val offsetUs: Long = 0,
+    /** Timeline time in ms for a frame; the editor preview passes its own clock. */
+    private val clockMs: ((Long) -> Long)? = null,
+) : BitmapOverlay() {
+    private fun ms(presentationTimeUs: Long) = clockMs?.invoke(presentationTimeUs) ?: ((presentationTimeUs - offsetUs) / 1000)
+
     private val empty = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
 
     override fun getBitmap(presentationTimeUs: Long): Bitmap {
         val frames = layer.frames
-        if (frames != null && frames.frames.size > 1) return frames.at((presentationTimeUs - offsetUs) / 1000 - layer.startMs)
+        if (frames != null && frames.frames.size > 1) return frames.at(ms(presentationTimeUs) - layer.startMs)
         return layer.bitmap ?: empty
     }
 
     override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings {
-        val ms = (presentationTimeUs - offsetUs) / 1000
+        val ms = ms(presentationTimeUs)
         val start = layer.startMs
         val end = layer.endMs
         val visible = ms in start until end

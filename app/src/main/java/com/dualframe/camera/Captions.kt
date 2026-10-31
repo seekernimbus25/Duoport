@@ -336,6 +336,8 @@ object Transcriber {
 class CaptionOverlay(
     private val lines: List<CaptionLine>,
     private val renderer: CaptionRenderer,
+    /** Caption time in ms for a frame; the editor preview passes its own clock. */
+    private val timeMs: (Long) -> Long = { it / 1000 },
 ) : BitmapOverlay() {
     private var videoW = 1080
     private var videoH = 1920
@@ -359,7 +361,7 @@ class CaptionOverlay(
             .build()
 
     override fun getBitmap(presentationTimeUs: Long): Bitmap {
-        val ms = presentationTimeUs / 1000
+        val ms = timeMs(presentationTimeUs)
         if (lines.isEmpty()) return empty
         // Frames come in order, so walk forward from the last line instead of searching.
         if (lineIndex >= lines.size || lines[lineIndex].startMs > ms) lineIndex = 0

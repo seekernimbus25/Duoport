@@ -211,8 +211,17 @@ class GalleryActivity : AppCompatActivity() {
             picked.clear()
             refreshPicked()
         })
-        actionBar.addView(Glass.pill(this, getString(R.string.trim_and_join), selected = true) {
+        actionBar.addView(Glass.pill(this, getString(R.string.trim_and_join)) {
             if (picked.isNotEmpty()) EditorActivity.open(this, picked.map { it.uri })
+            picked.clear()
+            refreshPicked()
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = d(8f)
+        })
+        // The full editor: timeline, music, captions, grading and design on these clips together.
+        actionBar.addView(Glass.pill(this, getString(R.string.edit_together), selected = true) {
+            val videos = picked.filter { !it.photo }.map { it.uri }
+            if (videos.isNotEmpty()) DesignActivity.openAll(this, videos)
             picked.clear()
             refreshPicked()
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

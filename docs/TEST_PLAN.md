@@ -280,6 +280,16 @@ adb shell am force-stop com.dualframe.camera       # kill the app
 | DES-16 🤖 | P2 | Sticker credit line is shown in the Stickers tab | Yes |
 | DES-17 🤖 | P1 | Design a 1-minute 4K video with cutout + video background | Finishes saving; memory OK; note the time it takes |
 
+## 19b. The editor (library → ⋯ → Edit, or long-press clips → Edit together)
+| ID | Pri | Test | Expected |
+|---|---|---|---|
+| STU-01 🤖 | P0 | Timeline: scrub, split at the playhead, trim, speed 0.25×–4×, volume, duplicate, move, delete, add clips | Timeline and preview follow each change; the saved video matches |
+| STU-02 🤖 | P1 | Music: add a song, choose its start, volume, fade in/out; mute the clips | Plays along in the preview; mixed into the saved video, cut to its length |
+| STU-03 👤 | P1 | Voiceover from the playhead | Lines up with the video in the preview and the saved file |
+| STU-04 🤖 | P1 | Captions in the editor: made from all clips, follow cuts and speed; edit words; style | Timed to the edit, in the preview and the saved video |
+| STU-05 🤖 | P1 | Adjust: looks, wheels, scopes inside the editor | Grade previews live and is in the saved video; background colours aren't graded |
+| STU-06 🤖 | P1 | Remove silences across all clips | Pauses cut; clips split where needed |
+
 ## 20. Shot lists (SHOTS)
 | ID | Pri | Test | Expected |
 |---|---|---|---|
