@@ -690,10 +690,11 @@ def prof03(t):
     if s:
         tap_xy(s.cx, s.cy)
         sleep(2)
-    out = ashell("ls /sdcard/Download")
+    out = ashell("ls -t /sdcard/Download")
     t.check("DF-Log_to_Rec709" in out, "cube saved in Downloads")
     if "DF-Log_to_Rec709" in out:
-        name = [x for x in out.split() if "DF-Log_to_Rec709" in x][0]
+        # Newest first; a second save is named "DF-Log_to_Rec709 (1).cube", so keep whole lines.
+        name = [x.strip() for x in out.splitlines() if "DF-Log_to_Rec709" in x][0]
         local = pull(f"/sdcard/Download/{name}")
         txt = open(local, errors="ignore").read()
         t.check("LUT_3D_SIZE" in txt, "valid .cube text")
@@ -1682,7 +1683,7 @@ def lib03(t):
     fresh_camera()
     library_open()
     open_first_video()
-    for item, marker in [("Grade", "Light"), ("Trim or join", "Clips"), ("Edit: timeline, music, captions, grade, design", "Templates")]:
+    for item, marker in [("Grade", "Light"), ("Trim or join", "Clips"), ("Edit: timeline, music, captions, grade, design", "clip(s)")]:
         player_menu(item)
         t.shot(item[:6])
         t.check(find(text=marker, contains=True, timeout=6) is not None, f"{item} opens")
@@ -2212,9 +2213,13 @@ def des06(t):
     except AssertionError as e:
         t.check(False, str(e))
     sleep(4)
+    # The editor opens paused: play to see the background loop.
+    tap(desc="Play or pause", required=False)
+    sleep(1)
     a = t.shot("video_bg_a")
     sleep(1.5)
     b = t.shot("video_bg_b")
+    tap(desc="Play or pause", required=False)
     t.check(image_diff(a, b) > 0.3, "background video is moving in the preview")
     n = find(text="Soft blur", timeout=2)
     if n:

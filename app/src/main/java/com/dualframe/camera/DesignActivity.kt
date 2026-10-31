@@ -340,6 +340,30 @@ class DesignActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Paused, the player doesn't draw a new frame by itself, so a change to the shape, border,
+     * background or a layer wouldn't show until play. After a touch anywhere (a pill, a slider
+     * being dragged, the canvas), redraw the paused frame through the effects, at most every 120 ms.
+     */
+    private val redrawPaused = Runnable {
+        val p = player ?: return@Runnable
+        if (!p.isPlaying && p.mediaItemCount > 0) p.seekTo(p.currentMediaItemIndex, p.currentPosition)
+    }
+    private var redrawPending = false
+
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        val handled = super.dispatchTouchEvent(ev)
+        val action = ev.actionMasked
+        if ((action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_MOVE) && !redrawPending) {
+            redrawPending = true
+            window.decorView.postDelayed({
+                redrawPending = false
+                redrawPaused.run()
+            }, 120)
+        }
+        return handled
+    }
+
     private fun togglePlay() {
         val p = player ?: return
         if (p.isPlaying) p.pause() else p.play()
@@ -709,6 +733,9 @@ class DesignActivity : AppCompatActivity() {
             TAB_LAYER -> layerPanel()
         }
         refreshTimeline()
+        // Changes made from a dialog (colours, text, templates) land here too: show them paused.
+        window.decorView.removeCallbacks(redrawPaused)
+        window.decorView.postDelayed(redrawPaused, 150)
     }
 
     private fun row(vararg buttons: Pair<String, () -> Unit>) {
@@ -770,11 +797,16 @@ class DesignActivity : AppCompatActivity() {
         )
         section(getString(R.string.studio_trim))
         panel.addView(RangeSlider(this).apply {
+            // In tenths of a second. With a step, the range and the values have to land on whole
+            // steps (Slider throws otherwise), and clips are rarely a whole number of tenths long.
+            val tenths = ((clip.durationMs + 99) / 100).coerceAtLeast(1L).toFloat()
             valueFrom = 0f
-            valueTo = (clip.durationMs / 100f).coerceAtLeast(1f)
+            valueTo = tenths
             stepSize = 1f
-            values = listOf(clip.startMs / 100f, clip.endMs / 100f)
-            setMinSeparationValue(3f)
+            val start = (clip.startMs / 100).toFloat().coerceIn(0f, tenths)
+            val end = ((clip.endMs + 50) / 100).toFloat().coerceIn(start, tenths)
+            values = listOf(start, end)
+            setMinSeparationValue(minOf(3f, end - start))
             setLabelFormatter { VideoLibrary.formatDuration((it * 100).toLong()) }
             contentDescription = getString(R.string.studio_trim)
             addOnChangeListener { s, _, fromUser ->

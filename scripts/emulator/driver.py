@@ -110,9 +110,15 @@ def dump(retries=4):
     return _last_dump
 
 
+_size = None
+
+
 def screen_size():
-    m = re.search(r"(\d+)x(\d+)", ashell("wm size").splitlines()[-1])
-    return int(m.group(1)), int(m.group(2))
+    global _size
+    if _size is None:
+        m = re.search(r"(\d+)x(\d+)", ashell("wm size").splitlines()[-1])
+        _size = int(m.group(1)), int(m.group(2))
+    return _size
 
 
 def density():
@@ -165,7 +171,11 @@ def long_press(n, ms=900):
 
 
 def swipe(x1, y1, x2, y2, ms=300):
-    ashell(f"input swipe {x1} {y1} {x2} {y2} {ms}")
+    # A drag that starts at the left or right edge is Android's back gesture, not a drag.
+    w, _ = screen_size()
+    edge = 90
+    x1, x2 = (min(max(int(x), edge), w - edge) for x in (x1, x2))
+    ashell(f"input swipe {x1} {int(y1)} {x2} {int(y2)} {ms}")
     sleep(0.6)
 
 
@@ -208,10 +218,18 @@ def key(code):
 
 
 def type_text(s):
-    # adb input text needs spaces as %s and some characters escaped.
-    safe = s.replace("\\", "\\\\").replace(" ", "%s").replace("'", "\\'").replace('"', '\\"') \
-        .replace("&", "\\&").replace("(", "\\(").replace(")", "\\)").replace(";", "\\;").replace("<", "\\<").replace(">", "\\>")
-    ashell(f"input text '{safe}'" if "'" not in s else f'input text "{safe}"')
+    """Types [s] one character per adb call: a whole string in one `input text` can arrive with
+    letters swapped on a busy emulator ("Mroning tea")."""
+    for ch in s:
+        if ch == " ":
+            ashell("input text '%s'")
+        elif ch == "'":
+            ashell("input text \"\\\\'\"")  # device sh gets \'
+        else:
+            safe = ch.replace("\\", "\\\\").replace('"', '\\"')
+            if ch in "&()<>;|*?~$`!#":
+                safe = "\\" + ch
+            ashell(f"input text '{safe}'")
     sleep(0.4)
 
 
