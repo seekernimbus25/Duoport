@@ -2595,6 +2595,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     private fun updateZoom(state: ZoomState) {
+        // CameraX can reset zoom to 1× as the camera opens, after the lock set it. Pinch and the zoom
+        // button stay in range, so out of range means a reset: go back to the lens's own zoom.
+        lockedZoom?.let { range ->
+            if (state.zoomRatio !in range) camera?.cameraControl?.setZoomRatio(range.start)
+        }
         val stops = zoomStops(state)
         if (stops != zoomStopsShown) {
             zoomStopsShown = stops
