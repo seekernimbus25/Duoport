@@ -1481,7 +1481,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         // The high-speed mode only takes the camera's own automatic settings.
         if (highSpeedBound) {
             updateReadouts()
-            openParam?.let { buildControlPanel(it) }
+            refreshControlPanel()
             return
         }
         val fps = settings.captureFps
@@ -1491,7 +1491,21 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             frameDurationNs = settings.frameDurationNs,
         )
         updateReadouts()
-        openParam?.let { buildControlPanel(it) }
+        refreshControlPanel()
+    }
+
+    /** True while a finger is on a panel slider: the panel mustn't be rebuilt under it. */
+    private var sliderDragging = false
+    private var panelStale = false
+
+    /**
+     * Rebuilds the open panel, or waits for the slider being dragged to be let go. Removing a
+     * Slider mid-drag, with its value label up, leaves a null in the overlay and the next draw
+     * crashes (NullPointerException in ViewGroup.hasChildWithZ).
+     */
+    private fun refreshControlPanel() {
+        val param = openParam ?: return
+        if (sliderDragging) panelStale = true else buildControlPanel(param)
     }
 
     /** Live ISO / shutter / focus from the camera, a few times a second. */
@@ -2072,6 +2086,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun closeControlPanel() {
         openParam = null
+        sliderDragging = false
+        panelStale = false
         Glass.show(controlPanel, false)
     }
 
@@ -2515,6 +2531,20 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 valueText.text = label(i)
                 if (fromUser) onChange(i)
             }
+            addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
+                override fun onStartTrackingTouch(slider: Slider) {
+                    sliderDragging = true
+                }
+
+                override fun onStopTrackingTouch(slider: Slider) {
+                    sliderDragging = false
+                    // After the slider has finished with the touch and hidden its label.
+                    if (panelStale) slider.post {
+                        panelStale = false
+                        refreshControlPanel()
+                    }
+                }
+            })
         }
         controlPanel.addView(valueText)
         controlPanel.addView(slider)
