@@ -122,14 +122,17 @@ class TeleprompterView @JvmOverloads constructor(
         enableDragging(handle)
         bar.addView(handle)
         bar.addView(playButton)
-        bar.addView(smallButton("−") { setSpeed(speed - 10f) })
+        bar.addView(smallButton("−") { setSpeed(speed - 10f) }.apply { contentDescription = "Slower" })
         bar.addView(speedLabel)
-        bar.addView(smallButton("+") { setSpeed(speed + 10f) })
-        bar.addView(smallButton("A−") { setTextSize(textSizeSp - 2f) })
-        bar.addView(smallButton("A+") { setTextSize(textSizeSp + 2f) })
-        bar.addView(smallButton("✎") { editScript() })
-        bar.addView(smallButton("↺") { restart() })
-        eyeButton = smallButton("◎") { setEyeContact(!eyeContact) }.also { bar.addView(it) }
+        bar.addView(smallButton("+") { setSpeed(speed + 10f) }.apply { contentDescription = "Faster" })
+        bar.addView(smallButton("A−") { setTextSize(textSizeSp - 2f) }.apply { contentDescription = "Smaller text" })
+        bar.addView(smallButton("A+") { setTextSize(textSizeSp + 2f) }.apply { contentDescription = "Bigger text" })
+        bar.addView(smallButton("✎") { editScript() }.apply { contentDescription = "Edit the script" })
+        bar.addView(smallButton("↺") { restart() }.apply { contentDescription = "Back to the start" })
+        eyeButton = smallButton("◎") { setEyeContact(!eyeContact) }.also {
+            it.contentDescription = "Eye contact: narrow column under the camera"
+            bar.addView(it)
+        }
         voiceButton = smallButton("🎙") { setVoiceFollow(!voiceFollow) }.also {
             it.contentDescription = "Follow my voice"
             bar.addView(it)
@@ -239,11 +242,15 @@ class TeleprompterView @JvmOverloads constructor(
         if (amplitude > maxOf(0.02, noiseFloor * 2.5)) lastSpeechAt = now
     }
 
-    /** How fast to scroll right now: full speed while talking, easing to a stop in pauses. */
+    /**
+     * How fast to scroll right now: full speed while talking, stopping quickly in pauses so the
+     * next line is still there when you start again. Gaps between words are shorter than
+     * [SPEECH_HOLD_NANOS], so it doesn't stutter mid-sentence.
+     */
     private fun currentPace(now: Long): Float {
         val listening = voiceFollow && now - lastLevelAt < 1_000_000_000L
-        val target = if (!listening || now - lastSpeechAt < 700_000_000L) 1f else 0f
-        pace += (target - pace) * 0.12f
+        val target = if (!listening || now - lastSpeechAt < SPEECH_HOLD_NANOS) 1f else 0f
+        pace += (target - pace) * 0.3f
         return pace
     }
 
@@ -392,6 +399,9 @@ class TeleprompterView @JvmOverloads constructor(
     }
 
     private companion object {
+        /** How long after the last sound the script keeps moving. */
+        const val SPEECH_HOLD_NANOS = 350_000_000L
+
         const val DEFAULT_SCRIPT =
             "Tap ✎ to paste your script.\n\nTap ▶ to start scrolling, or just press record: " +
                 "the script starts by itself.\n\nUse − and + to change the speed, A− and A+ for text size, " +
