@@ -24,6 +24,7 @@ import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
 import androidx.media3.common.util.Size
@@ -182,6 +183,13 @@ object Transcriber {
             } else {
                 null
             }
+            val results = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            Log.i(
+                TAG,
+                "segment at ${heardUpToMs} ms: ${parts?.size ?: -1} parts " +
+                    "(${parts?.firstOrNull()?.timestampMillis}..${parts?.lastOrNull()?.timestampMillis} ms), " +
+                    "text \"${results?.firstOrNull()?.take(60)}\"",
+            )
             if (parts != null && parts.isNotEmpty() && parts.any { it.timestampMillis > 0 }) {
                 parts.forEachIndexed { i, part ->
                     val text = (part.formattedText ?: part.rawText).trim()
@@ -194,7 +202,10 @@ object Transcriber {
                 segmentStartMs = words.lastOrNull()?.endMs ?: segmentStartMs
                 return
             }
-            val text = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
+            // No word times: use the phrase, or the parts' words when the phrase is missing, so a
+            // stretch of speech is never dropped.
+            val text = results?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: parts?.joinToString(" ") { (it.formattedText ?: it.rawText).trim() }?.trim()
             if (text.isNullOrEmpty()) return
             // No word times: spread the phrase's words over the stretch of audio it came from.
             val tokens = text.split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -228,7 +239,10 @@ object Transcriber {
                 finish()
             }
 
-            override fun onError(error: Int) = finish()
+            override fun onError(error: Int) {
+                Log.w(TAG, "recognizer error $error after ${fed.get() / BYTES_PER_MS} ms of audio, ${words.size} words")
+                finish()
+            }
         })
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -321,6 +335,7 @@ object Transcriber {
         context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
     }
 
+    private const val TAG = "Transcriber"
     private const val SAMPLE_RATE = 16_000
     private const val BYTES_PER_MS = SAMPLE_RATE * 2 / 1000
     private const val CHUNK = 3200
