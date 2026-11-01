@@ -263,7 +263,13 @@ object Transcriber {
                 ParcelFileDescriptor.AutoCloseOutputStream(write).use { out ->
                     var pos = 0
                     var lastPct = -1
+                    val began = System.nanoTime()
                     while (pos < pcm.size) {
+                        // At speaking pace, like a live microphone: fed much faster, the
+                        // on-device recognizer keeps one stretch of speech and drops the rest.
+                        val dueMs = (System.nanoTime() - began) / 1_000_000 * FEED_SPEED + FEED_LEAD_MS
+                        val aheadMs = pos / BYTES_PER_MS - dueMs
+                        if (aheadMs > 0) Thread.sleep(aheadMs.toLong())
                         val n = minOf(CHUNK, pcm.size - pos)
                         out.write(pcm, pos, n)
                         pos += n
@@ -339,6 +345,12 @@ object Transcriber {
     private const val SAMPLE_RATE = 16_000
     private const val BYTES_PER_MS = SAMPLE_RATE * 2 / 1000
     private const val CHUNK = 3200
+
+    /** How fast the audio is fed to the recognizer, in times real time. */
+    private const val FEED_SPEED = 1f
+
+    /** Audio fed straight away, before pacing starts (ms). */
+    private const val FEED_LEAD_MS = 500f
     /** About 20 minutes of speech audio; longer takes get captions for the first 20 minutes. */
     private const val MAX_BYTES = 20 * 60 * SAMPLE_RATE * 2
 }
