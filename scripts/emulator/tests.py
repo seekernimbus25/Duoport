@@ -1483,8 +1483,8 @@ def cap04(t):
             for _ in range(12):
                 ashell("input keyevent 67")
             type_text("Howdy")
-            back()
             sleep(1)
+            # (Back here would close the review like ✕ does, keeping the captions as heard.)
         ok = find(text="OK", timeout=1) or find(text="Done", timeout=1)
         t.shot("edited")
     if ed:
@@ -2011,7 +2011,8 @@ def gr03(t):
     back()
 
 
-@test("GR-04", "Grade an HDR clip")
+@test("GR-04", "Grade an HDR clip",
+      phone_only="the emulator's HEVC decoders can't play 10-bit (Main 10) video, so the HLG clip shows black")
 def gr04(t):
     fresh_camera()
     library_open()
@@ -2077,8 +2078,15 @@ def open_design():
     fresh_camera()
     library_open()
     open_first_video()
-    player_menu("Edit: timeline, music, captions, grade, design")
-    sleep(3)
+    for attempt in range(2):
+        player_menu("Edit: timeline, music, captions, grade, design")
+        sleep(3)
+        if find(desc="Templates", timeout=4) or find(desc="Edit", timeout=1):
+            break
+        # The player's controls had faded, so the menu wasn't there: show them and try again.
+        w, h = screen_size()
+        tap_xy(w // 2, h // 2)
+        sleep(0.5)
     design_tab("Templates")
 
 
@@ -2641,13 +2649,15 @@ def sl04(t):
     n = scroll_to(text="Steam rising", contains=True, max_swipes=4)
     tap_xy(n.cx, n.cy)
     sleep(1)
-    scroll_tap(text="Move up", max_swipes=5)  # under the script and notes boxes
+    # Under the script and notes boxes: scroll inside the dialog, not on its buttons.
+    w, h = screen_size()
+    scroll_tap(text="Move up", max_swipes=5, region=(w // 2, int(h * 0.3), int(h * 0.7)))
     sleep(1.5)
     t.shot("moved_up")
     n = scroll_to(text="Steam rising", contains=True, max_swipes=4)
     tap_xy(n.cx, n.cy)
     sleep(1)
-    scroll_tap(text="Delete shot", max_swipes=5)
+    scroll_tap(text="Delete shot", max_swipes=5, region=(w // 2, int(h * 0.3), int(h * 0.7)))
     tap(text="Delete")
     sleep(1.5)
     t.check(find(text="Steam rising", contains=True, timeout=2) is None, "shot deleted")

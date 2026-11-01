@@ -542,6 +542,11 @@ def open_first_video():
 
 
 def player_menu(item_text):
+    # The ⋯ button fades with the player's controls: a tap on the video brings them back.
+    if find(rid="more", timeout=1) is None:
+        w, h = screen_size()
+        tap_xy(w // 2, h // 2)
+        sleep(0.5)
     tap(rid="more")
     sleep(1)
     tap(text=item_text)
