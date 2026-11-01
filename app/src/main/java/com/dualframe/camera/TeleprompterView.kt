@@ -122,9 +122,9 @@ class TeleprompterView @JvmOverloads constructor(
         enableDragging(handle)
         bar.addView(handle)
         bar.addView(playButton)
-        bar.addView(smallButton("−") { setSpeed(speed - 10f) }.apply { contentDescription = "Slower" })
+        bar.addView(smallButton("−") { setSpeed(speed - speedStep(speed - 1f)) }.apply { contentDescription = "Slower" })
         bar.addView(speedLabel)
-        bar.addView(smallButton("+") { setSpeed(speed + 10f) }.apply { contentDescription = "Faster" })
+        bar.addView(smallButton("+") { setSpeed(speed + speedStep(speed)) }.apply { contentDescription = "Faster" })
         bar.addView(smallButton("A−") { setTextSize(textSizeSp - 2f) }.apply { contentDescription = "Smaller text" })
         bar.addView(smallButton("A+") { setTextSize(textSizeSp + 2f) }.apply { contentDescription = "Bigger text" })
         bar.addView(smallButton("✎") { editScript() }.apply { contentDescription = "Edit the script" })
@@ -292,6 +292,13 @@ class TeleprompterView @JvmOverloads constructor(
             val atEnd = !scroller.canScrollVertically(1)
             if (atEnd) pause() else postOnAnimation(this)
         }
+    }
+
+    /** Fine steps at reading speeds, bigger ones above: 2 below 40, 5 below 80, then 10. */
+    private fun speedStep(at: Float) = when {
+        at < 40f -> 2f
+        at < 80f -> 5f
+        else -> 10f
     }
 
     private fun setSpeed(value: Float) {
