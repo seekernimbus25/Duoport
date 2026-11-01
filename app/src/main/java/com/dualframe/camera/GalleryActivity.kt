@@ -48,9 +48,10 @@ data class GalleryVideo(
     val dateAddedSec: Long,
     val photo: Boolean = false,
 ) {
-    /** "9:16", "16:9"… worked out from the pixel size. */
+    /** "9:16", "16:9"… worked out from the pixel size; "Original" for the uncut recording. */
     val shapeLabel: String
         get() {
+            if (name.contains("_original")) return "Original"
             if (width <= 0 || height <= 0) return ""
             val aspect = width.toFloat() / height
             return OutputFormat.entries.minByOrNull { abs(it.aspect - aspect) }
@@ -113,6 +114,7 @@ object VideoLibrary {
             MediaStore.Video.Media.WIDTH,
             MediaStore.Video.Media.HEIGHT,
             MediaStore.Video.Media.DATE_ADDED,
+            MediaStore.Video.Media.ORIENTATION,
         )
         val videos = mutableListOf<GalleryVideo>()
         context.contentResolver.query(
@@ -128,13 +130,16 @@ object VideoLibrary {
             val width = c.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
             val height = c.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
             val date = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
+            val orientation = c.getColumnIndexOrThrow(MediaStore.Video.Media.ORIENTATION)
             while (c.moveToNext()) {
+                // Sideways-stored videos (portrait 4K is saved 3840×2160 turned 90°) show turned.
+                val turned = c.getInt(orientation) % 180 != 0
                 videos += GalleryVideo(
                     uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(id)),
                     name = c.getString(name) ?: "",
                     durationMs = c.getLong(duration),
-                    width = c.getInt(width),
-                    height = c.getInt(height),
+                    width = c.getInt(if (turned) height else width),
+                    height = c.getInt(if (turned) width else height),
                     dateAddedSec = c.getLong(date),
                 )
             }
