@@ -2314,8 +2314,8 @@ def des10(t):
     box = [x for x in dump() if x.cls.endswith("EditText")]
     tap_xy(box[0].cx, box[0].cy)
     type_text("Hello DualFrame")
-    back()
-    tap(text="Add text")
+    # No on-screen keyboard on the emulator, so no Back to close it (Back would leave the editor).
+    scroll_tap(text="Add text", max_swipes=3)
     sleep(2)
     t.shot("text_added")
     t.check(find(text="Selected layer", contains=True, timeout=3) is not None or find(text="Layer", timeout=1) is not None,
