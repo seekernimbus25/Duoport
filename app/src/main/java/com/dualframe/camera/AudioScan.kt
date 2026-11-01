@@ -14,6 +14,9 @@ import kotlin.math.sqrt
 object AudioScan {
     const val SAMPLE_RATE = 16_000
 
+    /** 20 ms windows averaged when judging loudness for silences (100 ms). */
+    private const val AVERAGE_WINDOWS = 5
+
     /** The sound of [uri] as 16 kHz mono 16-bit PCM, up to [maxBytes]; null if it has no sound. */
     fun mono16k(context: Context, uri: Uri, maxBytes: Int = Int.MAX_VALUE): ByteArray? {
         val extractor = MediaExtractor()
@@ -96,21 +99,30 @@ object AudioScan {
     /**
      * The parts worth keeping, in ms: everything except pauses longer than [minPauseMs].
      * "Quiet" is judged against the clip's own background noise, so a noisy room still works.
-     * [padMs] of air is left either side of speech so cuts don't clip words.
+     * [padMs] of air is left either side of speech so cuts don't clip words. Loudness is averaged
+     * over [AVERAGE_WINDOWS] (100 ms): a word is loud for a while, a passing car's hum or a
+     * click only peaks, so a pause with traffic in it is still a pause.
      */
-    fun speechRanges(pcm: ByteArray, minPauseMs: Long, padMs: Long = 150): List<LongRange> {
+    fun speechRanges(pcm: ByteArray, minPauseMs: Long, padMs: Long = 200): List<LongRange> {
         val window = SAMPLE_RATE / 50 // 20 ms
         val windows = pcm.size / 2 / window
         if (windows == 0) return emptyList()
         val totalMs = windows * 20L
-        val db = FloatArray(windows) { w ->
+        val power = DoubleArray(windows) { w ->
             var sum = 0.0
             for (i in 0 until window) {
                 val idx = (w * window + i) * 2
                 val s = ((pcm[idx + 1].toInt() shl 8) or (pcm[idx].toInt() and 0xFF)).toShort().toDouble()
                 sum += s * s
             }
-            val rms = sqrt(sum / window) / 32768.0
+            sum / window / (32768.0 * 32768.0)
+        }
+        val db = FloatArray(windows) { w ->
+            val from = (w - AVERAGE_WINDOWS / 2).coerceAtLeast(0)
+            val to = (w + AVERAGE_WINDOWS / 2).coerceAtMost(windows - 1)
+            var sum = 0.0
+            for (i in from..to) sum += power[i]
+            val rms = sqrt(sum / (to - from + 1))
             (20 * log10(rms.coerceAtLeast(1e-6))).toFloat()
         }
         val floor = db.sorted()[windows / 10]
