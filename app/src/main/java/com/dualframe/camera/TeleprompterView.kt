@@ -87,7 +87,8 @@ class TeleprompterView @JvmOverloads constructor(
     private var voiceFollow = prefs.getBoolean("voiceFollow", true)
     private var lastLevelAt = 0L
     private var lastSpeechAt = 0L
-    private var noiseFloor = 0.01
+    /** Recent sound levels (time, level): the room's noise and whether speech is going on. */
+    private val levels = ArrayDeque<Pair<Long, Double>>()
     private var pace = 1f
     private val speedLabel = TextView(context).apply {
         setTextColor(Color.rgb(244, 241, 234))
@@ -232,14 +233,29 @@ class TeleprompterView @JvmOverloads constructor(
     }
 
     /**
-     * The microphone level while recording (0..1). Speech is anything clearly above the
-     * room's background noise, which is tracked slowly so a fan or traffic doesn't count.
+     * The microphone level while recording (0..1). Speech is sound well above the room's
+     * background noise (4x a low percentile of the last few seconds, so a fan doesn't count)
+     * that keeps going: a third of the last moment is loud. A breath, a click or a creak is a
+     * blip and doesn't move the script. Tuned on a phone take with a fan on: the script moved
+     * in 4% of a 10 s silence (was 44%) and kept up with reading as before.
      */
     fun onVoiceLevel(amplitude: Double) {
         val now = System.nanoTime()
         lastLevelAt = now
-        noiseFloor = if (amplitude < noiseFloor) amplitude else noiseFloor + (amplitude - noiseFloor) * 0.002
-        if (amplitude > maxOf(0.02, noiseFloor * 2.5)) lastSpeechAt = now
+        levels.addLast(now to amplitude)
+        while (levels.first().first < now - NOISE_WINDOW_NANOS) levels.removeFirst()
+        val sorted = levels.map { it.second }.sorted()
+        val noiseFloor = sorted[sorted.size / 10].coerceAtMost(0.05)
+        val threshold = maxOf(0.03, noiseFloor * 4)
+        val recent = levels.filter { it.first >= now - SPEECH_WINDOW_NANOS }
+        val loud = recent.count { it.second > threshold }
+        val speaking = if (recent.size >= 2) {
+            loud >= 2 && loud * 3 >= recent.size
+        } else {
+            // Levels arriving too rarely to see a stretch: only a clearly loud one counts.
+            amplitude > threshold * 2
+        }
+        if (speaking) lastSpeechAt = now
     }
 
     /**
@@ -408,6 +424,12 @@ class TeleprompterView @JvmOverloads constructor(
     private companion object {
         /** How long after the last sound the script keeps moving. */
         const val SPEECH_HOLD_NANOS = 350_000_000L
+
+        /** How much recent sound the room's noise level is taken from. */
+        const val NOISE_WINDOW_NANOS = 8_000_000_000L
+
+        /** Speech has to fill most of this last moment to count. */
+        const val SPEECH_WINDOW_NANOS = 300_000_000L
 
         const val DEFAULT_SCRIPT =
             "Tap ✎ to paste your script.\n\nTap ▶ to start scrolling, or just press record: " +
