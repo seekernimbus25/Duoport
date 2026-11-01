@@ -75,8 +75,11 @@ CI publishes the release), install the new build and re-run that test.
 | ROB-06 | 15 min of 4K: note heat; no crash |
 | REC-06 | 10 min 4K recording finishes and exports |
 | PLAY-02 | Runs on a 16 KB-page phone (if yours is one) |
+| GR-04 | Grade an HDR (HLG) clip and save it (the emulator can't decode 10-bit video) |
+| REC-12 | Pause / resume on the real camera: the saved video leaves the paused time out |
+| ROB-02 | Very low storage: a clear message, no crash |
 
-### B. Needs you (20 tests)
+### B. Needs you
 
 | ID | What you do |
 |---|---|
@@ -94,8 +97,13 @@ CI publishes the release), install the new build and re-run that test.
 | ED-04 | Remove silences on a real talking clip: are words clipped? |
 | DES-09 | Design editor person cutout on a video of you |
 | GR-06 | Colour wheels and scopes feel right while grading |
+| TP-07 | Hold the phone sideways (both ways): the script turns upright and sits by the lens; drag moves it |
+| STU-01 | The Edit screen on a real clip: split, speed, music, voiceover, captions, grade, save |
 
 ### C. Worth repeating on the real phone
+
+The emulator passed every automated test it can run (last full pass: 1 November); the list of
+what it can't do is in A and B above.
 
 Everything the emulator passed was on a fake camera. Spot-check on the phone: FMT-01
 (one shape → one video), PROF-02 (Log → LUT → Rec.709, preview keeps moving), REC-01,
