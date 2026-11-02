@@ -388,6 +388,10 @@ class TeleprompterView @JvmOverloads constructor(
         handle.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    // The handle sits in the button bar's scroll view, which otherwise takes any
+                    // drag along the bar for itself: sideways that's the way down the screen,
+                    // so the box never moved, the bar scrolled instead.
+                    handle.parent?.requestDisallowInterceptTouchEvent(true)
                     startX = e.rawX
                     startY = e.rawY
                     startTx = translationX
