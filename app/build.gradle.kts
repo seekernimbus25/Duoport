@@ -46,6 +46,10 @@ android {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("sideload")
+            // The sideloaded APK only carries the phone's 64-bit ARM libraries: every native
+            // library (ML Kit, TFLite, face detection) otherwise ships four times over, for
+            // 32-bit ARM and two emulator CPUs too, ~100 MB of the APK. Play splits by CPU itself.
+            ndk { abiFilters += "arm64-v8a" }
         }
         debug {
             signingConfig = signingConfigs.getByName("sideload")
@@ -55,6 +59,7 @@ android {
         create("play") {
             initWith(getByName("release"))
             matchingFallbacks += "release"
+            ndk { abiFilters.clear() }
             signingConfig = signingConfigs.findByName("upload")
         }
     }
