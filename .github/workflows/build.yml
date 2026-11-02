@@ -37,6 +37,28 @@ jobs:
             echo "$(basename "$so"): $(readelf -lW "$so" | awk '/LOAD/ {print $NF; exit}')"
           done
 
+      # Google Play requires native libraries built for 16 KB memory pages (Android 15+
+      # devices). Fail the build if any 64-bit library in the APK isn't.
+      - name: Check 16 KB page alignment
+        run: |
+          python3 - <<'PY'
+          import struct, sys, zipfile
+          bad = []
+          for i in zipfile.ZipFile("DualFrame.apk").infolist():
+              if not (i.filename.endswith(".so") and ("arm64" in i.filename or "x86_64" in i.filename)):
+                  continue
+              d = zipfile.ZipFile("DualFrame.apk").read(i)
+              phoff = struct.unpack_from("<Q", d, 0x20)[0]
+              size, count = struct.unpack_from("<HH", d, 0x36)
+              aligns = [struct.unpack_from("<Q", d, phoff + k * size + 0x30)[0]
+                        for k in range(count) if struct.unpack_from("<I", d, phoff + k * size)[0] == 1]
+              print(f"{min(aligns):6d}  {i.filename}")
+              if min(aligns) < 16384:
+                  bad.append(i.filename)
+          if bad:
+              sys.exit("Not 16 KB aligned: " + ", ".join(bad))
+          PY
+
       - uses: actions/upload-artifact@v4
         with:
           name: DualFrame-apk
