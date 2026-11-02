@@ -34,6 +34,8 @@
             app:scaleType="fillCenter" />
     </FrameLayout>
 
+    <!-- Above the top bar (translationZ): with eye contact it sits up by the lens, under the
+         top buttons, and they took its touches, so its handle couldn't be dragged. No shadow. -->
     <com.dualframe.camera.TeleprompterView
         android:id="@+id/teleprompter"
         android:layout_width="match_parent"
@@ -41,6 +43,8 @@
         android:layout_gravity="top"
         android:layout_marginHorizontal="16dp"
         android:layout_marginTop="190dp"
+        android:outlineProvider="none"
+        android:translationZ="2dp"
         android:visibility="gone" />
 
     <!-- ───────────── Top ───────────── -->
@@ -488,6 +492,7 @@
     <!-- Self-timer countdown. -->
     <TextView
         android:id="@+id/countdown"
+        android:translationZ="4dp"
         style="@style/DF.Text.Title"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -500,6 +505,7 @@
     <!-- ───────────── Overlays ───────────── -->
     <LinearLayout
         android:id="@+id/permission_panel"
+        android:translationZ="4dp"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@color/ink"
@@ -537,6 +543,7 @@
 
     <LinearLayout
         android:id="@+id/export_panel"
+        android:translationZ="4dp"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@color/scrim"
@@ -590,6 +597,7 @@
 
     <ScrollView
         android:id="@+id/result_panel"
+        android:translationZ="4dp"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@color/scrim"
