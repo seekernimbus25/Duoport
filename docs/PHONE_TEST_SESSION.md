@@ -108,3 +108,18 @@ what it can't do is in A and B above.
 Everything the emulator passed was on a fake camera. Spot-check on the phone: FMT-01
 (one shape → one video), PROF-02 (Log → LUT → Rec.709, preview keeps moving), REC-01,
 SL-05 – SL-13 (shot list end to end), DES-02 (a template saved), PH-01 (photos).
+
+### D. New since session 47 (test on the first build after 3 November)
+
+| ID | What you do | What to look for |
+|---|---|---|
+| CIN-01 | Cinematic Strong, stand in frame, record 10 s; also take one photo | Hair and glasses edges follow you; two people both stay sharp. Now on the editor's person model (ML Kit is gone, the app is ~21 MB smaller) |
+| FOL-02 | Follow me on, start upright, turn the phone sideways after ~10 s, hold, turn back | Both videos stay upright the whole time; the turn eases over ~0.4 s; the 9:16 cut zooms in while sideways, the 16:9 one widens. Try front and back camera |
+| PROF-01 | Same scene in Standard and DF-Log | DF-Log flat and grey, shadows lifted (not darker than Standard); the Rec.709 look brings normal contrast back |
+| CAM-10 | Stabilisation Standard, then Enhanced: read the info line under the shutter | It says "Steady: standard" / "Steady: enhanced". "Steady: off (camera skipped it)" means the phone ignored the setting. Then the same straight outdoor walk in Off and Enhanced |
+| DES-09 | Editor → cutout → Fine edges, Save, on the antlers clip | Antler tips and hair strands kept, no ceiling beam above the head; time the save (expect longer than Quick) |
+| DES-10 | Same with Quick | Faster save, as before |
+| EYE-01 | Settings → Eye contact on. Record 30 s reading the teleprompter: during "Look into the lens" (first 1.5 s) look at the lens | In the saved videos you seem to look at the viewer while reading; no wobbling eyes, lids or glasses |
+| EYE-02 | Same, but blink, look far to the side once, turn your head | Blinks and the look away appear natural (the correction fades out) |
+| PLAY-01 | (no tester) CI "Check 16 KB page alignment" step | Passes on every build |
+| TAB-01 | (if a tablet or foldable is around) open the app | Stays portrait, letterboxed |
