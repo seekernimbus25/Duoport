@@ -25,6 +25,7 @@
 
     <string name="dual_help">Front and back cameras together. Pick a corner for the second camera; ⟳ swaps which one is big.</string>
     <string name="dual_unsupported">This phone can\'t use the front and back cameras at the same time.</string>
+    <string name="eye_contact_look">Look into the lens</string>
     <string name="stab_applied_standard">Steady: standard</string>
     <string name="stab_applied_enhanced">Steady: enhanced</string>
     <string name="stab_applied_off">Steady: off (camera skipped it)</string>

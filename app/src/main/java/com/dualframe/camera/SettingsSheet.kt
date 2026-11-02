@@ -423,6 +423,12 @@ class SettingsSheet(
         toggle("Mirror the front camera", "Record selfies the way the preview shows them", draft.mirrorFront) {
             draft = draft.copy(mirrorFront = it)
         }
+        toggle(
+            "Eye contact",
+            "Look into the lens for the first moment of each take; after that, reading the " +
+                "teleprompter still looks like you're looking at the viewer. Real-time videos only.",
+            draft.eyeContact,
+        ) { draft = draft.copy(eyeContact = it) }
         toggle("Grid lines", null, draft.grid) { draft = draft.copy(grid = it) }
         toggle(
             "Follow me (auto-reframe)",

@@ -1803,6 +1803,20 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         else -> 0
     }
 
+    /** Eye contact learns where the irises sit from the take's first moments: ask for a look into the lens. */
+    private fun promptLookAtLens() {
+        countdownText.text = getString(R.string.eye_contact_look)
+        countdownText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 34f)
+        countdownText.scaleX = 1f
+        countdownText.scaleY = 1f
+        countdownText.alpha = 1f
+        countdownText.isVisible = true
+        countdownText.postDelayed({
+            if (countdownText.text == getString(R.string.eye_contact_look)) countdownText.isVisible = false
+            countdownText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 120f)
+        }, EyeContactEffect.CALIBRATION_US / 1000)
+    }
+
     /** The teleprompter reads upright however the phone is held, even mid-take. */
     private fun turnTeleprompter(rotation: Int) {
         teleprompter.turnTo(
@@ -1854,6 +1868,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                     if (isMain) {
                         recordStartNanos = SystemClock.elapsedRealtimeNanos()
                         setRecordingUi(true)
+                        if (settings.eyeContact && dualKind == DualKind.NONE && settings.playbackSpeed == 1f) promptLookAtLens()
                     }
                 }
                 is VideoRecordEvent.Pause -> {
@@ -2134,6 +2149,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 baseName = baseName,
                 audioGainDb = settings.audioGainDb,
                 cinematic = settings.cinematic,
+                eyeContact = settings.eyeContact && dualKind == DualKind.NONE,
                 anamorphic = settings.activeAnamorphic,
                 grade = if (settings.bakeLut) settings.activeGrade else ColorGrade(),
                 timecodeStartMs = recordingStartMs,

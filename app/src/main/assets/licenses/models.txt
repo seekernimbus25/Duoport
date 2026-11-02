@@ -10,3 +10,8 @@ MODNet portrait matting (photographic), by Zhanghan Ke et al.
 Source: https://github.com/ZHKKKe/MODNet (official ONNX model, fixed to 512 x 512 and
 converted to TensorFlow Lite, float16).
 Licensed under the Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+face_landmarks_detector.tflite (eye contact)
+MediaPipe Face Landmarker, face landmarks with irises (478 points), by Google.
+Source: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+Licensed under the Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0

@@ -194,6 +194,8 @@ data class CaptureSettings(
     val recordMbps: Int = 0,
     val volumeKeysRecord: Boolean = true,
     val mirrorFront: Boolean = true,
+    /** Eye contact: the finished videos move the irises back to the lens (see EyeContact.kt). */
+    val eyeContact: Boolean = false,
     /** File names start with this, then the take number. */
     val clipName: String = "DualFrame",
     /** Self-timer before recording starts, in seconds (0 = off). */
@@ -332,6 +334,7 @@ object SettingsStore {
             recordMbps = p.getInt("recordMbps", d.recordMbps),
             volumeKeysRecord = p.getBoolean("volumeKeysRecord", d.volumeKeysRecord),
             mirrorFront = p.getBoolean("mirrorFront", d.mirrorFront),
+            eyeContact = p.getBoolean("eyeContact", d.eyeContact),
             clipName = p.getString("clipName", null) ?: d.clipName,
             timerSeconds = p.getInt("timerSeconds", d.timerSeconds),
             stabilization = enumOr(p.getString("stabilizationMode", null), d.stabilization),
@@ -383,6 +386,7 @@ object SettingsStore {
             .putInt("recordMbps", s.recordMbps)
             .putBoolean("volumeKeysRecord", s.volumeKeysRecord)
             .putBoolean("mirrorFront", s.mirrorFront)
+            .putBoolean("eyeContact", s.eyeContact)
             .putString("clipName", s.clipName)
             .putInt("timerSeconds", s.timerSeconds)
             .putString("stabilizationMode", s.stabilization.name)

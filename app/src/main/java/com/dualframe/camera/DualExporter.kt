@@ -104,6 +104,8 @@ data class ExportJob(
     val audioGainDb: Int = 0,
     /** Cinematic background blur strength, 0 = off. */
     val cinematic: Int = 0,
+    /** Move the irises back to the lens (calibrated on the take's first moments). */
+    val eyeContact: Boolean = false,
     /** Anamorphic squeeze to undo, 1 = none. */
     val anamorphic: Float = 1f,
     /** Wall-clock time the recording started, written as time-of-day timecode; null = none. */
@@ -497,6 +499,9 @@ object DualExporter {
 
         val mainEffects = mutableListOf<Effect>()
         mainEffects += speedEffects()
+        // On the whole picture, before the crop, so the eyes are found the same in every shape.
+        // Real time only: its calibration is the take's first 1.5 s.
+        if (job.eyeContact && job.speed == 1f) mainEffects += EyeContactEffect()
         // Stretching (not fitting) the cut to the output size is what undoes an anamorphic squeeze.
         val layout = if (job.anamorphic != 1f) Presentation.LAYOUT_STRETCH_TO_FIT else Presentation.LAYOUT_SCALE_TO_FIT
         // Auto-reframe moves the crop over time; otherwise it stays where it was placed.
