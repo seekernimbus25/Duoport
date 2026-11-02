@@ -64,8 +64,10 @@ class DesignEffect(private val design: Design) : GlEffect {
         private var maskH = 1
         private var pixels: ByteBuffer = ByteBuffer.allocateDirect(4)
         private var maskBytes: ByteBuffer = ByteBuffer.allocateDirect(1)
-        /** Last frame's mask, blended in a little so the edge doesn't flicker frame to frame. */
+        /** The newest mask (blended with the one before, against flicker) and the one it fades in from. */
         private var previous: FloatArray? = null
+        private var fadeFrom: FloatArray? = null
+        private var shownFade = -1f
         /** Frame time of the last mask; the model runs every [MASK_EVERY_US], the mask is reused between. */
         private var maskTimeUs = Long.MIN_VALUE
 
@@ -96,9 +98,13 @@ class DesignEffect(private val design: Design) : GlEffect {
                 if (placement.cutout) {
                     val gap = presentationTimeUs - maskTimeUs
                     if (maskTex == 0 || gap < 0 || gap >= MASK_EVERY_US) {
-                        segment(inputTexId)
+                        segment(inputTexId, jumped = maskTex == 0 || gap < 0 || gap > 2 * MASK_EVERY_US)
                         maskTimeUs = presentationTimeUs
                     }
+                    // A new mask fades in over the frames until the next one rather than jumping
+                    // in at once: that jump, 10 times a second, was most of the flicker.
+                    val fade = ((presentationTimeUs - maskTimeUs + FRAME_US).toFloat() / MASK_EVERY_US).coerceIn(0f, 1f)
+                    showMask(fade)
                 }
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo[0])
                 GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
@@ -215,7 +221,7 @@ class DesignEffect(private val design: Design) : GlEffect {
         }
 
         /** Person mask for the cutout: small upright copy -> read back -> segmentation model. */
-        private fun segment(inputTexId: Int) {
+        private fun segment(inputTexId: Int, jumped: Boolean) {
             if (smallFbo == 0) {
                 smallH = (smallW * inH / inW.toFloat()).roundToInt().coerceAtLeast(2)
                 val ids = IntArray(2)
@@ -262,14 +268,29 @@ class DesignEffect(private val design: Design) : GlEffect {
             bitmap.recycle()
             val mw = mask.width
             val mh = mask.height
-            val prev = previous?.takeIf { it.size == mw * mh }
+            val prev = previous?.takeIf { it.size == mw * mh && !jumped }
             if (prev != null) for (i in mask.values.indices) mask.values[i] = mask.values[i] * (1f - CARRY) + prev[i] * CARRY
+            // After a jump (a seek, a new clip) show the new mask at once; otherwise fade from the last.
+            fadeFrom = prev
             previous = mask.values
+            shownFade = -1f
             maskW = mw
             maskH = mh
+        }
+
+        /** Uploads the mask [fade] of the way from the last one to the newest. */
+        private fun showMask(fade: Float) {
+            val now = previous ?: return
+            val from = fadeFrom?.takeIf { it.size == now.size && fade < 1f }
+            val t = if (from == null) 1f else fade
+            if (t == shownFade) return
+            shownFade = t
+            val mw = maskW
+            val mh = maskH
             if (maskBytes.capacity() < mw * mh) maskBytes = ByteBuffer.allocateDirect(mw * mh)
             maskBytes.clear()
-            for (v in mask.values) maskBytes.put((v.coerceIn(0f, 1f) * 255f).toInt().toByte())
+            if (from == null) for (v in now) maskBytes.put((v.coerceIn(0f, 1f) * 255f).toInt().toByte())
+            else for (i in now.indices) maskBytes.put(((from[i] + (now[i] - from[i]) * t).coerceIn(0f, 1f) * 255f).toInt().toByte())
             maskBytes.rewind()
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
             GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
@@ -296,8 +317,14 @@ class DesignEffect(private val design: Design) : GlEffect {
     }
 
     companion object {
-        /** How much of last frame's mask carries into this one (less flicker, little lag). */
-        private const val CARRY = 0.3f
+        /**
+         * How much of the last mask carries into the new one. 0.6 (was 0.3) halved the worst
+         * frame-to-frame change on the DES-09 test clip together with the fade-in.
+         */
+        private const val CARRY = 0.6f
+
+        /** About one frame at 30 fps: the frame that runs the model already shows a third of its mask. */
+        private const val FRAME_US = 33_333L
 
         /** How often the cutout model runs, in video time: 10 masks a second. */
         private const val MASK_EVERY_US = 95_000L
