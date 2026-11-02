@@ -211,19 +211,8 @@ class DesignActivity : AppCompatActivity() {
         startShape(clips.first())
         buildUi()
         clips.forEach { loadThumbs(it) }
-        player = Players.create(this).also { p ->
-            playerView.player = p
-            p.repeatMode = Player.REPEAT_MODE_ALL
-            p.addListener(object : Player.Listener {
-                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = matchClip()
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    playButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play_arrow)
-                    syncAudioPlayers()
-                }
-            })
-        }
+        player = newPlayer(effects())
         rebuildPlaylist()
-        applyEffects()
         buildPanel()
         startClock()
     }
@@ -575,10 +564,46 @@ class DesignActivity : AppCompatActivity() {
 
     // region Preview
 
-    /** Re-sends the effects (needed when layers are added or removed, or the canvas changes). */
+    /** The preview's player, its effects set before it's prepared. */
+    private fun newPlayer(effects: List<Effect>): ExoPlayer = Players.create(this).also { p ->
+        p.setVideoEffects(effects)
+        playerView.player = p
+        p.repeatMode = Player.REPEAT_MODE_ALL
+        p.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = matchClip()
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                playButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play_arrow)
+                syncAudioPlayers()
+            }
+        })
+    }
+
+    /**
+     * Shows a new set of effects (layers added or removed, the canvas, captions, the logo).
+     * Media3 1.5 stalls the preview for good when a playing or prepared player is sent new
+     * effects (a sticker, a template, and before, every Adjust tick), so the preview gets a
+     * fresh player with the effects set from the start, at the same spot. Calls close together
+     * (a template renders each of its layers) are gathered into one swap.
+     */
     private fun applyEffects() {
         frame.setAspectRatio(design.canvas.aspect)
         canvasView.invalidate()
+        refreshTimeline()
+        window.decorView.removeCallbacks(swapPlayer)
+        window.decorView.postDelayed(swapPlayer, 120)
+    }
+
+    private val swapPlayer = Runnable {
+        val old = player ?: return@Runnable
+        val at = if (old.isPlaying) currentTimelineMs() else previewMs
+        val wasPlaying = old.isPlaying
+        old.release()
+        player = newPlayer(effects())
+        rebuildPlaylist(at)
+        if (wasPlaying) player?.play()
+    }
+
+    private fun effects(): List<Effect> {
         val effects = mutableListOf<Effect>()
         // The grade reads its values live (see refreshGrade), so it's always in the list.
         effects += liveGrade.effect()
@@ -587,10 +612,7 @@ class DesignActivity : AppCompatActivity() {
         val overlays = design.layers.map { LayerOverlay(it, clockMs = clock) as TextureOverlay } +
             listOfNotNull(captionOverlay(clock)) + listOfNotNull(BrandKit.overlay(this))
         if (overlays.isNotEmpty()) effects += OverlayEffect(overlays)
-        runCatching { player?.setVideoEffects(effects) }
-        // Paused, the player draws no new frame by itself: redraw this one through the new effects.
-        redrawPaused.run()
-        refreshTimeline()
+        return effects
     }
 
     private fun captionOverlay(clock: (Long) -> Long): TextureOverlay? {
