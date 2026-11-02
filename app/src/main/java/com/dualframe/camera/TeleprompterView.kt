@@ -14,7 +14,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -23,7 +22,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 /**
  * A floating, see-through script that scrolls by itself while you talk to the camera.
- * Drag it by its top bar; it sits under the front camera by default for eye contact.
+ * Drag it from anywhere on it; it sits under the front camera by default for eye contact.
  * The script, speed and text size are remembered.
  */
 class TeleprompterView @JvmOverloads constructor(
@@ -107,9 +106,11 @@ class TeleprompterView @JvmOverloads constructor(
         val pad = (8 * density).toInt()
         setPadding(pad, pad / 2, pad, pad)
 
-        val bar = LinearLayout(context).apply {
-            orientation = HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        // The buttons wrap onto a second row when the box is narrow (eye contact, sideways);
+        // a sideways-scrolling bar would fight with dragging the box.
+        val bar = com.google.android.material.chip.ChipGroup(context).apply {
+            chipSpacingHorizontal = 0
+            chipSpacingVertical = 0
         }
         val handle = TextView(context).apply {
             text = "⋮⋮"
@@ -120,7 +121,6 @@ class TeleprompterView @JvmOverloads constructor(
             gravity = Gravity.CENTER_VERTICAL
             setPadding(pad, 0, pad, 0)
         }
-        enableDragging(handle)
         bar.addView(handle)
         bar.addView(playButton)
         bar.addView(smallButton("−") { setSpeed(speed - speedStep(speed - 1f)) }.apply { contentDescription = "Slower" })
@@ -138,12 +138,7 @@ class TeleprompterView @JvmOverloads constructor(
             it.contentDescription = "Follow my voice"
             bar.addView(it)
         }
-        // Narrow (eye-contact) mode can't fit every button, so the bar scrolls sideways.
-        val barScroller = HorizontalScrollView(context).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(bar)
-        }
-        addView(barScroller, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(bar, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         scroller.addView(text, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(scroller, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -380,44 +375,65 @@ class TeleprompterView @JvmOverloads constructor(
         }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun enableDragging(handle: View) {
-        var startX = 0f
-        var startY = 0f
-        var startTx = 0f
-        var startTy = 0f
-        handle.setOnTouchListener { _, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    // The handle sits in the button bar's scroll view, which otherwise takes any
-                    // drag along the bar for itself: sideways that's the way down the screen,
-                    // so the box never moved, the bar scrolled instead.
-                    handle.parent?.requestDisallowInterceptTouchEvent(true)
-                    startX = e.rawX
-                    startY = e.rawY
-                    startTx = translationX
-                    startTy = translationY
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val parent = parent as? View
-                    var tx = startTx + e.rawX - startX
-                    var ty = startTy + e.rawY - startY
-                    if (parent != null) {
-                        // Keep what you see on screen; turned sideways, the box's on-screen width
-                        // and height are swapped.
-                        val turned = rotation % 180f != 0f
-                        val halfW = (if (turned) height else width) / 2f
-                        val halfH = (if (turned) width else height) / 2f
-                        val cx = (left + right) / 2f
-                        val cy = (top + bottom) / 2f
-                        if (halfW * 2 <= parent.width) tx = tx.coerceIn(halfW - cx, parent.width - halfW - cx)
-                        if (halfH * 2 <= parent.height) ty = ty.coerceIn(halfH - cy, parent.height - halfH - cy)
-                    }
-                    translationX = tx
-                    translationY = ty
-                }
-            }
-            true
+    // Dragging: a finger that moves past the touch slop anywhere on the box moves the box (the
+    // buttons and the script then get a cancel); a tap still reaches them.
+    private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
+    private var startTx = 0f
+    private var startTy = 0f
+    private var dragging = false
+
+    override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> startDrag(e)
+            MotionEvent.ACTION_MOVE -> if (!dragging && kotlin.math.hypot(e.rawX - downX, e.rawY - downY) > touchSlop) dragging = true
         }
+        return dragging
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            // Down on the box itself (not a button): keep the gesture so it can become a drag.
+            MotionEvent.ACTION_DOWN -> startDrag(e)
+            MotionEvent.ACTION_MOVE -> {
+                if (!dragging && kotlin.math.hypot(e.rawX - downX, e.rawY - downY) > touchSlop) dragging = true
+                if (dragging) dragTo(e)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> dragging = false
+        }
+        return true
+    }
+
+    private fun startDrag(e: MotionEvent) {
+        downX = e.rawX
+        downY = e.rawY
+        startTx = translationX
+        startTy = translationY
+        dragging = false
+        // The box's own check above runs before the script's scroll view sees the move, so the
+        // drag is the box's; nothing above the box should take it either.
+        parent?.requestDisallowInterceptTouchEvent(true)
+    }
+
+    private fun dragTo(e: MotionEvent) {
+        val parent = parent as? View
+        var tx = startTx + e.rawX - downX
+        var ty = startTy + e.rawY - downY
+        if (parent != null) {
+            // Keep what you see on screen; turned sideways, the box's on-screen width and height
+            // are swapped.
+            val turned = rotation % 180f != 0f
+            val halfW = (if (turned) height else width) / 2f
+            val halfH = (if (turned) width else height) / 2f
+            val cx = (left + right) / 2f
+            val cy = (top + bottom) / 2f
+            if (halfW * 2 <= parent.width) tx = tx.coerceIn(halfW - cx, parent.width - halfW - cx)
+            if (halfH * 2 <= parent.height) ty = ty.coerceIn(halfH - cy, parent.height - halfH - cy)
+        }
+        translationX = tx
+        translationY = ty
     }
 
     override fun onDetachedFromWindow() {
