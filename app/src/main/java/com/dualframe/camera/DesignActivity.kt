@@ -208,7 +208,7 @@ class DesignActivity : AppCompatActivity() {
         startShape(clips.first())
         buildUi()
         clips.forEach { loadThumbs(it) }
-        player = ExoPlayer.Builder(this).build().also { p ->
+        player = Players.create(this).also { p ->
             playerView.player = p
             p.repeatMode = Player.REPEAT_MODE_ALL
             p.addListener(object : Player.Listener {
@@ -375,7 +375,7 @@ class DesignActivity : AppCompatActivity() {
         audioPlayers.keys.filter { id -> audioClips.none { it.id == id } }.forEach { audioPlayers.remove(it)?.release() }
         audioClips.forEach { a ->
             val ap = audioPlayers.getOrPut(a.id) {
-                ExoPlayer.Builder(this).build().also {
+                Players.create(this).also {
                     it.setMediaItem(MediaItem.fromUri(a.uri))
                     it.prepare()
                 }

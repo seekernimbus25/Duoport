@@ -162,7 +162,7 @@ class GradeActivity : AppCompatActivity() {
         }
 
         startScopes(playerView)
-        player = ExoPlayer.Builder(this).build().also {
+        player = Players.create(this).also {
             playerView.player = it
             it.repeatMode = Player.REPEAT_MODE_ALL
             it.setMediaItem(MediaItem.fromUri(uri))

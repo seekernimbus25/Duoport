@@ -87,7 +87,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         if (isPhoto) return
-        val exo = ExoPlayer.Builder(this).build().also { player = it }
+        val exo = Players.create(this).also { player = it }
         findViewById<PlayerView>(R.id.player_view).player = exo
         exo.setMediaItem(MediaItem.fromUri(uri))
         exo.repeatMode = Player.REPEAT_MODE_ONE

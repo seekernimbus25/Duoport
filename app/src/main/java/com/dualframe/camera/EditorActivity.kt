@@ -242,7 +242,7 @@ class EditorActivity : AppCompatActivity() {
             insets
         }
 
-        player = ExoPlayer.Builder(this).build().also {
+        player = Players.create(this).also {
             playerView.player = it
             it.repeatMode = Player.REPEAT_MODE_ALL
         }
