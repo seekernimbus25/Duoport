@@ -607,7 +607,7 @@ class DesignActivity : AppCompatActivity() {
         val effects = mutableListOf<Effect>()
         // The grade reads its values live (see refreshGrade), so it's always in the list.
         effects += liveGrade.effect()
-        effects += DesignEffect(design)
+        effects += DesignEffect(design, live = true)
         val clock: (Long) -> Long = { previewMs }
         val overlays = design.layers.map { LayerOverlay(it, clockMs = clock) as TextureOverlay } +
             listOfNotNull(captionOverlay(clock)) + listOfNotNull(BrandKit.overlay(this))

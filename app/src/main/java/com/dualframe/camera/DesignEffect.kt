@@ -31,7 +31,7 @@ import kotlin.math.sin
  * Reads [design] every frame, so changes in the editor show up live.
  */
 @OptIn(UnstableApi::class)
-class DesignEffect(private val design: Design) : GlEffect {
+class DesignEffect(private val design: Design, private val live: Boolean = false) : GlEffect {
     override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(context.applicationContext, design, useHdr)
 
     private class Program(private val context: Context, private val design: Design, useHdr: Boolean) :
@@ -53,7 +53,7 @@ class DesignEffect(private val design: Design) : GlEffect {
 
         // Person cutout: a small copy is read back and segmented every frame; the shader then
         // snaps the mask's edge to the full-size picture.
-        private var personMask: PersonMask? = null
+        @Volatile private var personMask: PersonMask? = null
         private var maskFine = true
         private var smallTex = 0
         private var smallFbo = 0
@@ -70,6 +70,16 @@ class DesignEffect(private val design: Design) : GlEffect {
         private var previous: FloatArray? = null
         private var fadeFrom: FloatArray? = null
         private var shownFade = -1f
+        /**
+         * In the live preview the models run on their own thread and the newest finished mask is
+         * used: a player that waits on them (loading Fine edges' matte takes a few seconds) drops
+         * frames, and Media3 1.5.1's player then fails (NoSuchElementException in dropFrame).
+         * Saving waits for every mask, so each frame gets its own.
+         */
+        private val segmentThread by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
+        @Volatile private var segmenting = false
+        @Volatile private var finished: Pair<PersonMask.Mask, Boolean>? = null
+
         /** Frame time of the last mask; the model runs every [MASK_EVERY_US], the mask is reused between. */
         private var maskTimeUs = Long.MIN_VALUE
 
@@ -98,6 +108,10 @@ class DesignEffect(private val design: Design) : GlEffect {
                 // The model takes ~0.4 s a frame on the CPU, so it runs about 10× a second of video
                 // (and after any jump, e.g. a seek); frames in between reuse the last mask.
                 if (placement.cutout) {
+                    finished?.let { (mask, jumped) ->
+                        finished = null
+                        takeMask(mask, jumped)
+                    }
                     val gap = presentationTimeUs - maskTimeUs
                     if (maskTex == 0 || gap < 0 || gap >= MASK_EVERY_US) {
                         segment(inputTexId, jumped = maskTex == 0 || gap < 0 || gap > 2 * MASK_EVERY_US)
@@ -267,9 +281,26 @@ class DesignEffect(private val design: Design) : GlEffect {
             }
             // Made (or remade, when the edge quality is switched) on first use.
             if (personMask == null || fine != maskFine) {
-                personMask?.close()
-                personMask = PersonMask(context, precise = fine, matte = fine)
+                val old = personMask
                 maskFine = fine
+                if (live) {
+                    // Loading (the matte on the GPU especially) takes seconds: not on the player's thread.
+                    personMask = null
+                    if (!segmenting) {
+                        segmenting = true
+                        segmentThread.execute {
+                            old?.close()
+                            try {
+                                personMask = PersonMask(context, precise = fine, matte = fine)
+                            } finally {
+                                segmenting = false
+                            }
+                        }
+                    }
+                    return
+                }
+                old?.close()
+                personMask = PersonMask(context, precise = fine, matte = fine)
             }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
             GLES20.glViewport(0, 0, smallW, smallH)
@@ -284,8 +315,32 @@ class DesignEffect(private val design: Design) : GlEffect {
             val bitmap = Bitmap.createBitmap(smallW, smallH, Bitmap.Config.ARGB_8888)
             pixels.rewind()
             bitmap.copyPixelsFromBuffer(pixels)
-            val mask = personMask!!.segment(bitmap)
-            bitmap.recycle()
+            val model = personMask!!
+            if (!live) {
+                val mask = model.segment(bitmap)
+                bitmap.recycle()
+                takeMask(mask, jumped)
+                return
+            }
+            if (segmenting) {
+                bitmap.recycle()
+                return
+            }
+            segmenting = true
+            segmentThread.execute {
+                try {
+                    finished = model.segment(bitmap) to jumped
+                } catch (e: Exception) {
+                    android.util.Log.w("DesignEffect", "Cutout failed", e)
+                } finally {
+                    bitmap.recycle()
+                    segmenting = false
+                }
+            }
+        }
+
+        /** A new mask from the model: blended with the last one (against flicker) unless the picture jumped. */
+        private fun takeMask(mask: PersonMask.Mask, jumped: Boolean) {
             val mw = mask.width
             val mh = mask.height
             val prev = previous?.takeIf { it.size == mw * mh && !jumped }
@@ -320,7 +375,13 @@ class DesignEffect(private val design: Design) : GlEffect {
 
         override fun release() {
             super.release()
-            personMask?.close()
+            if (live) {
+                val model = personMask
+                segmentThread.execute { model?.close() }
+                segmentThread.shutdown()
+            } else {
+                personMask?.close()
+            }
             try {
                 bgVideo?.release()
                 bgVideo = null
