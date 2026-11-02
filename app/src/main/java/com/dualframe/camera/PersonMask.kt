@@ -25,6 +25,11 @@ class PersonMask(context: Context) : Closeable {
     /** One mask: [width] × [height] values, 0 = background, 1 = person, first row = top. */
     class Mask(val width: Int, val height: Int, val values: FloatArray)
 
+    /**
+     * All MediaPipe calls run on this one thread. On Media3's GL thread (which has its own EGL
+     * context current) the GPU graph failed to start ("CalculatorGraph::Run() failed").
+     */
+    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val segmenter: ImageSegmenter
     private val delegate: Delegate
     private var frames = 0
@@ -35,7 +40,7 @@ class PersonMask(context: Context) : Closeable {
         var made: ImageSegmenter? = null
         var used = Delegate.GPU
         for (d in listOf(Delegate.GPU, Delegate.CPU)) {
-            made = runCatching { create(context, d) }.onFailure { Log.w(TAG, "No $d segmenter", it) }.getOrNull()
+            made = runCatching { onWorker { create(context, d) } }.onFailure { Log.w(TAG, "No $d segmenter", it) }.getOrNull()
             if (made != null) {
                 used = d
                 break
@@ -44,6 +49,13 @@ class PersonMask(context: Context) : Closeable {
         segmenter = made ?: throw IllegalStateException("No segmenter")
         delegate = used
     }
+
+    private fun <T> onWorker(block: () -> T): T =
+        try {
+            worker.submit<T> { block() }.get()
+        } catch (e: java.util.concurrent.ExecutionException) {
+            throw e.cause ?: e
+        }
 
     private fun create(context: Context, d: Delegate): ImageSegmenter =
         ImageSegmenter.createFromOptions(
@@ -59,7 +71,7 @@ class PersonMask(context: Context) : Closeable {
     /** The person in [small] (about [INPUT_WIDTH] wide, upright), largest connected shape only. */
     fun segment(small: Bitmap): Mask {
         val start = SystemClock.elapsedRealtime()
-        val result = segmenter.segment(BitmapImageBuilder(small).build())
+        val result = onWorker { segmenter.segment(BitmapImageBuilder(small).build()) }
         val background = result.confidenceMasks().get()[0]
         val w = background.width
         val h = background.height
@@ -75,7 +87,10 @@ class PersonMask(context: Context) : Closeable {
         return Mask(w, h, values)
     }
 
-    override fun close() = segmenter.close()
+    override fun close() {
+        runCatching { onWorker { segmenter.close() } }
+        worker.shutdown()
+    }
 
     companion object {
         private const val TAG = "PersonMask"

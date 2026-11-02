@@ -1125,6 +1125,7 @@ class DesignActivity : AppCompatActivity() {
                 pickImageFor { u -> design.bgImage = u; refreshBackground() }
             })
             BackgroundKind.BLUR -> note(getString(R.string.design_blur_note))
+            BackgroundKind.GREEN -> note(getString(R.string.design_green_note))
             BackgroundKind.VIDEO -> {
                 panel.addView(Glass.pill(this, getString(if (design.bgVideo == null) R.string.design_pick_video else R.string.design_change_video)) {
                     pickVideo.launch(arrayOf("video/*"))

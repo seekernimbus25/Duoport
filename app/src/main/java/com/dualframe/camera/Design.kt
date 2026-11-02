@@ -16,7 +16,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** What fills the canvas behind the video. */
-enum class BackgroundKind(val label: String) { BLUR("Blurred video"), COLOR("Colour"), GRADIENT("Gradient"), IMAGE("Photo"), VIDEO("Video") }
+enum class BackgroundKind(val label: String) { BLUR("Blurred video"), COLOR("Colour"), GRADIENT("Gradient"), IMAGE("Photo"), VIDEO("Video"), GREEN("Green screen") }
 
 /** The shape the video is shown in. */
 enum class VideoMask(val label: String, val code: Float) {
@@ -114,6 +114,8 @@ class Design {
 
 /** Drawing the pieces of a design into bitmaps. */
 object DesignArt {
+    /** Chroma-key green (the broadcast "green screen" colour editors key out by default). */
+    const val GREEN_SCREEN = 0xFF00B140.toInt()
 
     fun decode(context: Context, uri: Uri, maxSide: Int): Bitmap? = runCatching {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -133,6 +135,8 @@ object DesignArt {
         return when (design.background) {
             BackgroundKind.BLUR, BackgroundKind.VIDEO -> null
             BackgroundKind.COLOR -> Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888).apply { eraseColor(design.bgColor) }
+            // Video can't be transparent, so "no background" is the chroma green editors key out.
+            BackgroundKind.GREEN -> Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888).apply { eraseColor(GREEN_SCREEN) }
             BackgroundKind.GRADIENT -> Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888).also { b ->
                 Canvas(b).drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), Paint().apply {
                     shader = LinearGradient(0f, 0f, bw.toFloat(), bh.toFloat(), design.bgColor, design.bgColor2, Shader.TileMode.CLAMP)
