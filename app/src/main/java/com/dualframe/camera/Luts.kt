@@ -192,16 +192,19 @@ object Luts {
     )
 
     /**
-     * DF-Log -> Rec.709-style display picture: back to scene light with mid grey at 0.18, then
-     * a film shoulder that rolls the camera's white off to display white instead of clipping
-     * (extended Reinhard).
+     * DF-Log -> Rec.709-style display picture: back to scene light, then a filmic curve (ACES
+     * fit, Narkowicz) whose toe brings the lifted blacks back down and whose shoulder rolls the
+     * highlights off. [VIEW_EXPOSURE] was matched on the 9a: DF-Log through this came out within
+     * a few levels of the Standard profile on the same scene (blacks 38 vs 30, average 79 vs 69).
      */
     private val logTo709: Grade = { p ->
         FloatArray(3) { c ->
-            val scene = logToLinear(p[c]) * SCENE_WHITE
-            srgbEncode(scene * (1f + scene / (SCENE_WHITE * SCENE_WHITE)) / (1f + scene))
+            val x = logToLinear(p[c]) * SCENE_WHITE * VIEW_EXPOSURE
+            srgbEncode(x * (2.51f * x + 0.03f) / (x * (2.43f * x + 0.59f) + 0.14f))
         }
     }
+
+    private const val VIEW_EXPOSURE = 0.3f
 
     private fun srgbEncode(x: Float): Float {
         val v = x.coerceIn(0f, 1f)
