@@ -350,8 +350,20 @@ class DesignActivity : AppCompatActivity() {
      */
     private val redrawPaused = Runnable {
         val p = player ?: return@Runnable
-        if (!p.isPlaying && p.mediaItemCount > 0) p.seekTo(p.currentMediaItemIndex, p.currentPosition)
+        if (p.isPlaying || p.mediaItemCount == 0) return@Runnable
+        // ExoPlayer ignores a seek to the position it's already at, so alternate between the
+        // frame's time and 1 ms beside it (the same frame) for the seek to happen every time.
+        val pos = p.currentPosition
+        if (redrawAt < 0 || kotlin.math.abs(pos - redrawAt) > 1) {
+            redrawAt = pos
+            redrawNudged = false
+        }
+        redrawNudged = !redrawNudged
+        val beside = if (redrawAt > 0) redrawAt - 1 else redrawAt + 1
+        p.seekTo(p.currentMediaItemIndex, if (redrawNudged) beside else redrawAt)
     }
+    private var redrawAt = -1L
+    private var redrawNudged = false
     private var redrawPending = false
 
     override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
@@ -577,7 +589,7 @@ class DesignActivity : AppCompatActivity() {
         if (overlays.isNotEmpty()) effects += OverlayEffect(overlays)
         runCatching { player?.setVideoEffects(effects) }
         // Paused, the player draws no new frame by itself: redraw this one through the new effects.
-        player?.let { p -> if (!p.isPlaying && p.mediaItemCount > 0) p.seekTo(p.currentMediaItemIndex, p.currentPosition) }
+        redrawPaused.run()
         refreshTimeline()
     }
 
