@@ -4,50 +4,58 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
-import com.google.mediapipe.framework.image.BitmapImageBuilder
-import com.google.mediapipe.tasks.core.BaseOptions
-import com.google.mediapipe.tasks.core.Delegate
-import com.google.mediapipe.tasks.vision.core.RunningMode
-import com.google.mediapipe.tasks.vision.imagesegmenter.ImageSegmenter
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.channels.FileChannel
 import java.io.Closeable
 import kotlin.math.exp
 
 /**
- * Who's the person in a picture, for the cutouts. MediaPipe's selfie multiclass model sorts
+ * Who's the person in a picture, for the cutouts. Google's selfie multiclass model sorts
  * every pixel into background, hair, skin, clothes or "other" (headwear, glasses, things held);
  * everything but background is the person, so hair and accessories stay on. ML Kit's selfie
  * model, used before, only knew person/not-person and dropped hair edges and hats.
  *
- * The model sees a 256 px wide copy; [refine] (and the same step in DesignEffect's shader)
- * then snaps the mask's edge to the real edges in the full picture.
+ * The model sees a 256 × 256 copy; [refine] (and the same step in DesignEffect's shader)
+ * then snaps the mask's edge to the real edges in the full picture. It runs on TensorFlow Lite
+ * directly: through MediaPipe the 9a's GPU refused it ("Batch size mismatch, expected 1 but
+ * got 8") and the CPU path took ~0.4 s a frame.
  */
 class PersonMask(context: Context) : Closeable {
     /** One mask: [width] × [height] values, 0 = background, 1 = person, first row = top. */
     class Mask(val width: Int, val height: Int, val values: FloatArray)
 
-    /**
-     * All MediaPipe calls run on this one thread. On Media3's GL thread (which has its own EGL
-     * context current) the GPU graph failed to start ("CalculatorGraph::Run() failed").
-     */
+    /** The interpreter (and a GPU delegate, which must stay on the thread that made it) lives here. */
     private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
-    private val segmenter: ImageSegmenter
-    private val delegate: Delegate
+    private var interpreter: Interpreter? = null
+    private var gpu: GpuDelegate? = null
+    private var onGpu = false
+    private val input = ByteBuffer.allocateDirect(SIZE * SIZE * 3 * 4).order(ByteOrder.nativeOrder())
+    private val output = ByteBuffer.allocateDirect(SIZE * SIZE * CLASSES * 4).order(ByteOrder.nativeOrder())
+    private val pixels = IntArray(SIZE * SIZE)
     private var frames = 0
     private var totalMs = 0L
 
     init {
-        // The phone's GPU runs the model ~10× faster; fall back to the CPU if it can't.
-        var made: ImageSegmenter? = null
-        var used = Delegate.GPU
-        for (d in listOf(Delegate.GPU, Delegate.CPU)) {
-            made = runCatching { onWorker { create(context, d) } }.onFailure { Log.w(TAG, "No $d segmenter", it) }.getOrNull()
-            if (made != null) {
-                used = d
-                break
-            }
+        onWorker {
+            val fd = context.assets.openFd(MODEL)
+            val model = fd.createInputStream().channel.map(FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
+            // The phone's GPU runs the model many times faster; the CPU (4 threads) if it can't.
+            interpreter = runCatching {
+                val compat = CompatibilityList()
+                check(compat.isDelegateSupportedOnThisDevice) { "GPU delegate not supported here" }
+                val delegate = GpuDelegate(compat.bestOptionsForThisDevice)
+                gpu = delegate
+                Interpreter(model, Interpreter.Options().addDelegate(delegate)).also { onGpu = true }
+            }.onFailure {
+                Log.w(TAG, "No GPU segmenter", it)
+                gpu?.close()
+                gpu = null
+            }.getOrNull() ?: Interpreter(model, Interpreter.Options().setNumThreads(4))
         }
-        segmenter = made ?: throw IllegalStateException("No segmenter")
-        delegate = used
     }
 
     private fun <T> onWorker(block: () -> T): T =
@@ -57,44 +65,70 @@ class PersonMask(context: Context) : Closeable {
             throw e.cause ?: e
         }
 
-    private fun create(context: Context, d: Delegate): ImageSegmenter =
-        ImageSegmenter.createFromOptions(
-            context,
-            ImageSegmenter.ImageSegmenterOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath(MODEL).setDelegate(d).build())
-                .setRunningMode(RunningMode.IMAGE)
-                .setOutputConfidenceMasks(true)
-                .setOutputCategoryMask(false)
-                .build(),
-        )
-
-    /** The person in [small] (about [INPUT_WIDTH] wide, upright), largest connected shape only. */
+    /** The person in [small] (upright, any size), largest connected shape only, as a [SIZE]² mask. */
     fun segment(small: Bitmap): Mask {
         val start = SystemClock.elapsedRealtime()
-        val result = onWorker { segmenter.segment(BitmapImageBuilder(small).build()) }
-        val background = result.confidenceMasks().get()[0]
-        val w = background.width
-        val h = background.height
-        val buffer = com.google.mediapipe.framework.image.ByteBufferExtractor.extract(background)
-            .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-        val values = FloatArray(w * h) { 1f - buffer.get(it) }
-        result.confidenceMasks().get().forEach { it.close() }
-        keepLargest(values, w, h)
+        // The model takes the whole picture stretched to 256 × 256, colours scaled to -1..1.
+        val square = Bitmap.createScaledBitmap(small, SIZE, SIZE, true)
+        square.getPixels(pixels, 0, SIZE, 0, 0, SIZE, SIZE)
+        if (square !== small) square.recycle()
+        input.rewind()
+        for (p in pixels) {
+            input.putFloat(((p shr 16) and 255) / 127.5f - 1f)
+            input.putFloat(((p shr 8) and 255) / 127.5f - 1f)
+            input.putFloat((p and 255) / 127.5f - 1f)
+        }
+        input.rewind()
+        output.rewind()
+        onWorker { interpreter!!.run(input, output) }
+        output.rewind()
+        // Six scores a pixel (background, hair, body skin, face skin, clothes, other); the person
+        // is everything but background: 1 - softmax(background).
+        val scores = output.asFloatBuffer()
+        val values = FloatArray(SIZE * SIZE)
+        val l = FloatArray(CLASSES)
+        for (i in values.indices) {
+            var top = Float.NEGATIVE_INFINITY
+            for (c in 0 until CLASSES) {
+                l[c] = scores.get(i * CLASSES + c)
+                if (l[c] > top) top = l[c]
+            }
+            var sum = 0f
+            var bg = 0f
+            for (c in 0 until CLASSES) {
+                val e = exp(l[c] - top)
+                sum += e
+                if (c == 0) bg = e
+            }
+            values[i] = 1f - bg / sum
+        }
+        keepLargest(values, SIZE, SIZE)
         val ms = SystemClock.elapsedRealtime() - start
         frames++
         totalMs += ms
-        if (frames == 1 || frames % 60 == 0) Log.i(TAG, "segment ${ms} ms, average ${totalMs / frames} ms over $frames ($delegate)")
-        return Mask(w, h, values)
+        if (frames == 1 || frames % 60 == 0) {
+            Log.i(TAG, "segment $ms ms, average ${totalMs / frames} ms over $frames (${if (onGpu) "GPU" else "CPU"})")
+        }
+        return Mask(SIZE, SIZE, values)
     }
 
     override fun close() {
-        runCatching { onWorker { segmenter.close() } }
+        runCatching {
+            onWorker {
+                interpreter?.close()
+                gpu?.close()
+            }
+        }
         worker.shutdown()
     }
 
     companion object {
         private const val TAG = "PersonMask"
         private const val MODEL = "selfie_multiclass_256x256.tflite"
+        /** The model's input and output size. */
+        private const val SIZE = 256
+        private const val CLASSES = 6
+        /** How wide a copy callers pass to [segment] (it's stretched to 256 × 256 here). */
         const val INPUT_WIDTH = 256
 
         /**

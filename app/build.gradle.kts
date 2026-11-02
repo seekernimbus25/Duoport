@@ -99,8 +99,11 @@ dependencies {
 
     // Cinematic mode: on-device person segmentation (bundled model, no network).
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
-    // Design editor person cutout: MediaPipe's selfie multiclass model (keeps hair and headwear).
-    implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    // Design editor person cutout: Google's selfie multiclass model (keeps hair and headwear),
+    // run on TensorFlow Lite with its GPU delegate.
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-gpu-api:2.16.1")
     // Follow me (auto-reframe): on-device face detection.
     implementation("com.google.mlkit:face-detection:16.1.7")
 
