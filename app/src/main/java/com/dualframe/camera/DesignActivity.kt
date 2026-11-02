@@ -1077,7 +1077,7 @@ class DesignActivity : AppCompatActivity() {
                 if (sc.mode == ScopeMode.OFF) continue
                 val texture = playerView.videoSurfaceView as? android.view.TextureView ?: continue
                 if (!texture.isAvailable || texture.width == 0) continue
-                val w = 192
+                val w = 256 // one sample per waveform column, so it has no empty stripes
                 val h = (w * texture.height / texture.width.toFloat()).toInt().coerceIn(32, 400)
                 val bmp = runCatching { texture.getBitmap(w, h) }.getOrNull() ?: continue
                 withContext(Dispatchers.Default) { sc.analyse(bmp) }

@@ -219,7 +219,7 @@ class GradeActivity : AppCompatActivity() {
                 if (scope.mode == ScopeMode.OFF || !scope.isShown) continue
                 val texture = playerView.videoSurfaceView as? android.view.TextureView ?: continue
                 if (!texture.isAvailable || texture.width == 0) continue
-                val w = 192
+                val w = 256 // one sample per waveform column, so it has no empty stripes
                 val h = (w * texture.height / texture.width.toFloat()).toInt().coerceIn(32, 400)
                 val frame = runCatching { texture.getBitmap(w, h) }.getOrNull() ?: continue
                 withContext(Dispatchers.Default) { scope.analyse(frame) }
@@ -265,6 +265,8 @@ class GradeActivity : AppCompatActivity() {
                 runCatching { Luts.cube(this@GradeActivity, id, RecordProfile.STANDARD, g) }.getOrNull()
             }
             runCatching { player?.setVideoEffects(effects()) }
+            // Paused, the player draws no new frame by itself: redraw this one through the new look.
+            player?.let { p -> if (!p.isPlaying) p.seekTo(p.currentPosition) }
         }
     }
 
