@@ -65,6 +65,8 @@ class DesignEffect(private val design: Design) : GlEffect {
         private var maskBytes: ByteBuffer = ByteBuffer.allocateDirect(1)
         /** Last frame's mask, blended in a little so the edge doesn't flicker frame to frame. */
         private var previous: FloatArray? = null
+        /** Frame time of the last mask; the model runs every [MASK_EVERY_US], the mask is reused between. */
+        private var maskTimeUs = Long.MIN_VALUE
 
         private fun program(fragment: String): GlProgram = try {
             GlProgram(VERTEX, fragment)
@@ -88,7 +90,15 @@ class DesignEffect(private val design: Design) : GlEffect {
                 val viewport = IntArray(4)
                 GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
                 val placement = design.video
-                if (placement.cutout) segment(inputTexId)
+                // The model takes ~0.4 s a frame on the CPU, so it runs about 10× a second of video
+                // (and after any jump, e.g. a seek); frames in between reuse the last mask.
+                if (placement.cutout) {
+                    val gap = presentationTimeUs - maskTimeUs
+                    if (maskTex == 0 || gap < 0 || gap >= MASK_EVERY_US) {
+                        segment(inputTexId)
+                        maskTimeUs = presentationTimeUs
+                    }
+                }
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo[0])
                 GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
 
@@ -281,6 +291,9 @@ class DesignEffect(private val design: Design) : GlEffect {
     companion object {
         /** How much of last frame's mask carries into this one (less flicker, little lag). */
         private const val CARRY = 0.3f
+
+        /** How often the cutout model runs, in video time: 10 masks a second. */
+        private const val MASK_EVERY_US = 95_000L
 
         /** Matches the strip order of [GlUtil.getNormalizedCoordinateBounds]. */
         private val TEX_COORDS = floatArrayOf(0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 0f, 1f, 1f, 1f, 0f, 1f)
