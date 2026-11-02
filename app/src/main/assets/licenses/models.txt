@@ -1,0 +1,6 @@
+Models bundled with DualFrame.
+
+selfie_multiclass_256x256.tflite (design editor person cutout)
+MediaPipe Selfie Multiclass Segmentation, by Google.
+Source: https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite
+Licensed under the Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0

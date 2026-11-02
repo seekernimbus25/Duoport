@@ -11,11 +11,6 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.net.Uri
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.segmentation.Segmentation
-import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
-import java.nio.ByteOrder
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -174,7 +169,7 @@ object DesignArt {
                 if (Stickers.isGif(context, uri)) Stickers.gif(context, uri, (canvasW * 0.5f).toInt())?.let { return it }
                 decode(context, uri, (canvasW * 0.6f).toInt())?.let { img ->
                     val fitted = fitInside(img, (canvasW * 0.5f).toInt())
-                    if (layer.cutout) cutOutPerson(fitted) ?: fitted else fitted
+                    if (layer.cutout) cutOutPerson(context, fitted) ?: fitted else fitted
                 }
             }
         }
@@ -221,32 +216,18 @@ object DesignArt {
     }
 
     /** The person in [src] on a transparent background (on-device segmentation). */
-    fun cutOutPerson(src: Bitmap): Bitmap? = runCatching {
-        val segmenter = Segmentation.getClient(
-            SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.SINGLE_IMAGE_MODE).build()
+    fun cutOutPerson(context: Context, src: Bitmap): Bitmap? = runCatching {
+        val small = Bitmap.createScaledBitmap(
+            src, PersonMask.INPUT_WIDTH, (PersonMask.INPUT_WIDTH * src.height / src.width.toFloat()).roundToInt().coerceAtLeast(2), true,
         )
-        val mask = try {
-            Tasks.await(segmenter.process(InputImage.fromBitmap(src, 0)))
-        } finally {
-            segmenter.close()
-        }
-        val mw = mask.width
-        val mh = mask.height
-        val values = FloatArray(mw * mh)
-        mask.buffer.rewind()
-        mask.buffer.order(ByteOrder.nativeOrder()).asFloatBuffer().get(values)
+        val mask = PersonMask(context).use { it.segment(small) }
+        if (small !== src) small.recycle()
         val out = src.copy(Bitmap.Config.ARGB_8888, true)
-        val row = IntArray(out.width)
-        for (y in 0 until out.height) {
-            out.getPixels(row, 0, out.width, 0, y, out.width, 1)
-            val my = (y * mh / out.height).coerceIn(0, mh - 1)
-            for (x in 0 until out.width) {
-                val mx = (x * mw / out.width).coerceIn(0, mw - 1)
-                val a = ((values[my * mw + mx] - 0.35f) / 0.4f).coerceIn(0f, 1f)
-                row[x] = (row[x] and 0x00FFFFFF) or ((Color.alpha(row[x]) * a).toInt() shl 24)
-            }
-            out.setPixels(row, 0, out.width, 0, y, out.width, 1)
-        }
+        val alpha = PersonMask.refine(mask, out)
+        val px = IntArray(out.width * out.height)
+        out.getPixels(px, 0, out.width, 0, 0, out.width, out.height)
+        for (i in px.indices) px[i] = (px[i] and 0x00FFFFFF) or ((Color.alpha(px[i]) * alpha[i]).toInt() shl 24)
+        out.setPixels(px, 0, out.width, 0, 0, out.width, out.height)
         out
     }.getOrNull()
 

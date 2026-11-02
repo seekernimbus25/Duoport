@@ -43,7 +43,7 @@ object BrandKit {
 
     fun setLogo(context: Context, uri: Uri, cutout: Boolean) {
         val bitmap = DesignArt.decode(context, uri, 1024) ?: error("Couldn't read that image")
-        val logo = if (cutout) DesignArt.cutOutPerson(bitmap) ?: bitmap else bitmap
+        val logo = if (cutout) DesignArt.cutOutPerson(context, bitmap) ?: bitmap else bitmap
         file(context).outputStream().use { logo.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 

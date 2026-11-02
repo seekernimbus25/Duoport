@@ -64,6 +64,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // The person-cutout model is memory-mapped straight from the APK, so keep it uncompressed.
+    androidResources {
+        noCompress += "tflite"
+    }
+
     lint {
         // Release builds run lint; don't let a style warning block the APK.
         abortOnError = false
@@ -94,6 +99,8 @@ dependencies {
 
     // Cinematic mode: on-device person segmentation (bundled model, no network).
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
+    // Design editor person cutout: MediaPipe's selfie multiclass model (keeps hair and headwear).
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
     // Follow me (auto-reframe): on-device face detection.
     implementation("com.google.mlkit:face-detection:16.1.7")
 

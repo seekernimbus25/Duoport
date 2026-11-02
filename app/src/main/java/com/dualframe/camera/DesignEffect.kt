@@ -16,14 +16,8 @@ import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
 import androidx.media3.effect.OverlaySettings
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.segmentation.Segmentation
-import com.google.mlkit.vision.segmentation.Segmenter
-import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.FloatBuffer
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -57,15 +51,20 @@ class DesignEffect(private val design: Design) : GlEffect {
         private var bgTexture = C.INDEX_UNSET
         private var uploadedBg: Bitmap? = null
 
-        // Person cutout: a small copy is read back and segmented every frame.
-        private var segmenter: Segmenter? = null
+        // Person cutout: a small copy is read back and segmented every frame; the shader then
+        // snaps the mask's edge to the full-size picture.
+        private var personMask: PersonMask? = null
         private var smallTex = 0
         private var smallFbo = 0
         private var maskTex = 0
-        private val smallW = 192
-        private var smallH = 192
+        private val smallW = PersonMask.INPUT_WIDTH
+        private var smallH = PersonMask.INPUT_WIDTH
+        private var maskW = 1
+        private var maskH = 1
         private var pixels: ByteBuffer = ByteBuffer.allocateDirect(4)
         private var maskBytes: ByteBuffer = ByteBuffer.allocateDirect(1)
+        /** Last frame's mask, blended in a little so the edge doesn't flicker frame to frame. */
+        private var previous: FloatArray? = null
 
         private fun program(fragment: String): GlProgram = try {
             GlProgram(VERTEX, fragment)
@@ -131,6 +130,7 @@ class DesignEffect(private val design: Design) : GlEffect {
                 val bc = placement.borderColor
                 videoProgram.setFloatsUniform("uBorderColor", floatArrayOf(Color.red(bc) / 255f, Color.green(bc) / 255f, Color.blue(bc) / 255f))
                 videoProgram.setFloatUniform("uCutout", if (placement.cutout && maskTex != 0) 1f else 0f)
+                videoProgram.setFloatsUniform("uMaskSize", floatArrayOf(maskW.toFloat(), maskH.toFloat()))
                 videoProgram.setFloatUniform("uPixel", 1.5f / h)
                 videoProgram.bindAttributesAndUniforms()
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -226,9 +226,7 @@ class DesignEffect(private val design: Design) : GlEffect {
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
                 GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, smallTex, 0)
                 pixels = ByteBuffer.allocateDirect(smallW * smallH * 4).order(ByteOrder.nativeOrder())
-                segmenter = Segmentation.getClient(
-                    SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.STREAM_MODE).build()
-                )
+                personMask = PersonMask(context)
             }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
             GLES20.glViewport(0, 0, smallW, smallH)
@@ -243,14 +241,18 @@ class DesignEffect(private val design: Design) : GlEffect {
             val bitmap = Bitmap.createBitmap(smallW, smallH, Bitmap.Config.ARGB_8888)
             pixels.rewind()
             bitmap.copyPixelsFromBuffer(pixels)
-            val mask = Tasks.await(segmenter!!.process(InputImage.fromBitmap(bitmap, 0)))
+            val mask = personMask!!.segment(bitmap)
             bitmap.recycle()
             val mw = mask.width
             val mh = mask.height
+            val prev = previous?.takeIf { it.size == mw * mh }
+            if (prev != null) for (i in mask.values.indices) mask.values[i] = mask.values[i] * (1f - CARRY) + prev[i] * CARRY
+            previous = mask.values
+            maskW = mw
+            maskH = mh
             if (maskBytes.capacity() < mw * mh) maskBytes = ByteBuffer.allocateDirect(mw * mh)
             maskBytes.clear()
-            val floats: FloatBuffer = mask.buffer.order(ByteOrder.nativeOrder()).asFloatBuffer()
-            for (i in 0 until mw * mh) maskBytes.put((floats.get(i).coerceIn(0f, 1f) * 255f).toInt().toByte())
+            for (v in mask.values) maskBytes.put((v.coerceIn(0f, 1f) * 255f).toInt().toByte())
             maskBytes.rewind()
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
             GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
@@ -259,7 +261,7 @@ class DesignEffect(private val design: Design) : GlEffect {
 
         override fun release() {
             super.release()
-            segmenter?.close()
+            personMask?.close()
             try {
                 bgVideo?.release()
                 bgVideo = null
@@ -277,6 +279,9 @@ class DesignEffect(private val design: Design) : GlEffect {
     }
 
     companion object {
+        /** How much of last frame's mask carries into this one (less flicker, little lag). */
+        private const val CARRY = 0.3f
+
         /** Matches the strip order of [GlUtil.getNormalizedCoordinateBounds]. */
         private val TEX_COORDS = floatArrayOf(0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 0f, 1f, 1f, 1f, 0f, 1f)
 
@@ -371,7 +376,31 @@ class DesignEffect(private val design: Design) : GlEffect {
             uniform vec3 uBorderColor;
             uniform float uCutout;
             uniform float uPixel;
+            uniform vec2 uMaskSize;
             varying vec2 vTexCoord;
+            // The cutout mask is coarse (256 px wide). Each pixel averages the 5×5 mask texels
+            // around it, weighted by distance and by how alike the picture's colour is there, so
+            // the edge follows the real outline of hair and clothes (joint bilateral upsampling;
+            // PersonMask.refine is the same maths for photos). The mask's first row is the top.
+            float personAt(vec2 uv, vec3 here) {
+              vec2 m = vec2(uv.x, 1.0 - uv.y) * uMaskSize - 0.5;
+              vec2 base = floor(m + 0.5);
+              float acc = 0.0;
+              float sum = 0.0;
+              for (int dy = -2; dy <= 2; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                  vec2 t = base + vec2(float(dx), float(dy));
+                  vec2 tuv = (t + 0.5) / uMaskSize;
+                  float mv = texture2D(uMaskSampler, tuv).r;
+                  vec3 c = texture2D(uTexSampler, vec2(tuv.x, 1.0 - tuv.y)).rgb - here;
+                  vec2 d = t - m;
+                  float w = exp(-dot(d, d) / 2.88 - dot(c, c) / 0.02);
+                  acc += w * mv;
+                  sum += w;
+                }
+              }
+              return acc / max(sum, 1e-5);
+            }
             float roundBox(vec2 p, vec2 b, float r) {
               vec2 q = abs(p) - b + r;
               return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -400,8 +429,7 @@ class DesignEffect(private val design: Design) : GlEffect {
               float alpha = 1.0 - smoothstep(-uPixel, uPixel, d);
               vec4 c = texture2D(uTexSampler, vTexCoord);
               if (uCutout > 0.5) {
-                float m = texture2D(uMaskSampler, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).r;
-                alpha *= smoothstep(0.35, 0.75, m);
+                alpha *= smoothstep(0.3, 0.7, personAt(vTexCoord, c.rgb));
               } else if (uBorder > 0.0 && d > -uBorder * side * 2.0) {
                 c.rgb = uBorderColor;
               }
