@@ -152,7 +152,8 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun delete() {
         try {
-            if (contentResolver.delete(uri, null, null) > 0) finish()
+            if (VideoLibrary.delete(this, uri)) finish()
+            else if (VideoLibrary.isFromFolder(uri)) Toast.makeText(this, R.string.delete_failed, Toast.LENGTH_SHORT).show()
         } catch (e: SecurityException) {
             // Videos saved before a reinstall belong to the old install: ask the system.
             val sender = when {

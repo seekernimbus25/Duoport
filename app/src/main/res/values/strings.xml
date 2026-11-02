@@ -84,7 +84,9 @@
     <string name="original_saved">Your original recording was saved to Movies › DualFrame, so nothing is lost.</string>
 
     <!-- Library & player -->
-    <string name="gallery_empty">Nothing here yet.\nYour videos will appear here after you record.\n\nVideos made before a reinstall are in your Photos app, under Movies/DualFrame.</string>
+    <string name="gallery_empty">Nothing here yet.\nYour videos will appear here after you record.\n\nVideos made before a reinstall: tap “Find my earlier videos” above and choose the DualFrame folder.</string>
+    <string name="library_find_earlier">Find my earlier videos</string>
+    <string name="library_folder_failed">Couldn\'t keep access to that folder. Try again and pick Movies › DualFrame.</string>
     <plurals name="video_count">
         <item quantity="one">%d video</item>
         <item quantity="other">%d videos</item>

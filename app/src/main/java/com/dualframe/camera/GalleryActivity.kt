@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.LruCache
 import android.util.Size
@@ -64,11 +65,110 @@ object VideoLibrary {
     const val PHOTO_PATH = "Pictures/DualFrame/"
 
     /**
-     * Newest first. Apps can always see the videos they saved themselves, with no permission,
-     * which is all the library needs (Play only allows broad media access to gallery apps).
+     * Newest first. Apps can always see the videos they saved themselves, with no permission
+     * (Play only allows broad media access to gallery apps). Videos from before a reinstall belong
+     * to the old install; they come back through a folder the user picks once ([earlierFolder]).
      */
-    fun query(context: Context): List<GalleryVideo> =
-        (queryVideos(context) + queryPhotos(context)).sortedByDescending { it.dateAddedSec }
+    fun query(context: Context): List<GalleryVideo> {
+        val ours = queryVideos(context) + queryPhotos(context)
+        val earlier = runCatching { queryFolder(context, ours.map { it.name }.toSet()) }.getOrDefault(emptyList())
+        return (ours + earlier).sortedByDescending { it.dateAddedSec }
+    }
+
+    // region Videos from before a reinstall
+
+    private const val PREFS = "library"
+    private const val KEY_FOLDER = "earlier_folder"
+
+    /** Where the system folder picker opens: Movies/DualFrame on the phone's own storage. */
+    val folderHint: Uri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Movies/DualFrame")
+
+    /** The folder picked with "Find my earlier videos", while the app still has access to it. */
+    fun earlierFolder(context: Context): Uri? {
+        val saved = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_FOLDER, null) ?: return null
+        val uri = Uri.parse(saved)
+        return uri.takeIf { context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission } }
+    }
+
+    fun setEarlierFolder(context: Context, tree: Uri) {
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        context.contentResolver.takePersistableUriPermission(tree, flags)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_FOLDER, tree.toString()).apply()
+    }
+
+    /** True for a video found through the picked folder rather than the app's own MediaStore entries. */
+    fun isFromFolder(uri: Uri): Boolean = uri.authority != MediaStore.AUTHORITY
+
+    /** Deletes one of ours or one from the picked folder; false if the system has to ask first. */
+    fun delete(context: Context, uri: Uri): Boolean =
+        if (isFromFolder(uri)) DocumentsContract.deleteDocument(context.contentResolver, uri)
+        else context.contentResolver.delete(uri, null, null) > 0
+
+    /** Size, length and turn of a folder video, read once per file version (reading takes ~30 ms). */
+    private val folderInfo = java.util.concurrent.ConcurrentHashMap<String, GalleryVideo>()
+
+    private fun queryFolder(context: Context, skip: Set<String>): List<GalleryVideo> {
+        val tree = earlierFolder(context) ?: return emptyList()
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        )
+        val found = mutableListOf<GalleryVideo>()
+        context.contentResolver.query(children, projection, null, null, null)?.use { c ->
+            while (c.moveToNext()) {
+                val name = c.getString(1) ?: continue
+                val mime = c.getString(2) ?: continue
+                val photo = mime.startsWith("image/")
+                if (name in skip || !(photo || mime.startsWith("video/"))) continue
+                val uri = DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0))
+                val modified = c.getLong(3)
+                val key = "$uri@$modified"
+                found += folderInfo.getOrPut(key) {
+                    if (photo) {
+                        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+                        GalleryVideo(uri, name, 0, bounds.outWidth, bounds.outHeight, modified / 1000, photo = true)
+                    } else {
+                        val r = android.media.MediaMetadataRetriever()
+                        try {
+                            r.setDataSource(context, uri)
+                            fun meta(k: Int) = r.extractMetadata(k)?.toLongOrNull() ?: 0L
+                            val turned = meta(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION) % 180 != 0L
+                            val w = meta(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH).toInt()
+                            val h = meta(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT).toInt()
+                            GalleryVideo(
+                                uri, name, meta(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION),
+                                if (turned) h else w, if (turned) w else h, modified / 1000,
+                            )
+                        } finally {
+                            r.release()
+                        }
+                    }
+                }
+            }
+        }
+        return found
+    }
+
+    /** A grid thumbnail. The folder's provider only makes them for photos, so videos use a frame. */
+    fun thumbnail(context: Context, video: GalleryVideo): Bitmap? {
+        runCatching { return context.contentResolver.loadThumbnail(video.uri, Size(360, 360), null) }
+        if (video.photo || !isFromFolder(video.uri)) return null
+        val r = android.media.MediaMetadataRetriever()
+        return try {
+            r.setDataSource(context, video.uri)
+            r.getScaledFrameAtTime(1_000_000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 360)
+        } catch (e: RuntimeException) {
+            null
+        } finally {
+            r.release()
+        }
+    }
+
+    // endregion
 
     private fun queryPhotos(context: Context): List<GalleryVideo> {
         val projection = arrayOf(
@@ -173,6 +273,17 @@ class GalleryActivity : AppCompatActivity() {
     private val deleteLauncher =
         registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { load() }
 
+    /** "Find my earlier videos": the system folder picker, opened on Movies/DualFrame. */
+    private val folderLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+            if (tree != null) {
+                runCatching { VideoLibrary.setEarlierFolder(this, tree) }
+                    .onFailure { Toast.makeText(this, R.string.library_folder_failed, Toast.LENGTH_SHORT).show() }
+                load()
+            }
+        }
+    private lateinit var findEarlier: View
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -182,6 +293,18 @@ class GalleryActivity : AppCompatActivity() {
         empty = findViewById(R.id.empty)
         countText = findViewById(R.id.count)
         findViewById<View>(R.id.back).setOnClickListener { finish() }
+
+        findEarlier = Glass.pill(this, getString(R.string.library_find_earlier)) { folderLauncher.launch(VideoLibrary.folderHint) }
+        findViewById<LinearLayout>(R.id.header).addView(
+            findEarlier,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = Glass.dp(this@GalleryActivity, 10f).toInt()
+            },
+        )
+        // The grid starts under the header, whatever its height (status bar, the button above).
+        findViewById<View>(R.id.header).addOnLayoutChangeListener { header, _, _, _, _, _, _, _, _ ->
+            if (grid.paddingTop != header.height) grid.post { grid.updatePadding(top = header.height) }
+        }
 
         grid.layoutManager = GridLayoutManager(this, 3)
         grid.adapter = adapter
@@ -205,6 +328,7 @@ class GalleryActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val videos = withContext(Dispatchers.IO) { runCatching { VideoLibrary.query(this@GalleryActivity) }.getOrDefault(emptyList()) }
             adapter.submit(videos)
+            findEarlier.isVisible = VideoLibrary.earlierFolder(this@GalleryActivity) == null
             empty.isVisible = videos.isEmpty()
             countText.text = resources.getQuantityString(R.plurals.video_count, videos.size, videos.size)
         }
@@ -286,12 +410,15 @@ class GalleryActivity : AppCompatActivity() {
             // Ours are deleted straight away; ones from before a reinstall need the system to ask.
             val notOurs = withContext(Dispatchers.IO) {
                 chosen.filter { video ->
-                    runCatching { contentResolver.delete(video.uri, null, null) <= 0 }.getOrDefault(true)
+                    runCatching { !VideoLibrary.delete(this@GalleryActivity, video.uri) }.getOrDefault(true)
                 }
             }
-            if (notOurs.isNotEmpty()) {
+            // The picked folder's videos either went or can't be deleted; only MediaStore can ask.
+            val askable = notOurs.filterNot { VideoLibrary.isFromFolder(it.uri) }
+            if (askable.size < notOurs.size) Toast.makeText(this@GalleryActivity, R.string.delete_failed, Toast.LENGTH_SHORT).show()
+            if (askable.isNotEmpty()) {
                 if (Build.VERSION.SDK_INT >= 30) {
-                    val sender = MediaStore.createDeleteRequest(contentResolver, notOurs.map { it.uri }).intentSender
+                    val sender = MediaStore.createDeleteRequest(contentResolver, askable.map { it.uri }).intentSender
                     deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
                 } else {
                     Toast.makeText(this@GalleryActivity, R.string.delete_failed, Toast.LENGTH_SHORT).show()
@@ -366,7 +493,7 @@ class GalleryActivity : AppCompatActivity() {
             if (cached == null) {
                 holder.job = lifecycleScope.launch {
                     val bitmap = withContext(Dispatchers.IO) {
-                        runCatching { contentResolver.loadThumbnail(video.uri, Size(360, 360), null) }.getOrNull()
+                        VideoLibrary.thumbnail(this@GalleryActivity, video)
                     }
                     if (bitmap != null) {
                         thumbs.put(video.uri, bitmap)
