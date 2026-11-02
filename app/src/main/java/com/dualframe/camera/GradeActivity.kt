@@ -111,9 +111,14 @@ class GradeActivity : AppCompatActivity() {
         })
         column.addView(header)
 
-        val playerView = layoutInflater.inflate(R.layout.grade_player, column, false) as PlayerView
-        column.addView(playerView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.36f))
-        column.addView(scopeStrip())
+        // The picture gets most of the screen; the scope floats in its top corner (over the black
+        // bars of a vertical video) and only the scope picker sits between it and the controls.
+        val picture = FrameLayout(this)
+        val playerView = layoutInflater.inflate(R.layout.grade_player, picture, false) as PlayerView
+        playerView.controllerShowTimeoutMs = 1500
+        picture.addView(playerView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        column.addView(picture, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.62f))
+        column.addView(scopeStrip(picture))
 
         val scroll = NestedScrollView(this)
         val body = LinearLayout(this).apply {
@@ -121,7 +126,7 @@ class GradeActivity : AppCompatActivity() {
             setPadding(dp(20f), dp(4f), dp(20f), dp(40f))
         }
         scroll.addView(body)
-        column.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.64f))
+        column.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.38f))
 
         body.addView(Glass.section(this, getString(R.string.grade_look)))
         looks = ChipGroup(this).apply {
@@ -165,6 +170,9 @@ class GradeActivity : AppCompatActivity() {
         player = Players.create(this).also {
             playerView.player = it
             it.repeatMode = Player.REPEAT_MODE_ALL
+            // A player started without effects never turns its effects pipeline on, so later
+            // looks only showed after a seek or a save. Start it with one that changes nothing.
+            it.setVideoEffects(effects())
             it.setMediaItem(MediaItem.fromUri(uri))
             it.prepare()
             it.play()
@@ -176,8 +184,8 @@ class GradeActivity : AppCompatActivity() {
     private lateinit var scope: ScopeView
     private val scopePrefs by lazy { getSharedPreferences("grade_screen", MODE_PRIVATE) }
 
-    /** Scope picker and the scope itself, between the picture and the controls. */
-    private fun scopeStrip(): View {
+    /** The scope picker (returned, goes under the picture) and the scope itself, in [picture]'s corner. */
+    private fun scopeStrip(picture: FrameLayout): View {
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12f), dp(6f), dp(12f), 0)
@@ -185,6 +193,7 @@ class GradeActivity : AppCompatActivity() {
         scope = ScopeView(this).apply {
             mode = ScopeMode.entries.firstOrNull { it.name == scopePrefs.getString("scope", null) } ?: ScopeMode.WAVEFORM
             contentDescription = getString(R.string.grade_scopes)
+            setBackgroundColor(android.graphics.Color.argb(150, 0, 0, 0))
         }
         val pills = ChipGroup(this).apply {
             isSingleLine = true
@@ -207,7 +216,9 @@ class GradeActivity : AppCompatActivity() {
             addView(pills)
         })
         scope.visibility = if (scope.mode == ScopeMode.OFF) View.GONE else View.VISIBLE
-        strip.addView(scope, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(132f)).apply { topMargin = dp(6f) })
+        picture.addView(scope, FrameLayout.LayoutParams(dp(150f), dp(96f), Gravity.TOP or Gravity.END).apply {
+            setMargins(dp(8f), dp(8f), dp(8f), dp(8f))
+        })
         return strip
     }
 
@@ -249,7 +260,7 @@ class GradeActivity : AppCompatActivity() {
 
     private fun effects(): List<Effect> {
         val list = mutableListOf<Effect>()
-        cube?.let { list += SingleColorLut.createFromCube(it.toArgbCube()) }
+        list += SingleColorLut.createFromCube((cube ?: IDENTITY).toArgbCube())
         if (grade.hasFinish) list += GradeFinishEffect(grade)
         return list
     }
@@ -395,6 +406,9 @@ class GradeActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** A LUT that changes nothing, for when no look or adjustment is set. */
+        private val IDENTITY = LutCube.bake(2) { it }
+
         fun open(context: Context, video: Uri) {
             context.startActivity(Intent(context, GradeActivity::class.java).setData(video))
         }
