@@ -5,12 +5,12 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
 import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import java.io.Closeable
+import kotlin.math.abs
 import kotlin.math.exp
 
 /**
@@ -43,18 +43,54 @@ class PersonMask(context: Context) : Closeable {
         onWorker {
             val fd = context.assets.openFd(MODEL)
             val model = fd.createInputStream().channel.map(FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
+            this.model = model
             // The phone's GPU runs the model many times faster; the CPU (4 threads) if it can't.
+            // TFLite's CompatibilityList doesn't list the 9a's GPU, so it's tried regardless and
+            // the first frame is checked against the CPU (see [infer]).
             interpreter = runCatching {
-                val compat = CompatibilityList()
-                check(compat.isDelegateSupportedOnThisDevice) { "GPU delegate not supported here" }
-                val delegate = GpuDelegate(compat.bestOptionsForThisDevice)
+                val delegate = GpuDelegate()
                 gpu = delegate
                 Interpreter(model, Interpreter.Options().addDelegate(delegate)).also { onGpu = true }
             }.onFailure {
                 Log.w(TAG, "No GPU segmenter", it)
                 gpu?.close()
                 gpu = null
-            }.getOrNull() ?: Interpreter(model, Interpreter.Options().setNumThreads(4))
+            }.getOrNull() ?: cpuInterpreter()
+        }
+    }
+
+    private lateinit var model: java.nio.MappedByteBuffer
+
+    private fun cpuInterpreter() = Interpreter(model, Interpreter.Options().setNumThreads(4))
+
+    /** Runs the model; on the GPU's first frame, also on the CPU, and stays on the CPU if they disagree. */
+    private fun infer() {
+        val first = onGpu && frames == 0
+        interpreter!!.run(input, output)
+        if (!first) return
+        val gpuOut = FloatArray(SIZE * SIZE * CLASSES)
+        output.rewind()
+        output.asFloatBuffer().get(gpuOut)
+        val cpu = cpuInterpreter()
+        input.rewind()
+        output.rewind()
+        cpu.run(input, output)
+        val cpuOut = FloatArray(gpuOut.size)
+        output.rewind()
+        output.asFloatBuffer().get(cpuOut)
+        var diff = 0.0
+        for (i in gpuOut.indices) diff += abs(gpuOut[i] - cpuOut[i])
+        diff /= gpuOut.size
+        Log.i(TAG, "GPU vs CPU on the first frame: mean score difference ${"%.4f".format(diff)}")
+        if (diff > 0.1) {
+            Log.w(TAG, "GPU result differs from the CPU; using the CPU")
+            interpreter?.close()
+            gpu?.close()
+            gpu = null
+            onGpu = false
+            interpreter = cpu
+        } else {
+            cpu.close()
         }
     }
 
@@ -80,7 +116,7 @@ class PersonMask(context: Context) : Closeable {
         }
         input.rewind()
         output.rewind()
-        onWorker { interpreter!!.run(input, output) }
+        onWorker { infer() }
         output.rewind()
         // Six scores a pixel (background, hair, body skin, face skin, clothes, other); the person
         // is everything but background: 1 - softmax(background).
