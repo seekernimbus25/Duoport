@@ -101,6 +101,9 @@ class DesignActivity : AppCompatActivity() {
     private var grade = ColorGrade()
     private var lutId = Luts.NONE
     private var gradeCube: LutCube? = null
+    /** What the preview's grade step reads every frame, so a change doesn't rebuild the pipeline. */
+    private val liveGrade = LiveGrade()
+    private var gradeJob: kotlinx.coroutines.Job? = null
     private val audioPlayers = mutableMapOf<Long, ExoPlayer>()
     private var recorder: VoiceRecorder? = null
     private var recordingStartMs = 0L
@@ -565,11 +568,8 @@ class DesignActivity : AppCompatActivity() {
         frame.setAspectRatio(design.canvas.aspect)
         canvasView.invalidate()
         val effects = mutableListOf<Effect>()
-        // The grade's steps are always in the list (doing nothing when neutral): the player only
-        // applies a change of effects while playing if the list keeps its shape, so a first
-        // adjustment that added a step didn't show until a seek. Same as the Grade screen.
-        effects += androidx.media3.effect.SingleColorLut.createFromCube((gradeCube ?: LutCube.IDENTITY).toArgbCube())
-        effects += GradeFinishEffect(grade)
+        // The grade reads its values live (see refreshGrade), so it's always in the list.
+        effects += liveGrade.effect()
         effects += DesignEffect(design)
         val clock: (Long) -> Long = { previewMs }
         val overlays = design.layers.map { LayerOverlay(it, clockMs = clock) as TextureOverlay } +
@@ -592,14 +592,19 @@ class DesignActivity : AppCompatActivity() {
 
     /** Re-bakes the grade's LUT and shows it. */
     private fun refreshGrade() {
-        lifecycleScope.launch {
+        // A slider drag calls this many times a second: only the latest bake matters.
+        gradeJob?.cancel()
+        gradeJob = lifecycleScope.launch {
             val g = grade
             val id = lutId
-            gradeCube = withContext(Dispatchers.Default) {
+            val cube = withContext(Dispatchers.Default) {
                 if (g.colourIsNeutral && id == Luts.NONE) null
                 else runCatching { Luts.cube(this@DesignActivity, id, RecordProfile.STANDARD, g) }.getOrNull()
             }
-            applyEffects()
+            gradeCube = cube
+            liveGrade.set(cube, g)
+            // Playing, the next frame picks it up; paused, redraw this one.
+            redrawPaused.run()
         }
     }
 
