@@ -10,7 +10,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import java.io.Closeable
+import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.roundToInt
 
 /**
  * Who's the person in a picture, for the cutouts. Google's selfie multiclass model sorts
@@ -22,10 +24,22 @@ import kotlin.math.exp
  * CinematicBlurEffect's shaders) then snaps the mask's edge to the real edges in the full
  * picture. Cinematic mode uses it too. It runs on LiteRT (TensorFlow Lite) directly: through MediaPipe the 9a's GPU refused it ("Batch size mismatch, expected 1 but
  * got 8") and the CPU path took ~0.4 s a frame.
+ *
+ * With [matte] ("Fine edges" in the editor) a second model, MODNet (portrait matting,
+ * Apache 2.0), also runs on a 512 px copy: it gives a soft alpha that keeps hair strands and
+ * thin headwear, but sometimes lets bright background through (a ceiling beam above a head).
+ * So its alpha is kept only near the person the first model found ([gate]).
  */
-class PersonMask(context: Context, private val precise: Boolean = true) : Closeable {
-    /** One mask: [width] × [height] values, 0 = background, 1 = person, first row = top. */
-    class Mask(val width: Int, val height: Int, val values: FloatArray)
+class PersonMask(
+    context: Context,
+    private val precise: Boolean = true,
+    private val matte: Boolean = false,
+) : Closeable {
+    /**
+     * One mask: [width] × [height] values, 0 = background, 1 = person, first row = top. A [soft]
+     * one is a finished alpha (the matte), to use as it is rather than sharpened at 0.5.
+     */
+    class Mask(val width: Int, val height: Int, val values: FloatArray, val soft: Boolean = false)
 
     /** The interpreter (and a GPU delegate, which must stay on the thread that made it) lives here. */
     private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -37,6 +51,13 @@ class PersonMask(context: Context, private val precise: Boolean = true) : Closea
     private val pixels = IntArray(SIZE * SIZE)
     private var frames = 0
     private var totalMs = 0L
+
+    private var matteInterpreter: Interpreter? = null
+    private var matteGpu: GpuDelegate? = null
+    private var matteFrames = 0
+    private lateinit var matteModel: java.nio.MappedByteBuffer
+    private val matteIn by lazy { ByteBuffer.allocateDirect(MATTE * MATTE * 3 * 4).order(ByteOrder.nativeOrder()) }
+    private val matteOut by lazy { ByteBuffer.allocateDirect(MATTE * MATTE * 4).order(ByteOrder.nativeOrder()) }
 
     init {
         onWorker {
@@ -57,6 +78,21 @@ class PersonMask(context: Context, private val precise: Boolean = true) : Closea
                 gpu?.close()
                 gpu = null
             }.getOrNull() ?: cpuInterpreter()
+            if (matte) {
+                runCatching {
+                    val mfd = context.assets.openFd(MATTE_MODEL)
+                    matteModel = mfd.createInputStream().channel.map(FileChannel.MapMode.READ_ONLY, mfd.startOffset, mfd.declaredLength)
+                    matteInterpreter = runCatching {
+                        val delegate = GpuDelegate(GpuDelegate.Options().setPrecisionLossAllowed(true))
+                        matteGpu = delegate
+                        Interpreter(matteModel, Interpreter.Options().addDelegate(delegate))
+                    }.onFailure {
+                        Log.w(TAG, "No GPU matte", it)
+                        matteGpu?.close()
+                        matteGpu = null
+                    }.getOrNull() ?: Interpreter(matteModel, Interpreter.Options().setNumThreads(4))
+                }.onFailure { Log.w(TAG, "No matte model; fine edges fall back to the segmenter", it) }
+            }
         }
     }
 
@@ -135,13 +171,132 @@ class PersonMask(context: Context, private val precise: Boolean = true) : Closea
         output.asFloatBuffer().get(scores)
         val values = person(scores)
         if (largestOnly) keepLargest(values, SIZE, SIZE)
+        val fine = if (matteInterpreter != null) runCatching { matteOf(small, values) }
+            .onFailure { Log.w(TAG, "Matte failed", it) }.getOrNull() else null
         val ms = SystemClock.elapsedRealtime() - start
         frames++
         totalMs += ms
         if (frames == 1 || frames % 60 == 0) {
-            Log.i(TAG, "segment $ms ms, average ${totalMs / frames} ms over $frames (${if (onGpu) "GPU" else "CPU"})")
+            Log.i(TAG, "segment $ms ms, average ${totalMs / frames} ms over $frames (${if (onGpu) "GPU" else "CPU"}${if (fine != null) ", matte" else ""})")
         }
-        return Mask(SIZE, SIZE, values)
+        return fine ?: Mask(SIZE, SIZE, values)
+    }
+
+    /**
+     * MODNet's alpha for [small], letterboxed into its 512 × 512 input (so tall and wide
+     * pictures get the same detail), returned at the picture's part of it, kept only near the
+     * person in [person] (the segmenter's [SIZE]² mask).
+     */
+    private fun matteOf(small: Bitmap, person: FloatArray): Mask {
+        val scale = MATTE / maxOf(small.width, small.height).toFloat()
+        val w = (small.width * scale).roundToInt().coerceIn(2, MATTE)
+        val h = (small.height * scale).roundToInt().coerceIn(2, MATTE)
+        val ox = (MATTE - w) / 2
+        val oy = (MATTE - h) / 2
+        val fitted = Bitmap.createScaledBitmap(small, w, h, true)
+        val px = IntArray(w * h)
+        fitted.getPixels(px, 0, w, 0, 0, w, h)
+        if (fitted !== small) fitted.recycle()
+        // Colours to -1..1; the bars stay 0 (mid grey).
+        matteIn.rewind()
+        for (y in 0 until MATTE) for (x in 0 until MATTE) {
+            val inside = x in ox until ox + w && y in oy until oy + h
+            val p = if (inside) px[(y - oy) * w + (x - ox)] else 0
+            matteIn.putFloat(if (inside) ((p shr 16) and 255) / 127.5f - 1f else 0f)
+            matteIn.putFloat(if (inside) ((p shr 8) and 255) / 127.5f - 1f else 0f)
+            matteIn.putFloat(if (inside) (p and 255) / 127.5f - 1f else 0f)
+        }
+        onWorker { inferMatte() }
+        matteOut.rewind()
+        val all = matteOut.asFloatBuffer()
+        val alpha = FloatArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) alpha[y * w + x] = all.get((y + oy) * MATTE + x + ox).coerceIn(0f, 1f)
+        val gate = gate(person, w, h)
+        for (i in alpha.indices) alpha[i] *= gate[i]
+        return Mask(w, h, alpha, soft = true)
+    }
+
+    /** Runs the matte; on the GPU's first frame, also on the CPU, and stays there if they disagree. */
+    private fun inferMatte() {
+        val first = matteGpu != null && matteFrames++ == 0
+        matteIn.rewind()
+        matteOut.rewind()
+        matteInterpreter!!.run(matteIn, matteOut)
+        if (!first) return
+        val gpuOut = FloatArray(MATTE * MATTE)
+        matteOut.rewind()
+        matteOut.asFloatBuffer().get(gpuOut)
+        val cpu = Interpreter(matteModel, Interpreter.Options().setNumThreads(4))
+        matteIn.rewind()
+        matteOut.rewind()
+        cpu.run(matteIn, matteOut)
+        val cpuOut = FloatArray(MATTE * MATTE)
+        matteOut.rewind()
+        matteOut.asFloatBuffer().get(cpuOut)
+        var diff = 0f
+        for (i in gpuOut.indices) diff += abs(gpuOut[i] - cpuOut[i])
+        diff /= gpuOut.size
+        Log.i(TAG, "Matte GPU vs CPU on the first frame: mean difference ${"%.4f".format(diff)}")
+        if (diff > 0.02f) {
+            Log.w(TAG, "Matte GPU result differs from the CPU; using the CPU")
+            matteInterpreter?.close()
+            matteGpu?.close()
+            matteGpu = null
+            matteInterpreter = cpu
+        } else {
+            cpu.close()
+        }
+    }
+
+    /**
+     * Where the matte may keep anything: the segmenter's person (at [w] × [h]), widened by
+     * 2.5 % of the width so hair strands and antler tips just outside it stay, then softened.
+     */
+    private fun gate(person: FloatArray, w: Int, h: Int): FloatArray {
+        val inside = FloatArray(w * h)
+        for (y in 0 until h) {
+            val my = ((y + 0.5f) / h * SIZE).toInt().coerceIn(0, SIZE - 1)
+            for (x in 0 until w) {
+                val mx = ((x + 0.5f) / w * SIZE).toInt().coerceIn(0, SIZE - 1)
+                inside[y * w + x] = if (person[my * SIZE + mx] >= 0.5f) 1f else 0f
+            }
+        }
+        val r = (w * 0.025f).roundToInt().coerceAtLeast(1)
+        return boxBlur(maxFilter(inside, w, h, r), w, h, r)
+    }
+
+    private fun maxFilter(v: FloatArray, w: Int, h: Int, r: Int): FloatArray {
+        val a = FloatArray(v.size)
+        for (y in 0 until h) for (x in 0 until w) {
+            var m = 0f
+            for (dx in maxOf(0, x - r)..minOf(w - 1, x + r)) if (v[y * w + dx] > m) m = v[y * w + dx]
+            a[y * w + x] = m
+        }
+        val b = FloatArray(v.size)
+        for (y in 0 until h) for (x in 0 until w) {
+            var m = 0f
+            for (dy in maxOf(0, y - r)..minOf(h - 1, y + r)) if (a[dy * w + x] > m) m = a[dy * w + x]
+            b[y * w + x] = m
+        }
+        return b
+    }
+
+    private fun boxBlur(v: FloatArray, w: Int, h: Int, r: Int): FloatArray {
+        val a = FloatArray(v.size)
+        for (y in 0 until h) for (x in 0 until w) {
+            var s = 0f
+            var n = 0
+            for (dx in maxOf(0, x - r)..minOf(w - 1, x + r)) { s += v[y * w + dx]; n++ }
+            a[y * w + x] = s / n
+        }
+        val b = FloatArray(v.size)
+        for (y in 0 until h) for (x in 0 until w) {
+            var s = 0f
+            var n = 0
+            for (dy in maxOf(0, y - r)..minOf(h - 1, y + r)) { s += a[dy * w + x]; n++ }
+            b[y * w + x] = s / n
+        }
+        return b
     }
 
     /**
@@ -174,6 +329,8 @@ class PersonMask(context: Context, private val precise: Boolean = true) : Closea
             onWorker {
                 interpreter?.close()
                 gpu?.close()
+                matteInterpreter?.close()
+                matteGpu?.close()
             }
         }
         worker.shutdown()
@@ -185,6 +342,9 @@ class PersonMask(context: Context, private val precise: Boolean = true) : Closea
         /** The model's input and output size. */
         private const val SIZE = 256
         private const val CLASSES = 6
+        private const val MATTE_MODEL = "modnet_matte_512.tflite"
+        /** The matte model's input and output size (a square; pictures are letterboxed into it). */
+        const val MATTE = 512
         /** How wide a copy callers pass to [segment] (it's stretched to 256 × 256 here). */
         const val INPUT_WIDTH = 256
 

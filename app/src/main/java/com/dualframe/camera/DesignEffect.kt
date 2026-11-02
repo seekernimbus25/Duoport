@@ -58,10 +58,12 @@ class DesignEffect(private val design: Design) : GlEffect {
         private var smallTex = 0
         private var smallFbo = 0
         private var maskTex = 0
-        private val smallW = PersonMask.INPUT_WIDTH
+        private var smallW = PersonMask.INPUT_WIDTH
         private var smallH = PersonMask.INPUT_WIDTH
         private var maskW = 1
         private var maskH = 1
+        /** The mask is the matte's finished alpha (Fine edges), not the segmenter's to sharpen. */
+        private var maskSoft = false
         private var pixels: ByteBuffer = ByteBuffer.allocateDirect(4)
         private var maskBytes: ByteBuffer = ByteBuffer.allocateDirect(1)
         /** The newest mask (blended with the one before, against flicker) and the one it fades in from. */
@@ -148,6 +150,7 @@ class DesignEffect(private val design: Design) : GlEffect {
                 videoProgram.setFloatsUniform("uBorderColor", floatArrayOf(Color.red(bc) / 255f, Color.green(bc) / 255f, Color.blue(bc) / 255f))
                 videoProgram.setFloatUniform("uCutout", if (placement.cutout && maskTex != 0) 1f else 0f)
                 videoProgram.setFloatsUniform("uMaskSize", floatArrayOf(maskW.toFloat(), maskH.toFloat()))
+                videoProgram.setFloatUniform("uSoft", if (maskSoft) 1f else 0f)
                 videoProgram.setFloatUniform("uPixel", 1.5f / h)
                 videoProgram.bindAttributesAndUniforms()
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -222,8 +225,26 @@ class DesignEffect(private val design: Design) : GlEffect {
 
         /** Person mask for the cutout: small upright copy -> read back -> segmentation model. */
         private fun segment(inputTexId: Int, jumped: Boolean) {
+            val fine = design.video.cutoutFine
+            // Fine edges hand the matte a copy 512 px on its long side; the segmenter alone needs 256 wide.
+            if (smallFbo != 0 && fine != maskFine) {
+                GLES20.glDeleteFramebuffers(1, intArrayOf(smallFbo), 0)
+                GLES20.glDeleteTextures(2, intArrayOf(smallTex, maskTex), 0)
+                smallFbo = 0
+                smallTex = 0
+                maskTex = 0
+                previous = null
+                fadeFrom = null
+            }
             if (smallFbo == 0) {
-                smallH = (smallW * inH / inW.toFloat()).roundToInt().coerceAtLeast(2)
+                if (fine) {
+                    val long = PersonMask.MATTE.toFloat()
+                    smallW = (if (inW >= inH) long else long * inW / inH).roundToInt().coerceAtLeast(2)
+                    smallH = (if (inW >= inH) long * inH / inW else long).roundToInt().coerceAtLeast(2)
+                } else {
+                    smallW = PersonMask.INPUT_WIDTH
+                    smallH = (smallW * inH / inW.toFloat()).roundToInt().coerceAtLeast(2)
+                }
                 val ids = IntArray(2)
                 GLES20.glGenTextures(2, ids, 0)
                 smallTex = ids[0]
@@ -245,10 +266,9 @@ class DesignEffect(private val design: Design) : GlEffect {
                 pixels = ByteBuffer.allocateDirect(smallW * smallH * 4).order(ByteOrder.nativeOrder())
             }
             // Made (or remade, when the edge quality is switched) on first use.
-            val fine = design.video.cutoutFine
             if (personMask == null || fine != maskFine) {
                 personMask?.close()
-                personMask = PersonMask(context, precise = fine)
+                personMask = PersonMask(context, precise = fine, matte = fine)
                 maskFine = fine
             }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
@@ -276,6 +296,7 @@ class DesignEffect(private val design: Design) : GlEffect {
             shownFade = -1f
             maskW = mw
             maskH = mh
+            maskSoft = mask.soft
         }
 
         /** Uploads the mask [fade] of the way from the last one to the newest. */
@@ -424,6 +445,7 @@ class DesignEffect(private val design: Design) : GlEffect {
             uniform float uCutout;
             uniform float uPixel;
             uniform vec2 uMaskSize;
+            uniform float uSoft;
             varying vec2 vTexCoord;
             // The cutout mask is coarse (256 px wide). Each pixel averages the 5×5 mask texels
             // around it, weighted by distance and by how alike the picture's colour is there, so
@@ -476,7 +498,9 @@ class DesignEffect(private val design: Design) : GlEffect {
               float alpha = 1.0 - smoothstep(-uPixel, uPixel, d);
               vec4 c = texture2D(uTexSampler, vTexCoord);
               if (uCutout > 0.5) {
-                alpha *= smoothstep(0.3, 0.7, personAt(vTexCoord, c.rgb));
+                // The matte's alpha is already soft and full-detail; the segmenter's is sharpened.
+                alpha *= uSoft > 0.5 ? texture2D(uMaskSampler, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).r
+                  : smoothstep(0.3, 0.7, personAt(vTexCoord, c.rgb));
               } else if (uBorder > 0.0 && d > -uBorder * side * 2.0) {
                 c.rgb = uBorderColor;
               }
