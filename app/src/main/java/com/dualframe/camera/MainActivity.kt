@@ -258,7 +258,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var askedForPermission = false
     private var shownResult: ExportState? = null
 
-    private val lutProcessor by lazy { LutPreviewProcessor() }
+    private val lutProcessor by lazy { LutPreviewProcessor(applicationContext) }
     /** The LUT for the current profile + choice, or null for none. */
     private var activeLut: LutCube? = null
     private var effectAttached = false

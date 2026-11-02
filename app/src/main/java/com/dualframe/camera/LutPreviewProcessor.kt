@@ -1,5 +1,6 @@
 package com.dualframe.camera
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
@@ -19,10 +20,6 @@ import androidx.camera.core.SurfaceOutput
 import androidx.camera.core.SurfaceProcessor
 import androidx.camera.core.SurfaceRequest
 import androidx.core.util.Consumer
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.segmentation.Segmentation
-import com.google.mlkit.vision.segmentation.Segmenter
-import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -38,7 +35,7 @@ import java.util.concurrent.Executor
 class LutPreviewEffect(processor: LutPreviewProcessor, onError: Consumer<Throwable>) :
     CameraEffect(CameraEffect.PREVIEW, processor.executor, processor, onError)
 
-class LutPreviewProcessor : SurfaceProcessor {
+class LutPreviewProcessor(private val appContext: Context) : SurfaceProcessor {
 
     private val thread = HandlerThread("lut-preview").apply { start() }
     private val handler = Handler(thread.looper)
@@ -80,7 +77,9 @@ class LutPreviewProcessor : SurfaceProcessor {
     // Live cinematic blur: a small copy of each frame is read back and segmented off the GL
     // thread; the newest person mask is used to blur the background as frames are drawn.
     @Volatile private var cinematic = 0
-    private var segmenter: Segmenter? = null
+    /** Cinematic's person model (the editor cutout's, Quick precision), made on first use. */
+    private var persons: PersonMask? = null
+    private val segmentThread = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var copyProgram = 0
     private var copyTexMatrix = 0
     private var copyFlip = 0
@@ -143,7 +142,8 @@ class LutPreviewProcessor : SurfaceProcessor {
             }
             outputs.clear()
             input?.release()
-            segmenter?.close()
+            segmentThread.execute { persons?.close() }
+            segmentThread.shutdown()
             if (display != EGL14.EGL_NO_DISPLAY) {
                 EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                 if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, pbuffer)
@@ -328,22 +328,24 @@ class LutPreviewProcessor : SurfaceProcessor {
         val bitmap = segBitmap ?: return
         pixels.rewind()
         bitmap.copyPixelsFromBuffer(pixels)
-        val model = segmenter ?: Segmentation.getClient(
-            SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.STREAM_MODE).build()
-        ).also { segmenter = it }
+        // The model's own thread: the next frames keep drawing (with the last mask) meanwhile.
+        val copy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
         segmenting = true
-        model.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { mask ->
-                val mw = mask.width
-                val mh = mask.height
-                val floats = mask.buffer.order(ByteOrder.nativeOrder()).asFloatBuffer()
-                val bytes = ByteBuffer.allocateDirect(mw * mh)
-                for (i in 0 until mw * mh) bytes.put((floats.get(i).coerceIn(0f, 1f) * 255f).toInt().toByte())
+        segmentThread.execute {
+            try {
+                val model = persons ?: PersonMask(appContext, precise = false).also { persons = it }
+                val mask = model.segment(copy, largestOnly = false)
+                val bytes = ByteBuffer.allocateDirect(mask.width * mask.height)
+                for (v in mask.values) bytes.put((v.coerceIn(0f, 1f) * 255f).toInt().toByte())
                 bytes.rewind()
-                pendingMask = Triple(bytes, mw, mh)
+                pendingMask = Triple(bytes, mask.width, mask.height)
+            } catch (e: Exception) {
+                Log.w(TAG, "Segmentation failed", e)
+            } finally {
+                copy.recycle()
                 segmenting = false
             }
-            .addOnFailureListener { segmenting = false }
+        }
     }
 
     private fun createCameraTexture(): Int {

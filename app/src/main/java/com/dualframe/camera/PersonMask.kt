@@ -18,9 +18,9 @@ import kotlin.math.exp
  * everything but background is the person, so hair and accessories stay on. ML Kit's selfie
  * model, used before, only knew person/not-person and dropped hair edges and hats.
  *
- * The model sees a 256 × 256 copy; [refine] (and the same step in DesignEffect's shader)
- * then snaps the mask's edge to the real edges in the full picture. It runs on TensorFlow Lite
- * directly: through MediaPipe the 9a's GPU refused it ("Batch size mismatch, expected 1 but
+ * The model sees a 256 × 256 copy; [refine] (and the same step in DesignEffect's and
+ * CinematicBlurEffect's shaders) then snaps the mask's edge to the real edges in the full
+ * picture. Cinematic mode uses it too. It runs on LiteRT (TensorFlow Lite) directly: through MediaPipe the 9a's GPU refused it ("Batch size mismatch, expected 1 but
  * got 8") and the CPU path took ~0.4 s a frame.
  */
 class PersonMask(context: Context, private val precise: Boolean = true) : Closeable {
@@ -111,8 +111,11 @@ class PersonMask(context: Context, private val precise: Boolean = true) : Closea
             throw e.cause ?: e
         }
 
-    /** The person in [small] (upright, any size), largest connected shape only, as a [SIZE]² mask. */
-    fun segment(small: Bitmap): Mask {
+    /**
+     * The person in [small] (upright, any size) as a [SIZE]² mask; with [largestOnly], just the
+     * largest connected shape (one subject for a cutout), otherwise everyone in the picture.
+     */
+    fun segment(small: Bitmap, largestOnly: Boolean = true): Mask {
         val start = SystemClock.elapsedRealtime()
         // The model takes the whole picture stretched to 256 × 256, colours scaled to -1..1.
         val square = Bitmap.createScaledBitmap(small, SIZE, SIZE, true)
@@ -131,7 +134,7 @@ class PersonMask(context: Context, private val precise: Boolean = true) : Closea
         val scores = FloatArray(SIZE * SIZE * CLASSES)
         output.asFloatBuffer().get(scores)
         val values = person(scores)
-        keepLargest(values, SIZE, SIZE)
+        if (largestOnly) keepLargest(values, SIZE, SIZE)
         val ms = SystemClock.elapsedRealtime() - start
         frames++
         totalMs += ms

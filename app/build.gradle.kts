@@ -47,7 +47,7 @@ android {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("sideload")
             // The sideloaded APK only carries the phone's 64-bit ARM libraries: every native
-            // library (ML Kit, TFLite, face detection) otherwise ships four times over, for
+            // library (LiteRT, face detection) otherwise ships four times over, for
             // 32-bit ARM and two emulator CPUs too, ~100 MB of the APK. Play splits by CPU itself.
             ndk { abiFilters += "arm64-v8a" }
         }
@@ -102,13 +102,14 @@ dependencies {
     implementation("androidx.media3:media3-container:$media3")
     implementation("androidx.media3:media3-muxer:$media3")
 
-    // Cinematic mode: on-device person segmentation (bundled model, no network).
-    implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
-    // Design editor person cutout: Google's selfie multiclass model (keeps hair and headwear),
-    // run on TensorFlow Lite with its GPU delegate.
-    implementation("org.tensorflow:tensorflow-lite:2.16.1")
-    implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
-    implementation("org.tensorflow:tensorflow-lite-gpu-api:2.16.1")
+    // Person segmentation for the design editor's cutout and Cinematic mode: Google's selfie
+    // multiclass model (keeps hair and headwear), run on LiteRT (TensorFlow Lite's new name,
+    // same API) with its GPU delegate. LiteRT's libraries are built for 16 KB memory pages,
+    // which Play requires; TFLite 2.16's weren't.
+    val litert = "1.4.2"
+    implementation("com.google.ai.edge.litert:litert:$litert")
+    implementation("com.google.ai.edge.litert:litert-gpu:$litert")
+    implementation("com.google.ai.edge.litert:litert-gpu-api:$litert")
     // Follow me (auto-reframe): on-device face detection.
     implementation("com.google.mlkit:face-detection:16.1.7")
 

@@ -12,22 +12,17 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BaseGlShaderProgram
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.segmentation.Segmentation
-import com.google.mlkit.vision.segmentation.Segmenter
-import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
  * Cinematic mode: keeps people sharp and blurs what's behind them, like a fast lens on a big
- * sensor. Phones don't give apps a depth map, so an on-device person segmentation model
- * (ML Kit selfie segmentation) decides what is subject and what is background. It works on
- * people only, not on objects or pets.
+ * sensor. Phones don't give apps a depth map, so the person model the editor's cutout uses
+ * ([PersonMask]: hair, skin, clothes and headwear all count as the person) decides what is
+ * subject and what is background, for everyone in the frame, not just the largest. It works
+ * on people only, not on objects or pets.
  */
 object CinematicBlur {
     /** Blur radius as a fraction of the picture's width, for strength 1..3. */
@@ -37,30 +32,21 @@ object CinematicBlur {
         else -> 0.022f
     }
 
-    /** Photo version: segment a small copy, blur by down/up-scaling, blend with the mask. */
-    fun applyToPhoto(src: Bitmap, strength: Int): Bitmap {
+    /**
+     * Photo version: segment a small copy, snap the mask's edge to the photo's own edges on a
+     * mid-size copy (full size would take seconds), blur by down/up-scaling, blend with the mask.
+     */
+    fun applyToPhoto(context: Context, src: Bitmap, strength: Int): Bitmap {
         val w = src.width
         val h = src.height
-        val segLong = 512f
-        val segScale = segLong / max(w, h)
-        val sw = max(1, (w * segScale).roundToInt())
-        val sh = max(1, (h * segScale).roundToInt())
-        val small = Bitmap.createScaledBitmap(src, sw, sh, true)
-        val segmenter = Segmentation.getClient(
-            SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.SINGLE_IMAGE_MODE).build()
-        )
-        val mask = try {
-            Tasks.await(segmenter.process(InputImage.fromBitmap(small, 0)))
-        } finally {
-            segmenter.close()
-        }
-        val mw = mask.width
-        val mh = mask.height
-        val maskValues = FloatArray(mw * mh)
-        val maskBuffer = mask.buffer
-        maskBuffer.rewind()
-        maskBuffer.order(ByteOrder.nativeOrder()).asFloatBuffer().get(maskValues)
-        if (small != src) small.recycle()
+        val small = scaledTo(src, PersonMask.INPUT_WIDTH.toFloat())
+        val mask = PersonMask(context).use { it.segment(small, largestOnly = false) }
+        if (small !== src) small.recycle()
+        val guide = scaledTo(src, GUIDE_LONG_SIDE)
+        val mw = guide.width
+        val mh = guide.height
+        val maskValues = PersonMask.refine(mask, guide)
+        if (guide !== src) guide.recycle()
 
         // Blur: shrink hard, then scale back up in two smooth steps.
         val step = max(2, (radiusFraction(strength) * w * 1.6f).roundToInt())
@@ -79,7 +65,7 @@ object CinematicBlur {
             val my = ((y + 0.5f) / h * mh).toInt().coerceIn(0, mh - 1)
             for (x in 0 until w) {
                 val mx = ((x + 0.5f) / w * mw).toInt().coerceIn(0, mw - 1)
-                val subject = smoothstep(0.35f, 0.75f, maskValues[my * mw + mx])
+                val subject = maskValues[my * mw + mx]
                 if (subject >= 0.999f) continue
                 sharpRow[x] = mix(blurRow[x], sharpRow[x], subject)
             }
@@ -89,10 +75,17 @@ object CinematicBlur {
         return out
     }
 
-    private fun smoothstep(a: Float, b: Float, x: Float): Float {
-        val t = ((x - a) / (b - a)).coerceIn(0f, 1f)
-        return t * t * (3f - 2f * t)
+    /** [src] scaled so its long side is [longSide] (never up). */
+    private fun scaledTo(src: Bitmap, longSide: Float): Bitmap {
+        val scale = longSide / max(src.width, src.height)
+        if (scale >= 1f) return src
+        return Bitmap.createScaledBitmap(
+            src, max(1, (src.width * scale).roundToInt()), max(1, (src.height * scale).roundToInt()), true,
+        )
     }
+
+    /** The photo mask's edge is refined at this size, then stretched to the photo. */
+    private const val GUIDE_LONG_SIDE = 900f
 
     private fun mix(a: Int, b: Int, t: Float): Int {
         fun ch(shift: Int) = (((a shr shift) and 0xFF) * (1f - t) + ((b shr shift) and 0xFF) * t).toInt()
@@ -103,19 +96,19 @@ object CinematicBlur {
 /**
  * Video version, as a Media3 effect. Each frame: draw a small copy, read it back, segment it,
  * upload the mask, then a disc blur that only gathers background pixels (so people don't
- * leave a halo) is mixed with the sharp frame by the mask.
+ * leave a halo) is mixed with the sharp frame by the mask, its edge snapped to the frame's
+ * own edges (hair, shoulders) the way the editor's cutout does it.
  */
 @OptIn(UnstableApi::class)
 class CinematicBlurEffect(private val strength: Int) : GlEffect {
-    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(strength, useHdr)
+    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(context, strength, useHdr)
 
-    private class Program(strength: Int, useHdr: Boolean) :
+    private class Program(context: Context, strength: Int, useHdr: Boolean) :
         BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1) {
 
         private val radius = CinematicBlur.radiusFraction(strength)
-        private val segmenter: Segmenter = Segmentation.getClient(
-            SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.STREAM_MODE).build()
-        )
+        /** Quick (16-bit GPU) is plenty here: the blur hides what precision would add. */
+        private val persons = PersonMask(context, precise = false)
 
         private val copyProgram: GlProgram = program(COPY_FRAGMENT_SHADER)
         private val blurProgram: GlProgram = program(BLUR_FRAGMENT_SHADER)
@@ -129,6 +122,8 @@ class CinematicBlurEffect(private val strength: Int) : GlEffect {
         private var maskTexture = 0
         private var pixels: ByteBuffer = ByteBuffer.allocateDirect(4)
         private var maskBytes: ByteBuffer = ByteBuffer.allocateDirect(1)
+        private var maskW = 1
+        private var maskH = 1
 
         private fun program(fragment: String): GlProgram = try {
             GlProgram(VERTEX_SHADER, fragment).apply {
@@ -201,9 +196,9 @@ class CinematicBlurEffect(private val strength: Int) : GlEffect {
                 val bitmap = Bitmap.createBitmap(smallW, smallH, Bitmap.Config.ARGB_8888)
                 pixels.rewind()
                 bitmap.copyPixelsFromBuffer(pixels)
-                val mask = Tasks.await(segmenter.process(InputImage.fromBitmap(bitmap, 0)))
+                val mask = persons.segment(bitmap, largestOnly = false)
                 bitmap.recycle()
-                uploadMask(mask.buffer, mask.width, mask.height)
+                uploadMask(mask)
 
                 // 3. Blur the background into the real output.
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, outFbo[0])
@@ -212,6 +207,7 @@ class CinematicBlurEffect(private val strength: Int) : GlEffect {
                 blurProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
                 blurProgram.setSamplerTexIdUniform("uMask", maskTexture, 1)
                 blurProgram.setFloatsUniform("uRadius", floatArrayOf(radius, radius * width / height))
+                blurProgram.setFloatsUniform("uMaskSize", floatArrayOf(maskW.toFloat(), maskH.toFloat()))
                 blurProgram.bindAttributesAndUniforms()
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
                 GlUtil.checkGlError()
@@ -222,12 +218,14 @@ class CinematicBlurEffect(private val strength: Int) : GlEffect {
             }
         }
 
-        private fun uploadMask(buffer: ByteBuffer, w: Int, h: Int) {
+        private fun uploadMask(mask: PersonMask.Mask) {
+            val w = mask.width
+            val h = mask.height
+            maskW = w
+            maskH = h
             if (maskBytes.capacity() < w * h) maskBytes = ByteBuffer.allocateDirect(w * h)
             maskBytes.clear()
-            buffer.rewind()
-            val floats: FloatBuffer = buffer.order(ByteOrder.nativeOrder()).asFloatBuffer()
-            for (i in 0 until w * h) maskBytes.put((floats.get(i).coerceIn(0f, 1f) * 255f).toInt().toByte())
+            for (i in 0 until w * h) maskBytes.put((mask.values[i].coerceIn(0f, 1f) * 255f).toInt().toByte())
             maskBytes.rewind()
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTexture)
             GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
@@ -247,7 +245,7 @@ class CinematicBlurEffect(private val strength: Int) : GlEffect {
 
         override fun release() {
             super.release()
-            segmenter.close()
+            persons.close()
             try {
                 deleteGlObjects()
                 copyProgram.delete()
@@ -260,7 +258,7 @@ class CinematicBlurEffect(private val strength: Int) : GlEffect {
 
     private companion object {
         /** Segmentation runs on a copy this big; the model works at 256 px anyway. */
-        const val SEGMENT_LONG_SIDE = 256
+        const val SEGMENT_LONG_SIDE = PersonMask.INPUT_WIDTH
 
         const val VERTEX_SHADER = """
             attribute vec4 aFramePosition;
@@ -287,13 +285,36 @@ class CinematicBlurEffect(private val strength: Int) : GlEffect {
             uniform sampler2D uTexSampler;
             uniform sampler2D uMask;
             uniform vec2 uRadius;
+            uniform vec2 uMaskSize;
             varying vec2 vTexCoord;
             float subjectAt(vec2 p) {
               return smoothstep(0.35, 0.75, texture2D(uMask, vec2(p.x, 1.0 - p.y)).r);
             }
+            // The mask is 256 px; this pixel's own value averages the 5x5 texels around it,
+            // weighted by distance and by how alike the frame's colour is there, so the edge
+            // follows the real outline (DesignEffect's personAt, PersonMask.refine).
+            float refinedAt(vec2 uv, vec3 here) {
+              vec2 m = vec2(uv.x, 1.0 - uv.y) * uMaskSize - 0.5;
+              vec2 base = floor(m + 0.5);
+              float acc = 0.0;
+              float sum = 0.0;
+              for (int dy = -2; dy <= 2; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                  vec2 t = base + vec2(float(dx), float(dy));
+                  vec2 tuv = (t + 0.5) / uMaskSize;
+                  float mv = texture2D(uMask, tuv).r;
+                  vec3 c = texture2D(uTexSampler, vec2(tuv.x, 1.0 - tuv.y)).rgb - here;
+                  vec2 d = t - m;
+                  float w = exp(-dot(d, d) / 2.88 - dot(c, c) / 0.02);
+                  acc += w * mv;
+                  sum += w;
+                }
+              }
+              return smoothstep(0.3, 0.7, acc / max(sum, 1e-5));
+            }
             void main() {
               vec4 sharp = texture2D(uTexSampler, vTexCoord);
-              float subject = subjectAt(vTexCoord);
+              float subject = refinedAt(vTexCoord, sharp.rgb);
               if (subject > 0.99) {
                 gl_FragColor = sharp;
                 return;

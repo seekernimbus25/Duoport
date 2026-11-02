@@ -282,7 +282,7 @@ object DualExporter {
             val h = (r.height * upright.height).toInt().coerceIn(1, upright.height - y)
             var cut = Bitmap.createBitmap(upright, x, y, w, h)
             if (job.cinematic > 0 && !blurFailed) {
-                val blurred = runCatching { CinematicBlur.applyToPhoto(cut, job.cinematic) }.getOrNull()
+                val blurred = runCatching { CinematicBlur.applyToPhoto(context, cut, job.cinematic) }.getOrNull()
                 if (blurred == null) blurFailed = true else cut = replace(cut, blurred, upright)
             }
             job.lut?.let { lut -> cut = replace(cut, lut.applyTo(cut), upright) }
