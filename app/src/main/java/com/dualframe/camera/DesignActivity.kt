@@ -1171,7 +1171,13 @@ class DesignActivity : AppCompatActivity() {
         slider(getString(R.string.design_border), 0f, 30f, v.border.toFloat(), { "${it.toInt()}" }) { v.border = it.toInt() }
         colourRow(getString(R.string.design_border_colour), v.borderColor) { v.borderColor = it; buildPanel() }
         section(getString(R.string.design_cutout))
-        toggle(getString(R.string.design_cutout_person), v.cutout) { v.cutout = it }
+        toggle(getString(R.string.design_cutout_person), v.cutout) { v.cutout = it; buildPanel() }
+        if (v.cutout) {
+            val fine = getString(R.string.design_cutout_fine)
+            val quick = getString(R.string.design_cutout_quick)
+            pills(listOf(fine, quick), if (v.cutoutFine) fine else quick, { it }) { v.cutoutFine = it == fine; buildPanel() }
+            note(getString(if (v.cutoutFine) R.string.design_cutout_fine_note else R.string.design_cutout_quick_note))
+        }
         note(getString(R.string.design_cutout_note))
         panel.addView(Glass.pill(this, getString(R.string.design_reset_video)) {
             v.x = 0.5f; v.y = 0.5f; v.scale = 1f; v.rotation = 0f

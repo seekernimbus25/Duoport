@@ -235,6 +235,10 @@
     <string name="design_border_colour">Border colour</string>
     <string name="design_cutout">Cutout</string>
     <string name="design_cutout_person">Cut out the person</string>
+    <string name="design_cutout_fine">Fine edges</string>
+    <string name="design_cutout_quick">Quick</string>
+    <string name="design_cutout_fine_note">Keeps thin parts like hair strands and antlers. Saving takes longer.</string>
+    <string name="design_cutout_quick_note">Saves faster; thin parts like hair strands or antlers may be clipped.</string>
     <string name="design_cutout_note">Keeps only the person and drops them onto your background. Works best with one person who is clearly visible; it uses on-device people detection.</string>
     <string name="design_reset_video">Reset position</string>
     <string name="design_text">Text</string>

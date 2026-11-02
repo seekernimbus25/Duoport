@@ -61,7 +61,7 @@ object DesignTemplates {
         val v = d.video
         put("video", JSONObject().apply {
             put("x", v.x.toDouble()); put("y", v.y.toDouble()); put("scale", v.scale.toDouble()); put("rotation", v.rotation.toDouble())
-            put("mask", v.mask.name); put("corner", v.corner); put("border", v.border); put("borderColor", v.borderColor); put("cutout", v.cutout)
+            put("mask", v.mask.name); put("corner", v.corner); put("border", v.border); put("borderColor", v.borderColor); put("cutout", v.cutout); put("cutoutFine", v.cutoutFine)
         })
         put("layers", JSONArray().apply {
             d.layers.forEach { l ->
@@ -109,6 +109,7 @@ object DesignTemplates {
             v.scale = o.optDouble("scale", 1.0).toFloat(); v.rotation = o.optDouble("rotation", 0.0).toFloat()
             v.mask = o.enumOf("mask", VideoMask.NONE); v.corner = o.optInt("corner", 8); v.border = o.optInt("border", 0)
             v.borderColor = o.optInt("borderColor", Color.WHITE); v.cutout = o.optBoolean("cutout")
+            v.cutoutFine = o.optBoolean("cutoutFine", true)
         }
         d.layers.clear()
         val layers = json.optJSONArray("layers") ?: JSONArray()

@@ -78,6 +78,8 @@ class VideoPlacement {
     @Volatile var borderColor = Color.WHITE
     /** Show only the person: the rest of the video is cut away to reveal the background. */
     @Volatile var cutout = false
+    /** Cutout edges: true = fine (full-precision model, slower save), false = quick. */
+    @Volatile var cutoutFine = true
 }
 
 /** An intro or outro card: a still with a title and subtitle on a gradient or photo. */

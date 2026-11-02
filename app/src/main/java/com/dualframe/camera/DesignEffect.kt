@@ -54,6 +54,7 @@ class DesignEffect(private val design: Design) : GlEffect {
         // Person cutout: a small copy is read back and segmented every frame; the shader then
         // snaps the mask's edge to the full-size picture.
         private var personMask: PersonMask? = null
+        private var maskFine = true
         private var smallTex = 0
         private var smallFbo = 0
         private var maskTex = 0
@@ -236,7 +237,13 @@ class DesignEffect(private val design: Design) : GlEffect {
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
                 GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, smallTex, 0)
                 pixels = ByteBuffer.allocateDirect(smallW * smallH * 4).order(ByteOrder.nativeOrder())
-                personMask = PersonMask(context)
+            }
+            // Made (or remade, when the edge quality is switched) on first use.
+            val fine = design.video.cutoutFine
+            if (personMask == null || fine != maskFine) {
+                personMask?.close()
+                personMask = PersonMask(context, precise = fine)
+                maskFine = fine
             }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
             GLES20.glViewport(0, 0, smallW, smallH)

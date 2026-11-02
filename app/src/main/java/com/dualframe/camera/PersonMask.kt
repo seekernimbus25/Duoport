@@ -23,7 +23,7 @@ import kotlin.math.exp
  * directly: through MediaPipe the 9a's GPU refused it ("Batch size mismatch, expected 1 but
  * got 8") and the CPU path took ~0.4 s a frame.
  */
-class PersonMask(context: Context) : Closeable {
+class PersonMask(context: Context, private val precise: Boolean = true) : Closeable {
     /** One mask: [width] × [height] values, 0 = background, 1 = person, first row = top. */
     class Mask(val width: Int, val height: Int, val values: FloatArray)
 
@@ -45,11 +45,11 @@ class PersonMask(context: Context) : Closeable {
             this.model = model
             // The phone's GPU runs the model many times faster; the CPU (4 threads) if it can't.
             // TFLite's CompatibilityList doesn't list the 9a's GPU, so it's tried regardless and
-            // the first frame is checked against the CPU (see [infer]). Full precision: by default
-            // the GPU rounds to 16-bit floats, which tipped thin, uncertain parts (antlers, hair
-            // strands) from person to background.
+            // the first frame is checked against the CPU (see [infer]). [precise] keeps 32-bit
+            // floats: by default the GPU rounds to 16-bit ones, faster, but that tips thin,
+            // uncertain parts (antlers, hair strands) from person to background.
             interpreter = runCatching {
-                val delegate = GpuDelegate(GpuDelegate.Options().setPrecisionLossAllowed(false))
+                val delegate = GpuDelegate(GpuDelegate.Options().setPrecisionLossAllowed(!precise))
                 gpu = delegate
                 Interpreter(model, Interpreter.Options().addDelegate(delegate)).also { onGpu = true }
             }.onFailure {
@@ -90,7 +90,9 @@ class PersonMask(context: Context) : Closeable {
         }
         val share = flipped.toFloat() / people.coerceAtLeast(1)
         Log.i(TAG, "GPU vs CPU on the first frame: $flipped pixels decided differently (${"%.2f".format(share * 100)}% of the person)")
-        if (share > 0.005f) {
+        // Fine: almost no difference allowed. Quick accepts the rounding; only a GPU that gets
+        // it badly wrong falls back.
+        if (share > if (precise) 0.005f else 0.05f) {
             Log.w(TAG, "GPU result differs from the CPU; using the CPU")
             interpreter?.close()
             gpu?.close()
