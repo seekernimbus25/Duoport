@@ -52,13 +52,20 @@ class ShotBanner(context: Context) : LinearLayout(context) {
             layoutParams = LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6f) }
         }
         rate.addView(rateLabel)
-        rateButtons.addView(button(context.getString(R.string.shots_good_next)) { onGood() })
-        rateButtons.addView(button(context.getString(R.string.shots_good_again)) { onGoodAgain() })
-        rateButtons.addView(button(context.getString(R.string.shots_retake)) { onRetake() })
-        rate.addView(android.widget.HorizontalScrollView(context).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(rateButtons)
-        }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4f) })
+        // Three equal thirds across the card: in a scrolling row the third button ran off the
+        // edge and looked missing.
+        listOf(
+            R.string.shots_good_next to { onGood() },
+            R.string.shots_good_again to { onGoodAgain() },
+            R.string.shots_retake to { onRetake() },
+        ).forEachIndexed { i, (text, action) ->
+            rateButtons.addView(Glass.pill(context, context.getString(text)) { action() }.apply {
+                minHeight = dp(40f)
+                maxLines = 1
+                setPadding(dp(6f), 0, dp(6f), 0)
+            }, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { if (i < 2) marginEnd = dp(6f) })
+        }
+        rate.addView(rateButtons, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4f) })
         addView(rate, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8f) })
         nav.addView(button("‹") { onPrev() })
         nav.addView(button(context.getString(R.string.shots_list)) { onList() })

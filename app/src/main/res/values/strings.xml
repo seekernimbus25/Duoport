@@ -347,9 +347,9 @@
     <string name="shots_shoot_this">Shoot this shot</string>
     <string name="shots_name_hint">Name (e.g. Morning tea)</string>
     <string name="shots_default_name">My sequence</string>
-    <string name="shots_good_next">✓ Good, next shot</string>
-    <string name="shots_good_again">✓ Good, go again</string>
-    <string name="shots_retake">↻ No good, retake</string>
+    <string name="shots_good_next">✓ Next shot</string>
+    <string name="shots_good_again">✓ Go again</string>
+    <string name="shots_retake">✗ No good</string>
     <string name="shots_list">List</string>
     <string name="shots_exit">Done</string>
     <string name="shots_banner_empty">This shot list has no shots yet. Tap List to add some.</string>

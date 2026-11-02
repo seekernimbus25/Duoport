@@ -2938,10 +2938,13 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
 
     private fun setupShots() {
         shotBanner = ShotBanner(this).apply { visibility = View.GONE }
-        findViewById<LinearLayout>(R.id.top_bar).addView(
+        // At the bottom, above the zoom buttons: the top belongs to the teleprompter, which sits
+        // by the lens, and the card under it was half covered.
+        findViewById<LinearLayout>(R.id.bottom_bar).addView(
             shotBanner,
+            0,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(dp(12f).toInt(), dp(8f).toInt(), dp(12f).toInt(), 0)
+                setMargins(dp(12f).toInt(), 0, dp(12f).toInt(), dp(10f).toInt())
             },
         )
         findViewById<View>(R.id.capture_shots).setOnClickListener {
@@ -2967,6 +2970,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val target = p.current + by
         if (target !in p.shots.indices) {
             if (by > 0) Toast.makeText(this, R.string.shots_last_done, Toast.LENGTH_LONG).show()
+            // A take just rated on the last shot: take the question off the card.
+            refreshShots()
             return
         }
         p.current = target
