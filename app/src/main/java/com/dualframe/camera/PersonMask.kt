@@ -10,7 +10,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import java.io.Closeable
-import kotlin.math.abs
 import kotlin.math.exp
 
 /**
@@ -46,9 +45,11 @@ class PersonMask(context: Context) : Closeable {
             this.model = model
             // The phone's GPU runs the model many times faster; the CPU (4 threads) if it can't.
             // TFLite's CompatibilityList doesn't list the 9a's GPU, so it's tried regardless and
-            // the first frame is checked against the CPU (see [infer]).
+            // the first frame is checked against the CPU (see [infer]). Full precision: by default
+            // the GPU rounds to 16-bit floats, which tipped thin, uncertain parts (antlers, hair
+            // strands) from person to background.
             interpreter = runCatching {
-                val delegate = GpuDelegate()
+                val delegate = GpuDelegate(GpuDelegate.Options().setPrecisionLossAllowed(false))
                 gpu = delegate
                 Interpreter(model, Interpreter.Options().addDelegate(delegate)).also { onGpu = true }
             }.onFailure {
@@ -78,11 +79,18 @@ class PersonMask(context: Context) : Closeable {
         val cpuOut = FloatArray(gpuOut.size)
         output.rewind()
         output.asFloatBuffer().get(cpuOut)
-        var diff = 0.0
-        for (i in gpuOut.indices) diff += abs(gpuOut[i] - cpuOut[i])
-        diff /= gpuOut.size
-        Log.i(TAG, "GPU vs CPU on the first frame: mean score difference ${"%.4f".format(diff)}")
-        if (diff > 0.1) {
+        // Compare the decision, pixel by pixel: an average hides a thin part going missing.
+        val gpuPerson = person(gpuOut)
+        val cpuPerson = person(cpuOut)
+        var flipped = 0
+        var people = 0
+        for (i in gpuPerson.indices) {
+            if (cpuPerson[i] >= 0.5f) people++
+            if ((gpuPerson[i] >= 0.5f) != (cpuPerson[i] >= 0.5f)) flipped++
+        }
+        val share = flipped.toFloat() / people.coerceAtLeast(1)
+        Log.i(TAG, "GPU vs CPU on the first frame: $flipped pixels decided differently (${"%.2f".format(share * 100)}% of the person)")
+        if (share > 0.005f) {
             Log.w(TAG, "GPU result differs from the CPU; using the CPU")
             interpreter?.close()
             gpu?.close()
@@ -118,15 +126,30 @@ class PersonMask(context: Context) : Closeable {
         output.rewind()
         onWorker { infer() }
         output.rewind()
-        // Six scores a pixel (background, hair, body skin, face skin, clothes, other); the person
-        // is everything but background: 1 - softmax(background).
-        val scores = output.asFloatBuffer()
+        val scores = FloatArray(SIZE * SIZE * CLASSES)
+        output.asFloatBuffer().get(scores)
+        val values = person(scores)
+        keepLargest(values, SIZE, SIZE)
+        val ms = SystemClock.elapsedRealtime() - start
+        frames++
+        totalMs += ms
+        if (frames == 1 || frames % 60 == 0) {
+            Log.i(TAG, "segment $ms ms, average ${totalMs / frames} ms over $frames (${if (onGpu) "GPU" else "CPU"})")
+        }
+        return Mask(SIZE, SIZE, values)
+    }
+
+    /**
+     * Six scores a pixel (background, hair, body skin, face skin, clothes, other); the person
+     * is everything but background: 1 - softmax(background).
+     */
+    private fun person(scores: FloatArray): FloatArray {
         val values = FloatArray(SIZE * SIZE)
         val l = FloatArray(CLASSES)
         for (i in values.indices) {
             var top = Float.NEGATIVE_INFINITY
             for (c in 0 until CLASSES) {
-                l[c] = scores.get(i * CLASSES + c)
+                l[c] = scores[i * CLASSES + c]
                 if (l[c] > top) top = l[c]
             }
             var sum = 0f
@@ -138,14 +161,7 @@ class PersonMask(context: Context) : Closeable {
             }
             values[i] = 1f - bg / sum
         }
-        keepLargest(values, SIZE, SIZE)
-        val ms = SystemClock.elapsedRealtime() - start
-        frames++
-        totalMs += ms
-        if (frames == 1 || frames % 60 == 0) {
-            Log.i(TAG, "segment $ms ms, average ${totalMs / frames} ms over $frames (${if (onGpu) "GPU" else "CPU"})")
-        }
-        return Mask(SIZE, SIZE, values)
+        return values
     }
 
     override fun close() {
