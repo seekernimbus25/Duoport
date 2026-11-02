@@ -565,14 +565,19 @@ class DesignActivity : AppCompatActivity() {
         frame.setAspectRatio(design.canvas.aspect)
         canvasView.invalidate()
         val effects = mutableListOf<Effect>()
-        gradeCube?.let { effects += androidx.media3.effect.SingleColorLut.createFromCube(it.toArgbCube()) }
-        if (grade.hasFinish) effects += GradeFinishEffect(grade)
+        // The grade's steps are always in the list (doing nothing when neutral): the player only
+        // applies a change of effects while playing if the list keeps its shape, so a first
+        // adjustment that added a step didn't show until a seek. Same as the Grade screen.
+        effects += androidx.media3.effect.SingleColorLut.createFromCube((gradeCube ?: LutCube.IDENTITY).toArgbCube())
+        effects += GradeFinishEffect(grade)
         effects += DesignEffect(design)
         val clock: (Long) -> Long = { previewMs }
         val overlays = design.layers.map { LayerOverlay(it, clockMs = clock) as TextureOverlay } +
             listOfNotNull(captionOverlay(clock)) + listOfNotNull(BrandKit.overlay(this))
         if (overlays.isNotEmpty()) effects += OverlayEffect(overlays)
         runCatching { player?.setVideoEffects(effects) }
+        // Paused, the player draws no new frame by itself: redraw this one through the new effects.
+        player?.let { p -> if (!p.isPlaying && p.mediaItemCount > 0) p.seekTo(p.currentMediaItemIndex, p.currentPosition) }
         refreshTimeline()
     }
 

@@ -260,8 +260,9 @@ class GradeActivity : AppCompatActivity() {
 
     private fun effects(): List<Effect> {
         val list = mutableListOf<Effect>()
-        list += SingleColorLut.createFromCube((cube ?: IDENTITY).toArgbCube())
-        if (grade.hasFinish) list += GradeFinishEffect(grade)
+        list += SingleColorLut.createFromCube((cube ?: LutCube.IDENTITY).toArgbCube())
+        // Always present (a no-op when off) so the list keeps its shape and changes show live.
+        list += GradeFinishEffect(grade)
         return list
     }
 
@@ -406,9 +407,6 @@ class GradeActivity : AppCompatActivity() {
     }
 
     companion object {
-        /** A LUT that changes nothing, for when no look or adjustment is set. */
-        private val IDENTITY = LutCube.bake(2) { it }
-
         fun open(context: Context, video: Uri) {
             context.startActivity(Intent(context, GradeActivity::class.java).setData(video))
         }

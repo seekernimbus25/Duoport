@@ -118,6 +118,9 @@ class LutCube(val size: Int, val rgb: FloatArray) {
     }
 
     companion object {
+        /** A LUT that changes nothing, for when no look or adjustment is set. */
+        val IDENTITY by lazy { bake(2) { it } }
+
         fun bake(size: Int, grade: (FloatArray) -> FloatArray): LutCube {
             val data = FloatArray(size * size * size * 3)
             val step = 1f / (size - 1)
