@@ -1445,6 +1445,14 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val parts = mutableListOf<String>()
         if (resolutionText.isNotEmpty()) parts += resolutionText
         if (dualKind != DualKind.NONE) parts += getString(R.string.front_and_back)
+        // Stabilization as the camera reports it, not as asked: a phone can quietly skip it.
+        if (settings.effectiveStabilization != Stabilization.OFF && appliedStabilization >= 0) {
+            parts += when (appliedStabilization) {
+                CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON -> getString(R.string.stab_applied_standard)
+                CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION -> getString(R.string.stab_applied_enhanced)
+                else -> getString(R.string.stab_applied_off)
+            }
+        }
         if (settings.activeSlowMotion > 0) {
             parts += getString(R.string.slowmo_info, settings.activeSlowMotion / 30, settings.activeSlowMotion)
         } else if (settings.timelapse > 1) {
@@ -1552,6 +1560,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     }
 
     /** Live ISO / shutter / focus from the camera, a few times a second. */
+    /** CONTROL_VIDEO_STABILIZATION_MODE from the camera's last frame: 0 off, 1 on, 2 preview (strongest). */
+    @Volatile private var appliedStabilization = -1
+
     private val readoutCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
@@ -1559,6 +1570,12 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             result: TotalCaptureResult,
         ) {
             checkLogApplied(result)
+            // What the camera says it is really doing, so the info line can show it (CAM-10).
+            val stab = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE) ?: 0
+            if (stab != appliedStabilization) {
+                appliedStabilization = stab
+                runOnUiThread { updateInfoLine() }
+            }
             val now = SystemClock.elapsedRealtime()
             if (now - lastReadoutAt < 200) return
             lastReadoutAt = now

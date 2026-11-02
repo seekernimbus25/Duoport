@@ -148,11 +148,20 @@ object Luts {
 
     // region DF-Log, the camera-side log curve
 
-    private const val LOG_K = 30f
+    // The curve gets the camera's linear output, and with its own tone mapping off the Pixel
+    // exposes that low: the scene's average comes out near 0.026, not 0.18 (its processing
+    // lifts it afterwards). Measured on the 9a (PROF-01): with K = 30 DF-Log came out darker
+    // than Standard, shadows crushed. K = 340 puts the average near 40 %, a log's usual
+    // mid grey, and blacks near 8 %.
+    private const val LOG_K = 340f
     private const val LOG_FLOOR = 0.035f
     private const val LOG_RANGE = 0.93f
+    /** Where the camera's linear output puts mid grey (see above). */
+    private const val CAMERA_MID = 0.03f
+    /** Linear camera white, in scene terms where mid grey is 0.18. */
+    private const val SCENE_WHITE = 0.18f / CAMERA_MID
 
-    /** Linear scene light -> DF-Log code value. Lifted blacks, long highlight shoulder. */
+    /** Linear camera light -> DF-Log code value. Lifted blacks, long highlight shoulder. */
     private fun linearToLog(x: Float) = LOG_FLOOR + LOG_RANGE * (ln(1f + LOG_K * x) / ln(1f + LOG_K))
 
     private fun logToLinear(v: Float): Float {
@@ -177,18 +186,20 @@ object Luts {
         "DF-Log to Rec.709",
         listOf(
             "DualFrame DF-Log to Rec.709 (BT.709 primaries, sRGB-style display gamma).",
-            "DF-Log curve: v = $LOG_FLOOR + $LOG_RANGE * ln(1 + $LOG_K * x) / ln(1 + $LOG_K), x = linear light 0..1.",
+            "DF-Log curve: v = $LOG_FLOOR + $LOG_RANGE * ln(1 + $LOG_K * x) / ln(1 + $LOG_K), x = linear light 0..1, mid grey at x = $CAMERA_MID.",
             "Apply to DF-Log clips as the first node / input LUT, then grade.",
         ),
     )
 
-    /** DF-Log -> Rec.709-style display picture, with a gentle film shoulder. */
+    /**
+     * DF-Log -> Rec.709-style display picture: back to scene light with mid grey at 0.18, then
+     * a film shoulder that rolls the camera's white off to display white instead of clipping
+     * (extended Reinhard).
+     */
     private val logTo709: Grade = { p ->
         FloatArray(3) { c ->
-            val lin = logToLinear(p[c]) * 1.1f
-            // Soft shoulder so highlights roll off instead of clipping.
-            val shouldered = lin / (1f + 0.18f * lin)
-            srgbEncode(shouldered * 1.18f)
+            val scene = logToLinear(p[c]) * SCENE_WHITE
+            srgbEncode(scene * (1f + scene / (SCENE_WHITE * SCENE_WHITE)) / (1f + scene))
         }
     }
 
