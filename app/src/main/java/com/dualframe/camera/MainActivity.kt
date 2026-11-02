@@ -297,6 +297,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var analysisUseCase: ImageAnalysis? = null
     private var previewUseCase: Preview? = null
     private val trackSamples = mutableListOf<SubjectSample>()
+    /** Quarter turns of the phone during this take (FOL-02), and the current one. */
+    private val turnSamples = mutableListOf<TurnSample>()
+    @Volatile private var takeTurn = 0
+    /** The same turn for the camera's own (never mirrored) analysis frames. */
+    @Volatile private var sensorTurn = 0
 
     /** Follow me without an analysis stream (paused for the resolution): faces come from the preview. */
     private var previewTracking = false
@@ -1591,7 +1596,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         val rotated = proxy.imageInfo.rotationDegrees % 180 != 0
         val analysisAspect = if (rotated) proxy.height.toFloat() / proxy.width else proxy.width.toFloat() / proxy.height
         val tracker = subjectTracker ?: SubjectTracker().also { subjectTracker = it }
-        tracker.track(proxy) { x, y, found ->
+        tracker.track(proxy, if (isRecording) sensorTurn else 0) { x, y, found ->
             proxy.close()
             if (found) onSubject(x, y, analysisAspect, seenNanos)
         }
@@ -1644,7 +1649,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         if (frame == null) return
         previewTrackBusy = true
         val tracker = subjectTracker ?: SubjectTracker().also { subjectTracker = it }
-        tracker.track(frame) { x, y, found ->
+        tracker.track(frame, if (isRecording) takeTurn else 0) { x, y, found ->
             previewTrackBusy = false
             val aspect = frame.width.toFloat() / frame.height
             frame.recycle()
@@ -1743,11 +1748,42 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
             else -> return // in between, or upside down: keep what we have
         }
         turnTeleprompter(rotation)
+        if (isRecording) noteTurn(rotation)
         val target = if (settings.activeFollowRotation && dualKind == DualKind.NONE) rotation else Surface.ROTATION_0
         if (target == recordRotation || isRecording || countdownRunning || !bound) return
         recordRotation = target
         applyRecordRotation()
         refreshSourceAspect()
+    }
+
+    /**
+     * The recording's orientation is fixed when it starts. When the phone is turned a quarter
+     * mid-take, note how far the picture must be turned back (clockwise) for the export and
+     * for Follow me's face detection. CameraX turns back-camera frames by sensor - rotation
+     * and front ones by sensor + rotation; a mirrored front recording flips that again.
+     */
+    private fun noteTurn(rotation: Int) {
+        if (dualKind != DualKind.NONE) return
+        val diff = ((surfaceDegrees(rotation) - surfaceDegrees(recordRotation) + 540) % 360) - 180
+        if (diff != 0 && diff != 90 && diff != -90) return // upside down: leave it
+        val front = settings.lensFacing == CameraSelector.LENS_FACING_FRONT
+        val sensor = if (front) diff else -diff
+        val turn = if (front && settings.mirrorFront) -sensor else sensor
+        sensorTurn = sensor
+        if (turn == takeTurn) return
+        takeTurn = turn
+        val start = recordStartNanos
+        if (start == 0L) return
+        val now = if (pausedAtNanos != 0L) pausedAtNanos else SystemClock.elapsedRealtimeNanos()
+        val timeUs = ((now - start - pausedTotalNanos) / 1000).coerceAtLeast(0L)
+        synchronized(turnSamples) { turnSamples += TurnSample(timeUs, turn) }
+    }
+
+    private fun surfaceDegrees(rotation: Int) = when (rotation) {
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
     }
 
     /** The teleprompter reads upright however the phone is held, even mid-take. */
@@ -1960,6 +1996,9 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         pausedTotalNanos = 0L
         pauseRanges.clear()
         synchronized(trackSamples) { trackSamples.clear() }
+        synchronized(turnSamples) { turnSamples.clear() }
+        takeTurn = 0
+        sensorTurn = 0
         mainTake = null
         insetTake = null
         pendingFinalizes = 0
@@ -2092,6 +2131,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 } else {
                     null
                 },
+                turns = synchronized(turnSamples) { turnSamples.toList() },
             ),
         )
     }

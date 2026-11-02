@@ -11,11 +11,21 @@ import androidx.media3.effect.MatrixTransformation
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** Where the subject (a face) is, 0..1 in the picture as recorded (upright), at [timeUs] into the take. */
 data class SubjectSample(val timeUs: Long, val x: Float, val y: Float)
+
+/**
+ * The phone was turned a quarter during the take: from [timeUs] on, the recorded picture has
+ * to be turned [degrees] clockwise (-90, 0 or 90) for the world to stand upright again.
+ */
+data class TurnSample(val timeUs: Long, val degrees: Int)
 
 /**
  * Finds the main face in the small analysis frames. The largest face wins, so the person
@@ -34,30 +44,47 @@ class SubjectTracker {
      * the caller closes the frame.
      */
     @OptIn(ExperimentalGetImage::class)
-    fun track(proxy: ImageProxy, onDone: (x: Float, y: Float, found: Boolean) -> Unit) {
+    fun track(proxy: ImageProxy, turn: Int = 0, onDone: (x: Float, y: Float, found: Boolean) -> Unit) {
         val media = proxy.image
         if (media == null) {
             onDone(0f, 0f, false)
             return
         }
-        val rotation = proxy.imageInfo.rotationDegrees
+        // [turn]: the phone was turned mid-take, so the face is on its side in the picture;
+        // the detector looks the world's way up and the centre is turned back afterwards.
+        val rotation = (proxy.imageInfo.rotationDegrees + turn + 360) % 360
         val w = (if (rotation % 180 == 0) proxy.width else proxy.height).toFloat()
         val h = (if (rotation % 180 == 0) proxy.height else proxy.width).toFloat()
-        detect(InputImage.fromMediaImage(media, rotation), w, h, onDone)
+        detect(InputImage.fromMediaImage(media, rotation), w, h, turn, onDone)
     }
 
     /** Same, on an upright picture (a frame grabbed from the preview). */
-    fun track(bitmap: Bitmap, onDone: (x: Float, y: Float, found: Boolean) -> Unit) =
-        detect(InputImage.fromBitmap(bitmap, 0), bitmap.width.toFloat(), bitmap.height.toFloat(), onDone)
+    fun track(bitmap: Bitmap, turn: Int = 0, onDone: (x: Float, y: Float, found: Boolean) -> Unit) {
+        val rotation = (turn + 360) % 360
+        val w = (if (rotation % 180 == 0) bitmap.width else bitmap.height).toFloat()
+        val h = (if (rotation % 180 == 0) bitmap.height else bitmap.width).toFloat()
+        detect(InputImage.fromBitmap(bitmap, rotation), w, h, turn, onDone)
+    }
 
-    private fun detect(image: InputImage, w: Float, h: Float, onDone: (x: Float, y: Float, found: Boolean) -> Unit) {
+    /**
+     * A point found in the picture turned [turn] degrees clockwise, back in the unturned one
+     * (0..1, +y down): a quarter clockwise sends (x, y) to (1 - y, x).
+     */
+    private fun unturn(x: Float, y: Float, turn: Int): Pair<Float, Float> = when (turn) {
+        90 -> y to 1f - x
+        -90 -> 1f - y to x
+        else -> x to y
+    }
+
+    private fun detect(image: InputImage, w: Float, h: Float, turn: Int, onDone: (x: Float, y: Float, found: Boolean) -> Unit) {
         detector.process(image)
             .addOnSuccessListener { faces ->
                 val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
                 if (face == null) {
                     onDone(0f, 0f, false)
                 } else {
-                    onDone(face.boundingBox.exactCenterX() / w, face.boundingBox.exactCenterY() / h, true)
+                    val (x, y) = unturn(face.boundingBox.exactCenterX() / w, face.boundingBox.exactCenterY() / h, turn)
+                    onDone(x, y, true)
                 }
             }
             .addOnFailureListener { onDone(0f, 0f, false) }
@@ -227,6 +254,78 @@ class MovingCrop(
         val matrix = Matrix()
         matrix.postTranslate(-(cx * 2f - 1f), -(1f - cy * 2f))
         matrix.postScale(1f / width, 1f / height)
+        return matrix
+    }
+}
+
+/** How far (clockwise degrees) the picture must be turned at a time; each quarter turn eases in over [EASE_US]. */
+class TurnPath(private val turns: List<TurnSample>) {
+    fun at(timeUs: Long): Float {
+        var angle = 0f
+        var settled = 0f
+        for (turn in turns) {
+            if (timeUs <= turn.timeUs) break
+            val p = ((timeUs - turn.timeUs).toFloat() / EASE_US).coerceIn(0f, 1f)
+            angle = settled + (turn.degrees - settled) * p * p * (3f - 2f * p)
+            settled = turn.degrees.toFloat()
+        }
+        return angle
+    }
+
+    private companion object {
+        const val EASE_US = 400_000f
+    }
+}
+
+/**
+ * A crop like [MovingCrop] that also turns the picture back upright when the phone was turned
+ * mid-take (FOL-02). The crop keeps its shape; while turned it covers the largest area of the
+ * same shape that fits the recording (zooming in for a tall cut of a sideways picture, out to
+ * the whole width for a wide one), and its centre is kept far enough in that no corner shows.
+ */
+@OptIn(UnstableApi::class)
+class TurnedCrop(
+    private val width: Float,
+    private val height: Float,
+    private val center: (Long) -> Pair<Float, Float>,
+    private val turns: TurnPath,
+    private val speed: Float,
+) : MatrixTransformation {
+    private var inW = 1f
+    private var inH = 1f
+
+    override fun configure(inputWidth: Int, inputHeight: Int): Size {
+        inW = inputWidth.toFloat()
+        inH = inputHeight.toFloat()
+        return Size(
+            ((inputWidth * width).roundToInt() and 1.inv()).coerceAtLeast(2),
+            ((inputHeight * height).roundToInt() and 1.inv()).coerceAtLeast(2),
+        )
+    }
+
+    override fun getMatrix(presentationTimeUs: Long): Matrix {
+        val time = (presentationTimeUs * speed).toLong()
+        val (cx, cy) = center(time)
+        val degrees = turns.at(time)
+        val rad = Math.toRadians(degrees.toDouble())
+        val c = abs(cos(rad)).toFloat()
+        val s = abs(sin(rad)).toFloat()
+        val w0 = width * inW
+        val h0 = height * inH
+        // The largest scale at which the turned crop still fits the recording.
+        fun fit(c: Float, s: Float) = min(inW / (w0 * c + h0 * s), inH / (w0 * s + h0 * c))
+        val scale = min(fit(c, s), 1f + (fit(0f, 1f) - 1f).coerceAtLeast(0f) * s)
+        val bw = scale * (w0 * c + h0 * s)
+        val bh = scale * (w0 * s + h0 * c)
+        val px = (cx * inW).coerceIn(bw / 2f, (inW - bw / 2f).coerceAtLeast(bw / 2f))
+        val py = (cy * inH).coerceIn(bh / 2f, (inH - bh / 2f).coerceAtLeast(bh / 2f))
+        // Input NDC to pixels around the crop's centre (+y up), turned clockwise by [degrees]
+        // (negative in +y-up maths), then into the output's NDC.
+        val matrix = Matrix()
+        matrix.postScale(inW / 2f, inH / 2f)
+        matrix.postTranslate(-(px - inW / 2f), py - inH / 2f)
+        matrix.postRotate(-degrees)
+        matrix.postScale(2f / (w0 * scale), 2f / (h0 * scale))
         return matrix
     }
 }

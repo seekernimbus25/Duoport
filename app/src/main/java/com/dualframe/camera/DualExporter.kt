@@ -112,6 +112,8 @@ data class ExportJob(
     val timecodeRate: String = "30",
     /** Face positions through the take for auto-reframe; null = frames stay where they were placed. */
     val track: List<SubjectSample>? = null,
+    /** Quarter turns of the phone during the take, to turn the picture back upright; empty = none. */
+    val turns: List<TurnSample> = emptyList(),
     /** Burn in captions in this language (real-time videos only). */
     val captions: CaptionLanguage = CaptionLanguage.OFF,
     val captionStyle: CaptionStyle = CaptionStyle(),
@@ -498,7 +500,18 @@ object DualExporter {
         // Stretching (not fitting) the cut to the output size is what undoes an anamorphic squeeze.
         val layout = if (job.anamorphic != 1f) Presentation.LAYOUT_STRETCH_TO_FIT else Presentation.LAYOUT_SCALE_TO_FIT
         // Auto-reframe moves the crop over time; otherwise it stays where it was placed.
-        val cropEffect: Effect = path?.let { MovingCrop(crop.width, crop.height, it, job.speed) } ?: crop.toMedia3Crop()
+        // A phone turned mid-take also turns the picture back (not with an anamorphic squeeze,
+        // which would turn sideways with it).
+        val turns = job.turns.takeIf { list -> list.any { it.degrees != 0 } && job.anamorphic == 1f }
+        val cropEffect: Effect = when {
+            turns != null -> TurnedCrop(
+                crop.width, crop.height,
+                { t -> path?.at(t) ?: (crop.centerX to crop.centerY) },
+                TurnPath(turns), job.speed,
+            )
+            path != null -> MovingCrop(crop.width, crop.height, path, job.speed)
+            else -> crop.toMedia3Crop()
+        }
         mainEffects += listOf(
             cropEffect,
             Presentation.createForWidthAndHeight(width, height, layout),
