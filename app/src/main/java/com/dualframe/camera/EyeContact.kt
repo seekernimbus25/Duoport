@@ -282,12 +282,12 @@ class EyeContactEffect : GlEffect {
                         val away = 1f - ((hypot(dx, dy) - AWAY_START) / (AWAY_END - AWAY_START)).coerceIn(0f, 1f)
                         val blink = ((open / cal[2] - 0.55f) / 0.2f).coerceIn(0f, 1f)
                         val strength = away * blink
-                        targetX = dx.coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
-                        targetY = dy.coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
+                        targetX = (dx * GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
+                        targetY = (dy * GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
                         // Reading below the lens mostly lowers the upper lids (measured on T012:
                         // openness 0.40 at the lens, ~0.35 reading, while the iris hardly moved
                         // against the eye corners), so the lids are lifted back to their opening.
-                        targetLift = (cal[2] - open).coerceIn(0f, MAX_LIFT) * strength
+                        targetLift = ((cal[2] - open) * GAIN).coerceIn(0f, MAX_LIFT) * strength
                     }
                     if (++frames % 30 == 0) {
                         Log.i(TAG, "t=${timeUs / 1000} ms open $open gaze $gx,$gy -> shift $targetX,$targetY lift $targetLift")
@@ -331,9 +331,15 @@ class EyeContactEffect : GlEffect {
         /** Eyes are found in a copy this big (long side). */
         private const val ANALYSIS_LONG_SIDE = 960f
         /** Largest move, in eye widths: reading offsets measured on the 9a were up to ~0.06. */
-        private const val MAX_SHIFT = 0.1f
+        private const val MAX_SHIFT = 0.12f
+        /**
+         * The landmarks under-read how far the eyes moved (T016 on build 189: corrected 1:1, the
+         * reading frames still looked down). 2.5× matched the at-the-lens frames on T012 without
+         * visible warping.
+         */
+        private const val GAIN = 2.5f
         /** Largest lid lift, in eye widths. */
-        private const val MAX_LIFT = 0.12f
+        private const val MAX_LIFT = 0.15f
         /** Offsets from here (eye widths) fade the correction out, gone by [AWAY_END]: a real look away. */
         private const val AWAY_START = 0.12f
         private const val AWAY_END = 0.2f
