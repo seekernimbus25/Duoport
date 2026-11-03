@@ -213,6 +213,14 @@ class PersonMask(
         for (y in 0 until h) for (x in 0 until w) alpha[y * w + x] = all.get((y + oy) * MATTE + x + ox).coerceIn(0f, 1f)
         val gate = gate(person, w, h)
         for (i in alpha.indices) alpha[i] *= gate[i]
+        // MODNet leaves a haze of half-transparent background around the person (tester: "a lot
+        // of excessive area captured"). Snap the alpha to the picture's own edges (guided
+        // filter), then drop the faint values and firm up the near-solid ones.
+        val snapped = guided(px, alpha, w, h, (w / 135f).roundToInt().coerceAtLeast(1))
+        for (i in alpha.indices) {
+            val t = ((snapped[i] - 0.25f) / 0.6f).coerceIn(0f, 1f)
+            alpha[i] = t * t * (3f - 2f * t)
+        }
         return Mask(w, h, alpha, soft = true)
     }
 
@@ -250,7 +258,8 @@ class PersonMask(
 
     /**
      * Where the matte may keep anything: the segmenter's person (at [w] × [h]), widened by
-     * 2.5 % of the width so hair strands and antler tips just outside it stay, then softened.
+     * 1.2 % of the width so hair strands and antler tips just outside it stay, then softened
+     * (2.5 % let a halo of wall through).
      */
     private fun gate(person: FloatArray, w: Int, h: Int): FloatArray {
         val inside = FloatArray(w * h)
@@ -261,8 +270,54 @@ class PersonMask(
                 inside[y * w + x] = if (person[my * SIZE + mx] >= 0.5f) 1f else 0f
             }
         }
-        val r = (w * 0.025f).roundToInt().coerceAtLeast(1)
+        val r = (w * 0.012f).roundToInt().coerceAtLeast(1)
         return boxBlur(maxFilter(inside, w, h, r), w, h, r)
+    }
+
+    /**
+     * Guided filter (He et al.): [p] made locally a linear function of the picture's brightness,
+     * so its edges land on the picture's edges. Box means over a (2r+1)² window via running sums.
+     */
+    private fun guided(px: IntArray, p: FloatArray, w: Int, h: Int, r: Int): FloatArray {
+        val n = w * h
+        val g = FloatArray(n) { i -> val c = px[i]; (((c shr 16) and 255) * 0.299f + ((c shr 8) and 255) * 0.587f + (c and 255) * 0.114f) / 255f }
+        val gp = FloatArray(n) { g[it] * p[it] }
+        val gg = FloatArray(n) { g[it] * g[it] }
+        val mg = boxMean(g, w, h, r)
+        val mp = boxMean(p, w, h, r)
+        val mgp = boxMean(gp, w, h, r)
+        val mgg = boxMean(gg, w, h, r)
+        val a = FloatArray(n)
+        val b = FloatArray(n)
+        for (i in 0 until n) {
+            a[i] = (mgp[i] - mg[i] * mp[i]) / (mgg[i] - mg[i] * mg[i] + 1e-3f)
+            b[i] = mp[i] - a[i] * mg[i]
+        }
+        val ma = boxMean(a, w, h, r)
+        val mb = boxMean(b, w, h, r)
+        return FloatArray(n) { (ma[it] * g[it] + mb[it]).coerceIn(0f, 1f) }
+    }
+
+    private fun boxMean(v: FloatArray, w: Int, h: Int, r: Int): FloatArray {
+        val a = FloatArray(v.size)
+        for (y in 0 until h) {
+            var sum = 0f
+            for (x in -r..r) sum += v[y * w + x.coerceIn(0, w - 1)]
+            for (x in 0 until w) {
+                a[y * w + x] = sum / (2 * r + 1)
+                sum += v[y * w + (x + r + 1).coerceAtMost(w - 1)] - v[y * w + (x - r).coerceAtLeast(0)]
+            }
+        }
+        val b = FloatArray(v.size)
+        for (x in 0 until w) {
+            var sum = 0f
+            for (y in -r..r) sum += a[y.coerceIn(0, h - 1) * w + x]
+            for (y in 0 until h) {
+                b[y * w + x] = sum / (2 * r + 1)
+                sum += a[(y + r + 1).coerceAtMost(h - 1) * w + x] - a[(y - r).coerceAtLeast(0) * w + x]
+            }
+        }
+        return b
     }
 
     private fun maxFilter(v: FloatArray, w: Int, h: Int, r: Int): FloatArray {
