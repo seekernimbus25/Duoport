@@ -105,21 +105,24 @@ class DesignEffect(private val design: Design, private val live: Boolean = false
                 val viewport = IntArray(4)
                 GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
                 val placement = design.video
-                // The model takes ~0.4 s a frame on the CPU, so it runs about 10× a second of video
-                // (and after any jump, e.g. a seek); frames in between reuse the last mask.
+                // The preview runs the model about 10× a second of video (and after any jump, e.g. a
+                // seek); frames in between reuse the last mask. Saving runs it on every frame: a
+                // mask 100 ms old, blended with older ones, smeared a moving head's edge (DES-09 on
+                // build 196, the left antler ghosted).
+                val every = if (live) MASK_EVERY_US else SAVE_MASK_EVERY_US
                 if (placement.cutout) {
                     finished?.let { (mask, jumped) ->
                         finished = null
                         takeMask(mask, jumped)
                     }
                     val gap = presentationTimeUs - maskTimeUs
-                    if (maskTex == 0 || gap < 0 || gap >= MASK_EVERY_US) {
+                    if (maskTex == 0 || gap < 0 || gap >= every) {
                         segment(inputTexId, jumped = maskTex == 0 || gap < 0 || gap > 2 * MASK_EVERY_US)
                         maskTimeUs = presentationTimeUs
                     }
                     // A new mask fades in over the frames until the next one rather than jumping
                     // in at once: that jump, 10 times a second, was most of the flicker.
-                    val fade = ((presentationTimeUs - maskTimeUs + FRAME_US).toFloat() / MASK_EVERY_US).coerceIn(0f, 1f)
+                    val fade = ((presentationTimeUs - maskTimeUs + FRAME_US).toFloat() / every).coerceIn(0f, 1f)
                     showMask(fade)
                 }
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo[0])
@@ -344,7 +347,8 @@ class DesignEffect(private val design: Design, private val live: Boolean = false
             val mw = mask.width
             val mh = mask.height
             val prev = previous?.takeIf { it.size == mw * mh && !jumped }
-            if (prev != null) for (i in mask.values.indices) mask.values[i] = mask.values[i] * (1f - CARRY) + prev[i] * CARRY
+            val carry = if (live) CARRY else SAVE_CARRY
+            if (prev != null) for (i in mask.values.indices) mask.values[i] = mask.values[i] * (1f - carry) + prev[i] * carry
             // After a jump (a seek, a new clip) show the new mask at once; otherwise fade from the last.
             fadeFrom = prev
             previous = mask.values
@@ -410,6 +414,15 @@ class DesignEffect(private val design: Design, private val live: Boolean = false
 
         /** How often the cutout model runs, in video time: 10 masks a second. */
         private const val MASK_EVERY_US = 95_000L
+
+        /** Saving: a mask for every frame up to 30 fps (every other at 60). */
+        private const val SAVE_MASK_EVERY_US = 30_000L
+
+        /**
+         * Saving: each frame's mask keeps less of the last, since they are a frame apart, not
+         * three; the edge snapping to the picture keeps them from flickering.
+         */
+        private const val SAVE_CARRY = 0.45f
 
         /** Matches the strip order of [GlUtil.getNormalizedCoordinateBounds]. */
         private val TEX_COORDS = floatArrayOf(0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 0f, 1f, 1f, 1f, 0f, 1f)

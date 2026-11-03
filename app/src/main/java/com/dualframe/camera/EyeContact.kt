@@ -47,6 +47,12 @@ class EyeTracker(context: Context) : Closeable {
         val gx: Float, val gy: Float,
         /** Upper and lower lid above the centre (lower is negative), and the iris radius, in eye widths. */
         val upper: Float, val lower: Float, val irisR: Float,
+        /**
+         * The head's pose, the same for both eyes: the nose tip from the middle of the eyes, across
+         * and down, in eye-to-eye distances. Turning the head moves the irises against the eye
+         * corners even while looking at the lens, so the correction only holds near the calibrated pose.
+         */
+        val yaw: Float, val pitch: Float,
     )
 
     private val interpreter: Interpreter
@@ -121,6 +127,15 @@ class EyeTracker(context: Context) : Closeable {
             return null
         }
         box = floatArrayOf(x0, y0, x1, y1)
+        val midX = (px(33) + px(133) + px(362) + px(263)) / 4f
+        val midY = (py(33) + py(133) + py(362) + py(263)) / 4f
+        var acrossX = (px(362) + px(263) - px(33) - px(133)) / 2f
+        var acrossY = (py(362) + py(263) - py(33) - py(133)) / 2f
+        val apart = hypot(acrossX, acrossY).coerceAtLeast(1f)
+        acrossX /= apart
+        acrossY /= apart
+        val yaw = ((px(NOSE) - midX) * acrossX + (py(NOSE) - midY) * acrossY) / apart
+        val pitch = (-(px(NOSE) - midX) * acrossY + (py(NOSE) - midY) * acrossX) / apart
         fun eye(a: Int, b: Int, iris: Int, upper: Int, lower: Int): Eye {
             val w = hypot(px(b) - px(a), py(b) - py(a)).coerceAtLeast(1f)
             val ecx = (px(a) + px(b)) / 2f
@@ -138,6 +153,7 @@ class EyeTracker(context: Context) : Closeable {
                 hypot(px(upper) - px(lower), py(upper) - py(lower)) / w,
                 (px(iris) - ecx) / w, (py(iris) - ecy) / w,
                 above(upper), above(lower), r,
+                yaw, pitch,
             )
         }
         return eye(33, 133, 468, 159, 145) to eye(362, 263, 473, 386, 374)
@@ -153,6 +169,7 @@ class EyeTracker(context: Context) : Closeable {
         const val MODEL = "face_landmarks_detector.tflite"
         const val SIZE = 256
         const val POINTS = 478
+        const val NOSE = 1
         /** ML Kit looks for the face again this often even while the landmarks keep track. */
         const val REDETECT_EVERY = 15
     }
@@ -197,6 +214,8 @@ class EyeContactEffect(
         private val calX = mutableListOf<Float>()
         private val calY = mutableListOf<Float>()
         private val calOpen = mutableListOf<Float>()
+        private val calYaw = mutableListOf<Float>()
+        private val calPitch = mutableListOf<Float>()
         private var calibrated: FloatArray? = null
         /** The correction now applied, in eye widths (eased from frame to frame). */
         private var shiftX = 0f
@@ -309,10 +328,13 @@ class EyeContactEffect(
                     calX += gx
                     calY += gy
                     calOpen += open
+                    calYaw += l.yaw
+                    calPitch += l.pitch
                 } else {
+                    fun median(v: List<Float>) = v.sorted()[v.size / 2]
                     val cal = calibrated ?: if (calX.size >= 3) {
-                        floatArrayOf(calX.sorted()[calX.size / 2], calY.sorted()[calY.size / 2], calOpen.sorted()[calOpen.size / 2])
-                            .also { calibrated = it; Log.i(TAG, "Calibrated: iris ${it[0]}, ${it[1]}, open ${it[2]} from ${calX.size} frames") }
+                        floatArrayOf(median(calX), median(calY), median(calOpen), median(calYaw), median(calPitch))
+                            .also { calibrated = it; Log.i(TAG, "Calibrated: iris ${it[0]}, ${it[1]}, open ${it[2]}, pose ${it[3]}, ${it[4]} from ${calX.size} frames") }
                     } else {
                         null
                     }
@@ -323,15 +345,22 @@ class EyeContactEffect(
                         // or a blink (lids closing make the iris jump).
                         val away = 1f - ((hypot(dx, dy) - AWAY_START) / (AWAY_END - AWAY_START)).coerceIn(0f, 1f)
                         val blink = ((open / cal[2] - 0.55f) / 0.2f).coerceIn(0f, 1f)
-                        val strength = away * blink
-                        targetX = (dx * IRIS_GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
+                        // A turned or tilted head: irises looking at the lens sit off-centre then,
+                        // and centring them made a flat stare (T028 on build 196). Reading nods
+                        // stayed within 0.08 on T027; turns there were 0.10-0.17.
+                        val turned = hypot(l.yaw - cal[3], l.pitch - cal[4])
+                        val pose = 1f - ((turned - POSE_START) / (POSE_END - POSE_START)).coerceIn(0f, 1f)
+                        val strength = away * blink * pose
+                        // Up and down only: a teleprompter sits above or below the lens, and the
+                        // across offsets were head turns, not reading.
+                        targetX = 0f
                         targetY = (dy * IRIS_GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
                         // Reading below the lens also lowers the upper lids (T012: openness 0.40 at
                         // the lens, ~0.35 reading), so they are lifted back towards their opening.
                         targetLift = ((cal[2] - open) * LIFT_GAIN).coerceIn(0f, MAX_LIFT) * strength
                     }
                     if (++frames % 30 == 0) {
-                        Log.i(TAG, "t=${timeUs / 1000} ms open $open gaze $gx,$gy -> shift $targetX,$targetY lift $targetLift")
+                        Log.i(TAG, "t=${timeUs / 1000} ms open $open gaze $gx,$gy pose ${l.yaw},${l.pitch} -> shift $targetX,$targetY lift $targetLift")
                     }
                 }
             }
@@ -398,6 +427,9 @@ class EyeContactEffect(
         /** Offsets from here (eye widths) fade the correction out, gone by [AWAY_END]: a real look away. */
         private const val AWAY_START = 0.12f
         private const val AWAY_END = 0.2f
+        /** Head pose change from the calibration (see [EyeTracker.Eye.yaw]) that fades the correction out by [POSE_END]. */
+        private const val POSE_START = 0.07f
+        private const val POSE_END = 0.12f
         /** Share of the way to the new correction each frame, so the eyes don't jitter. */
         private const val EASE = 0.5f
 
