@@ -501,7 +501,7 @@ object DualExporter {
         mainEffects += speedEffects()
         // On the whole picture, before the crop, so the eyes are found the same in every shape.
         // Real time only: its calibration is the take's first 1.5 s.
-        if (job.eyeContact && job.speed == 1f) mainEffects += EyeContactEffect()
+        if (job.eyeContact && job.speed == 1f) mainEffects += EyeContactEffect(job.main.file.path)
         // Stretching (not fitting) the cut to the output size is what undoes an anamorphic squeeze.
         val layout = if (job.anamorphic != 1f) Presentation.LAYOUT_STRETCH_TO_FIT else Presentation.LAYOUT_SCALE_TO_FIT
         // Auto-reframe moves the crop over time; otherwise it stays where it was placed.

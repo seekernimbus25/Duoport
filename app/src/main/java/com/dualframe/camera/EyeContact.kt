@@ -60,6 +60,7 @@ class EyeTracker(context: Context) : Closeable {
     /** Face box from the last frame's landmarks (left, top, right, bottom), or null to detect. */
     private var box: FloatArray? = null
     private var sinceDetect = 0
+    private var misses = 0
 
     init {
         val fd = context.assets.openFd(MODEL)
@@ -69,6 +70,9 @@ class EyeTracker(context: Context) : Closeable {
 
     /** Both eyes in [frame] (upright), or null when there's no face. */
     fun find(frame: Bitmap): Pair<Eye, Eye>? {
+        // No face lately: look again only every few frames (a take of the ceiling ran the
+        // detector on every frame and saving crawled).
+        if (box == null && misses++ % REDETECT_EVERY != 0) return null
         if (box == null || ++sinceDetect >= REDETECT_EVERY) {
             sinceDetect = 0
             val faces = runCatching { Tasks.await(detector.process(InputImage.fromBitmap(frame, 0))) }.getOrNull()
@@ -76,6 +80,7 @@ class EyeTracker(context: Context) : Closeable {
             box = face?.boundingBox?.let { floatArrayOf(it.left.toFloat(), it.top.toFloat(), it.right.toFloat(), it.bottom.toFloat()) }
         }
         val b = box ?: return null
+        misses = 0
         // A square around the face with a margin, as the model was trained on.
         val cx = (b[0] + b[2]) / 2f
         val cy = (b[1] + b[3]) / 2f
@@ -144,13 +149,29 @@ class EyeTracker(context: Context) : Closeable {
 
 /** Export effect: moves the irises back to where they were while looking into the lens (see [EyeTracker]). */
 @OptIn(UnstableApi::class)
-class EyeContactEffect : GlEffect {
-    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(context, useHdr)
+class EyeContactEffect(
+    /** The recording: the eyes are tracked once per take and the warp reused for every shape made from it. */
+    private val take: String,
+) : GlEffect {
+    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(context, take, useHdr)
 
-    private class Program(context: Context, useHdr: Boolean) :
+    private class Program(context: Context, take: String, useHdr: Boolean) :
         BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1) {
 
-        private val tracker = EyeTracker(context).also { Log.i(TAG, "Eye contact on for this video") }
+        private var made: EyeTracker? = null
+        /** Made on first use only: the shapes after the first reuse its warp and never need it. */
+        private val tracker: EyeTracker
+            get() = made ?: EyeTracker(appContext).also { made = it; Log.i(TAG, "Eye contact: tracking the eyes in this take") }
+        private val appContext = context.applicationContext
+
+        init {
+            synchronized(shared) {
+                if (sharedTake != take) {
+                    shared.clear()
+                    sharedTake = take
+                }
+            }
+        }
         private val copyProgram = program(COPY_FRAGMENT)
         private val warpProgram = program(WARP_FRAGMENT)
         private var width = 1
@@ -215,23 +236,9 @@ class EyeContactEffect : GlEffect {
                 val viewport = IntArray(4)
                 GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
 
-                // 1. A small upright copy (top row first), read back for the landmark model.
-                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
-                GLES20.glViewport(0, 0, smallW, smallH)
-                copyProgram.use()
-                copyProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
-                copyProgram.bindAttributesAndUniforms()
-                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-                pixels.rewind()
-                GLES20.glReadPixels(0, 0, smallW, smallH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
-                val bitmap = Bitmap.createBitmap(smallW, smallH, Bitmap.Config.ARGB_8888)
-                pixels.rewind()
-                bitmap.copyPixelsFromBuffer(pixels)
-                val eyes = runCatching { tracker.find(bitmap) }.onFailure { Log.w(TAG, "Eye tracking failed", it) }.getOrNull()
-                bitmap.recycle()
-
-                // 2. How far to move the irises.
-                val uniforms = correction(eyes, presentationTimeUs)
+                val known = synchronized(shared) { shared[presentationTimeUs] }
+                val uniforms = known ?: track(inputTexId, presentationTimeUs)
+                    .also { synchronized(shared) { shared[presentationTimeUs] = it } }
 
                 // 3. The warp, into Media3's output.
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, outFbo[0])
@@ -249,6 +256,27 @@ class EyeContactEffect : GlEffect {
             } catch (e: GlUtil.GlException) {
                 throw VideoFrameProcessingException(e, presentationTimeUs)
             }
+        }
+
+        /** Finds the eyes in this frame and works out the warp (leaves Media3's framebuffer bound to the copy). */
+        private fun track(inputTexId: Int, presentationTimeUs: Long): Array<FloatArray> {
+                // 1. A small upright copy (top row first), read back for the landmark model.
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, smallFbo)
+                GLES20.glViewport(0, 0, smallW, smallH)
+                copyProgram.use()
+                copyProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+                copyProgram.bindAttributesAndUniforms()
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+                pixels.rewind()
+                GLES20.glReadPixels(0, 0, smallW, smallH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
+                val bitmap = Bitmap.createBitmap(smallW, smallH, Bitmap.Config.ARGB_8888)
+                pixels.rewind()
+                bitmap.copyPixelsFromBuffer(pixels)
+                val eyes = runCatching { tracker.find(bitmap) }.onFailure { Log.w(TAG, "Eye tracking failed", it) }.getOrNull()
+                bitmap.recycle()
+
+                // 2. How far to move the irises.
+                return correction(eyes, presentationTimeUs)
         }
 
         /** Shader uniforms for both eyes: (centre, axis) and (half width, half height, shift), GL pixels (+y up). */
@@ -312,7 +340,7 @@ class EyeContactEffect : GlEffect {
 
         override fun release() {
             super.release()
-            tracker.close()
+            made?.close()
             try {
                 copyProgram.delete()
                 warpProgram.delete()
@@ -326,6 +354,9 @@ class EyeContactEffect : GlEffect {
 
     companion object {
         private const val TAG = "EyeContact"
+        /** The warp for each frame time of [sharedTake], filled by the first shape made, reused by the rest. */
+        private val shared = HashMap<Long, Array<FloatArray>>()
+        private var sharedTake: String? = null
         /** The take's first moments, while the app asks for a look into the lens. */
         const val CALIBRATION_US = 1_500_000L
         /** Eyes are found in a copy this big (long side). */
