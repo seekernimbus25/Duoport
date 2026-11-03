@@ -45,6 +45,8 @@ class EyeTracker(context: Context) : Closeable {
         val open: Float,
         /** Iris centre relative to [cx], [cy] in eye widths, along x and y of the picture. */
         val gx: Float, val gy: Float,
+        /** Upper and lower lid above the centre (lower is negative), and the iris radius, in eye widths. */
+        val upper: Float, val lower: Float, val irisR: Float,
     )
 
     private val interpreter: Interpreter
@@ -123,10 +125,19 @@ class EyeTracker(context: Context) : Closeable {
             val w = hypot(px(b) - px(a), py(b) - py(a)).coerceAtLeast(1f)
             val ecx = (px(a) + px(b)) / 2f
             val ecy = (py(a) + py(b)) / 2f
+            // Left to right in the picture, so "up" below is always towards the brow.
+            val flip = if (px(b) < px(a)) -1f else 1f
+            val ax = flip * (px(b) - px(a)) / w
+            val ay = flip * (py(b) - py(a)) / w
+            // Height above the centre line (the picture's y points down).
+            fun above(i: Int) = ((px(i) - ecx) * ay - (py(i) - ecy) * ax) / w
+            // The four iris edge points follow its centre in the model's output.
+            val r = (1..4).map { hypot(px(iris + it) - px(iris), py(iris + it) - py(iris)) }.average().toFloat() / w
             return Eye(
-                ecx, ecy, (px(b) - px(a)) / w, (py(b) - py(a)) / w, w,
+                ecx, ecy, ax, ay, w,
                 hypot(px(upper) - px(lower), py(upper) - py(lower)) / w,
                 (px(iris) - ecx) / w, (py(iris) - ecy) / w,
+                above(upper), above(lower), r,
             )
         }
         return eye(33, 133, 468, 159, 145) to eye(362, 263, 473, 386, 374)
@@ -246,10 +257,12 @@ class EyeContactEffect(
                 warpProgram.use()
                 warpProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
                 warpProgram.setFloatsUniform("uSize", floatArrayOf(width.toFloat(), height.toFloat()))
-                warpProgram.setFloatsUniform("uEye0", uniforms[0])
-                warpProgram.setFloatsUniform("uShape0", uniforms[1])
-                warpProgram.setFloatsUniform("uEye1", uniforms[2])
-                warpProgram.setFloatsUniform("uShape1", uniforms[3])
+                for (i in 0..1) {
+                    warpProgram.setFloatsUniform("uEye$i", uniforms[i * 4])
+                    warpProgram.setFloatsUniform("uLid$i", uniforms[i * 4 + 1])
+                    warpProgram.setFloatsUniform("uIris$i", uniforms[i * 4 + 2])
+                    warpProgram.setFloatsUniform("uShift$i", uniforms[i * 4 + 3])
+                }
                 warpProgram.bindAttributesAndUniforms()
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
                 GlUtil.checkGlError()
@@ -279,9 +292,10 @@ class EyeContactEffect(
                 return correction(eyes, presentationTimeUs)
         }
 
-        /** Shader uniforms for both eyes: (centre, axis) and (half width, half height, shift), GL pixels (+y up). */
+        /** Shader uniforms for each eye: (centre, axis), (width, lids, lift), (iris, radius), shift; GL pixels (+y up). */
         private fun correction(eyes: Pair<EyeTracker.Eye, EyeTracker.Eye>?, timeUs: Long): Array<FloatArray> {
-            val none = arrayOf(floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(1f, 1f, 0f, 0f), floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(1f, 1f, 0f, 0f))
+            val still = arrayOf(floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(1f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(0f, 0f, 0f, 0f))
+            val none = still + still
             var targetX = 0f
             var targetY = 0f
             var targetLift = 0f
@@ -310,12 +324,11 @@ class EyeContactEffect(
                         val away = 1f - ((hypot(dx, dy) - AWAY_START) / (AWAY_END - AWAY_START)).coerceIn(0f, 1f)
                         val blink = ((open / cal[2] - 0.55f) / 0.2f).coerceIn(0f, 1f)
                         val strength = away * blink
-                        targetX = (dx * GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
-                        targetY = (dy * GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
-                        // Reading below the lens mostly lowers the upper lids (measured on T012:
-                        // openness 0.40 at the lens, ~0.35 reading, while the iris hardly moved
-                        // against the eye corners), so the lids are lifted back to their opening.
-                        targetLift = ((cal[2] - open) * GAIN).coerceIn(0f, MAX_LIFT) * strength
+                        targetX = (dx * IRIS_GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
+                        targetY = (dy * IRIS_GAIN).coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
+                        // Reading below the lens also lowers the upper lids (T012: openness 0.40 at
+                        // the lens, ~0.35 reading), so they are lifted back towards their opening.
+                        targetLift = ((cal[2] - open) * LIFT_GAIN).coerceIn(0f, MAX_LIFT) * strength
                     }
                     if (++frames % 30 == 0) {
                         Log.i(TAG, "t=${timeUs / 1000} ms open $open gaze $gx,$gy -> shift $targetX,$targetY lift $targetLift")
@@ -329,10 +342,14 @@ class EyeContactEffect(
             val k = width.toFloat() / smallW
             fun of(e: EyeTracker.Eye): Array<FloatArray> {
                 val w = e.width * k
+                // The iris along the eye's axis and above its centre line.
+                val iu = e.gx * e.ax + e.gy * e.ay
+                val ih = e.gx * e.ay - e.gy * e.ax
                 return arrayOf(
                     floatArrayOf(e.cx * k, height - e.cy * k, e.ax, -e.ay),
-                    // Eye width, lid lift (both px), iris shift (px, +y up).
-                    floatArrayOf(w, lift * w, shiftX * w, -shiftY * w),
+                    floatArrayOf(w, e.upper * w, e.lower * w, lift * w),
+                    floatArrayOf(iu * w, ih * w, e.irisR * w, 0f),
+                    floatArrayOf(shiftX * w, -shiftY * w, 0f, 0f),
                 )
             }
             return of(eyes.first) + of(eyes.second)
@@ -361,16 +378,23 @@ class EyeContactEffect(
         const val CALIBRATION_US = 1_500_000L
         /** Eyes are found in a copy this big (long side). */
         private const val ANALYSIS_LONG_SIDE = 960f
-        /** Largest move, in eye widths: reading offsets measured on the 9a were up to ~0.06. */
-        private const val MAX_SHIFT = 0.12f
         /**
-         * The landmarks under-read how far the eyes moved (T016 on build 189: corrected 1:1, the
-         * reading frames still looked down). 2.5× matched the at-the-lens frames on T012 without
-         * visible warping.
+         * Largest iris move, in eye widths. It stays below the iris's height over the lower lid
+         * (~0.15), so the move never reaches past the lid for the skin below.
          */
-        private const val GAIN = 2.5f
+        private const val MAX_SHIFT = 0.08f
+        /**
+         * The landmarks under-read how far the irises moved (T016 on build 189: corrected 1:1, the
+         * reading frames still looked down), so the iris move is scaled up.
+         */
+        private const val IRIS_GAIN = 2.5f
+        /**
+         * The lids only partly: T027 on build 194 lifted them 2.5x with the whole eye, and the eye
+         * looked raised with the hollow below it stretched.
+         */
+        private const val LIFT_GAIN = 1.5f
         /** Largest lid lift, in eye widths. */
-        private const val MAX_LIFT = 0.15f
+        private const val MAX_LIFT = 0.08f
         /** Offsets from here (eye widths) fade the correction out, gone by [AWAY_END]: a real look away. */
         private const val AWAY_START = 0.12f
         private const val AWAY_END = 0.2f
@@ -396,34 +420,51 @@ class EyeContactEffect(
             }
         """
 
-        // Each eye: an ellipse along the corner-to-corner axis; inside it the picture is pulled
-        // by the shift, fully in the middle and easing to nothing at the lids, so only the iris
-        // and the white around it move.
+        // Each eye, in its own frame (u along the corners, h up from the centre line), sampled
+        // backwards (output p shows the picture at p - pull):
+        // - the upper lid lifts by lid.w, stretching the opening up from the lower lid, which stays
+        //   put with everything below it, and easing back to nothing towards the brow;
+        // - the iris moves by the shift, fully at its own height, easing to nothing at the lower
+        //   lid (so no skin is pulled in from below) and towards the corners, cut at the upper lid
+        //   it slides under. The lids follow an arch, 1 in the middle and 0 at the corners.
         private const val WARP_FRAGMENT = """
             precision highp float;
             uniform sampler2D uTexSampler;
             uniform vec2 uSize;
             uniform vec4 uEye0;
-            uniform vec4 uShape0;
+            uniform vec4 uLid0;
+            uniform vec4 uIris0;
+            uniform vec4 uShift0;
             uniform vec4 uEye1;
-            uniform vec4 uShape1;
+            uniform vec4 uLid1;
+            uniform vec4 uIris1;
+            uniform vec4 uShift1;
             varying vec2 vTexCoord;
-            // shape: eye width, lid lift, iris shift (x, y). The region reaches up to the brow
-            // and only a little below the eye's centre line, so the upper lid and the iris move
-            // and the lower lid stays put.
-            vec2 pull(vec2 p, vec4 eye, vec4 shape) {
+            // eye: centre, axis. lid: width, upper and lower lid height, lift. iris: u, h, radius.
+            vec2 pull(vec2 p, vec4 eye, vec4 lid, vec4 iris, vec4 shift) {
               vec2 d = p - eye.xy;
               vec2 up = vec2(-eye.w, eye.z);
-              float u = dot(d, eye.zw) / (0.75 * shape.x);
-              float h = dot(d, up) / (0.75 * shape.x);
-              float above = max(h, 0.0);
-              float below = max(-h, 0.0) * 2.5;
-              float t = clamp((1.0 - sqrt(u * u + above * above + below * below)) / 0.6, 0.0, 1.0);
-              return (up * shape.y + shape.zw) * t * t * (3.0 - 2.0 * t);
+              float u = dot(d, eye.zw);
+              float h = dot(d, up);
+              float w = lid.x;
+              float a = 2.0 * u / w;
+              float arch = clamp(1.0 - a * a, 0.0, 1.0);
+              float bot = lid.z * arch;
+              float lift = lid.w * arch;
+              float top = lid.y * arch + lift;
+              if (h <= bot) return vec2(0.0);
+              float s = h <= top
+                  ? lift * (h - bot) / max(top - bot, 0.001)
+                  : lift * (1.0 - smoothstep(0.0, 0.45 * w, h - top));
+              float e = 0.04 * w;
+              float rise = smoothstep(0.0, 1.0, (h - bot) / max(iris.y - lid.z, 0.001));
+              float side = 1.0 - smoothstep(1.2 * iris.z, 2.6 * iris.z, abs(u - iris.x));
+              float under = 1.0 - smoothstep(top - e, top, h);
+              return up * s + shift.xy * rise * side * under;
             }
             void main() {
               vec2 p = vTexCoord * uSize;
-              vec2 s = pull(p, uEye0, uShape0) + pull(p, uEye1, uShape1);
+              vec2 s = pull(p, uEye0, uLid0, uIris0, uShift0) + pull(p, uEye1, uLid1, uIris1, uShift1);
               gl_FragColor = texture2D(uTexSampler, (p - s) / uSize);
             }
         """

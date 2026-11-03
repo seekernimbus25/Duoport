@@ -508,7 +508,7 @@ class DesignEffect(private val design: Design, private val live: Boolean = false
             uniform vec2 uMaskSize;
             uniform float uSoft;
             varying vec2 vTexCoord;
-            // The cutout mask is coarse (256 px wide). Each pixel averages the 5×5 mask texels
+            // The cutout mask is coarse (256 px wide, the matte 512 px tall). Each pixel averages the 5×5 mask texels
             // around it, weighted by distance and by how alike the picture's colour is there, so
             // the edge follows the real outline of hair and clothes (joint bilateral upsampling;
             // PersonMask.refine is the same maths for photos). The mask's first row is the top.
@@ -559,9 +559,11 @@ class DesignEffect(private val design: Design, private val live: Boolean = false
               float alpha = 1.0 - smoothstep(-uPixel, uPixel, d);
               vec4 c = texture2D(uTexSampler, vTexCoord);
               if (uCutout > 0.5) {
-                // The matte's alpha is already soft and full-detail; the segmenter's is sharpened.
-                alpha *= uSoft > 0.5 ? texture2D(uMaskSampler, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).r
-                  : smoothstep(0.3, 0.7, personAt(vTexCoord, c.rgb));
+                // Both snap to the full-size picture. The matte's alpha is already soft (hair) and
+                // only firmed a little: shown as it was, 512 px stretched to the frame, every edge
+                // was a 10-15 px blur (DES-09 on build 194). The segmenter's is sharpened at 0.5.
+                float person = personAt(vTexCoord, c.rgb);
+                alpha *= uSoft > 0.5 ? smoothstep(0.12, 0.88, person) : smoothstep(0.3, 0.7, person);
               } else if (uBorder > 0.0 && d > -uBorder * side * 2.0) {
                 c.rgb = uBorderColor;
               }
