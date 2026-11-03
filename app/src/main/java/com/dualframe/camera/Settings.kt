@@ -281,7 +281,11 @@ data class CaptureSettings(
     val effectiveStabilization get() = if (isHyperlapse) Stabilization.ENHANCED else stabilization
 
     /** Auto mode always records the phone's own look, whatever Pro is set to. */
-    val activeProfile get() = if (isPro) profile else RecordProfile.STANDARD
+    /**
+     * Photos never take the log curve: it is for video graded afterwards, and on a still it lifted
+     * the shadows' noise into an 8-bit JPEG that the look then stretched back (tester: "so grainy").
+     */
+    val activeProfile get() = if (isPro && !photoMode) profile else RecordProfile.STANDARD
     val activeLutId get() = if (isPro) lutId else Luts.NONE
     /** Grading happens afterwards, in the library (Grade), so the camera records without one. */
     val activeGrade get() = ColorGrade()

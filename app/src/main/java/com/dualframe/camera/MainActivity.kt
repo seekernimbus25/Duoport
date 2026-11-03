@@ -71,6 +71,8 @@ import androidx.camera.core.ZoomState
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.camera.extensions.ExtensionMode
+import androidx.camera.extensions.ExtensionsManager
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.ExperimentalHighSpeedVideo
@@ -249,6 +251,11 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private var autoCell: TextView? = null
 
     private var provider: ProcessCameraProvider? = null
+    /** The phone's own photo processing modes (null until asked, or if it has none). */
+    private var extensions: ExtensionsManager? = null
+    private var extensionsAsked = false
+    /** The extension the photo camera is bound with, or null for plain capture. */
+    private var photoExtension: Int? = null
     private var camera: Camera? = null
     private var observedCamera: Camera? = null
     private var mainCapture: VideoCapture<Recorder>? = null
@@ -791,7 +798,20 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
     private fun bindCamera() {
         if (!has(Manifest.permission.CAMERA) || isRecording) return
         val future = ProcessCameraProvider.getInstance(this)
-        future.addListener({ bindWith(future.get()) }, ContextCompat.getMainExecutor(this))
+        future.addListener({
+            val provider = future.get()
+            if (extensionsAsked) {
+                bindWith(provider)
+                return@addListener
+            }
+            // Once: which of the phone's own photo modes apps may use.
+            extensionsAsked = true
+            val asking = ExtensionsManager.getInstanceAsync(this, provider)
+            asking.addListener({
+                extensions = runCatching { asking.get() }.onFailure { android.util.Log.w("DualFramePhoto", "No camera extensions", it) }.getOrNull()
+                bindWith(provider)
+            }, ContextCompat.getMainExecutor(this))
+        }, ContextCompat.getMainExecutor(this))
     }
 
     private fun bindWith(provider: ProcessCameraProvider) {
@@ -806,6 +826,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         effectAttached = false
         highSpeedBound = false
         imageCapture = null
+        photoExtension = null
         analysisUseCase = null
         lockedLens = null
         lenses = runCatching { Lenses.list(this, provider, settings.lensFacing) }.getOrDefault(emptyList())
@@ -881,8 +902,59 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
     }
 
+    /**
+     * Auto photos: the phone's own processing where it lets apps have it (on a Pixel, the merged
+     * multi-frame shot its camera app takes; a single plain frame was grainy next to it). With the
+     * background blur on, its Portrait blur first. Pro keeps plain capture for its manual controls.
+     * Extensions bind only preview + still: no live look or meters, the look is added afterwards.
+     */
+    private fun bindPhotoExtension(provider: ProcessCameraProvider, selector: CameraSelector): Boolean {
+        val manager = extensions ?: return false
+        if (settings.isPro) return false
+        val modes = buildList {
+            if (settings.cinematic > 0) add(ExtensionMode.BOKEH)
+            add(ExtensionMode.AUTO)
+            add(ExtensionMode.HDR)
+            add(ExtensionMode.NIGHT)
+        }
+        val available = modes.filter { runCatching { manager.isExtensionAvailable(selector, it) }.getOrDefault(false) }
+        android.util.Log.i("DualFramePhoto", "Photo extensions offered: ${available.map(::extensionName)}")
+        val mode = available.firstOrNull() ?: return false
+        return try {
+            val preview = buildPreview(settings.cameraFrame, null, previewView, readouts = true)
+            val capture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy(settings.cameraFrame.cameraRatio, AspectRatioStrategy.FALLBACK_RULE_AUTO))
+                        .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+                        .build()
+                )
+                .setTargetRotation(recordRotation)
+                .build()
+            camera = provider.bindToLifecycle(this, manager.getExtensionEnabledCameraSelector(selector, mode), preview, capture)
+            imageCapture = capture
+            photoExtension = mode
+            android.util.Log.i("DualFramePhoto", "Photo processing: ${extensionName(mode)}")
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("DualFramePhoto", "Photo extension ${extensionName(mode)} failed to bind", e)
+            provider.unbindAll()
+            false
+        }
+    }
+
+    private fun extensionName(mode: Int) = when (mode) {
+        ExtensionMode.BOKEH -> "portrait"
+        ExtensionMode.AUTO -> "auto"
+        ExtensionMode.HDR -> "hdr"
+        ExtensionMode.NIGHT -> "night"
+        else -> "mode $mode"
+    }
+
     /** Photo mode: preview + full-resolution stills (+ the live look and meters when possible). */
     private fun bindPhoto(provider: ProcessCameraProvider, selector: CameraSelector): Boolean {
+        if (bindPhotoExtension(provider, selector)) return true
         val effect = if (wantsPreviewEffect()) {
             LutPreviewEffect(lutProcessor) {
                 runOnUiThread {
@@ -1989,7 +2061,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 placement = frameOverlay.placement,
                 lut = if (settings.bakeLut) activeLut else null,
                 anamorphic = settings.activeAnamorphic,
-                cinematic = settings.cinematic,
+                // The phone's Portrait shot is already blurred behind the person.
+                cinematic = if (photoExtension == ExtensionMode.BOKEH) 0 else settings.cinematic,
                 keepOriginal = settings.keepOriginal,
                 baseName = name,
             )

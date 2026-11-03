@@ -92,6 +92,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-video:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
+    // The phone maker's own photo processing (HDR, Night, Portrait) where it offers it to apps.
+    implementation("androidx.camera:camera-extensions:$camerax")
 
     val media3 = "1.5.1"
     implementation("androidx.media3:media3-transformer:$media3")
