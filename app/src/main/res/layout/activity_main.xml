@@ -70,181 +70,196 @@
                 android:src="@drawable/ic_article"
                 android:tint="@color/icon_tint" />
 
-            <ImageButton
-                android:id="@+id/dual_button"
-                style="@style/DF.IconButton"
-                android:layout_gravity="center_vertical|start"
-                android:layout_marginStart="58dp"
-                android:contentDescription="@string/front_and_back"
-                android:src="@drawable/ic_picture_in_picture_alt"
-                android:tint="@color/icon_tint" />
+            <!-- Everything but the teleprompter button: hidden while the teleprompter shows. -->
+            <FrameLayout
+                android:id="@+id/top_buttons"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent">
 
-            <ImageButton
-                android:id="@+id/night_button"
-                style="@style/DF.IconButton"
-                android:layout_gravity="center_vertical|start"
-                android:layout_marginStart="116dp"
-                android:contentDescription="@string/night"
-                android:src="@drawable/ic_bedtime"
-                android:tint="@color/icon_tint" />
+                <ImageButton
+                    android:id="@+id/dual_button"
+                    style="@style/DF.IconButton"
+                    android:layout_gravity="center_vertical|start"
+                    android:layout_marginStart="58dp"
+                    android:contentDescription="@string/front_and_back"
+                    android:src="@drawable/ic_picture_in_picture_alt"
+                    android:tint="@color/icon_tint" />
 
-            <ImageButton
-                android:id="@+id/torch_button"
-                style="@style/DF.IconButton"
-                android:layout_gravity="center_vertical|end"
-                android:layout_marginEnd="116dp"
-                android:contentDescription="@string/torch"
-                android:src="@drawable/ic_flashlight_off"
-                android:tint="@color/icon_tint" />
+                <ImageButton
+                    android:id="@+id/night_button"
+                    style="@style/DF.IconButton"
+                    android:layout_gravity="center_vertical|start"
+                    android:layout_marginStart="116dp"
+                    android:contentDescription="@string/night"
+                    android:src="@drawable/ic_bedtime"
+                    android:tint="@color/icon_tint" />
 
-            <ImageButton
-                android:id="@+id/timer_button"
-                style="@style/DF.IconButton"
-                android:layout_gravity="center_vertical|end"
-                android:layout_marginEnd="58dp"
-                android:contentDescription="@string/self_timer"
-                android:src="@drawable/ic_timer_off"
-                android:tint="@color/icon_tint" />
+                <ImageButton
+                    android:id="@+id/torch_button"
+                    style="@style/DF.IconButton"
+                    android:layout_gravity="center_vertical|end"
+                    android:layout_marginEnd="116dp"
+                    android:contentDescription="@string/torch"
+                    android:src="@drawable/ic_flashlight_off"
+                    android:tint="@color/icon_tint" />
 
-            <ImageButton
-                android:id="@+id/settings_button"
-                style="@style/DF.IconButton"
-                android:layout_gravity="center_vertical|end"
-                android:contentDescription="@string/settings"
-                android:src="@drawable/ic_tune" />
+                <ImageButton
+                    android:id="@+id/timer_button"
+                    style="@style/DF.IconButton"
+                    android:layout_gravity="center_vertical|end"
+                    android:layout_marginEnd="58dp"
+                    android:contentDescription="@string/self_timer"
+                    android:src="@drawable/ic_timer_off"
+                    android:tint="@color/icon_tint" />
+
+                <ImageButton
+                    android:id="@+id/settings_button"
+                    style="@style/DF.IconButton"
+                    android:layout_gravity="center_vertical|end"
+                    android:contentDescription="@string/settings"
+                    android:src="@drawable/ic_tune" />
+            </FrameLayout>
         </FrameLayout>
 
-        <!-- Shown while recording, in place of the format pills. -->
+        <!-- The rows under the buttons: hidden while the teleprompter shows (it sits there). -->
         <LinearLayout
-            android:id="@+id/timer_row"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:background="@drawable/bg_timer"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingHorizontal="16dp"
-            android:paddingVertical="6dp"
-            android:visibility="gone">
-
-            <TextView
-                android:id="@+id/timer"
-                style="@style/DF.Text.Value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="00:00:00"
-                android:textSize="16sp" />
-        </LinearLayout>
-
-        <!-- The videos being made. Tap one to move its frame. -->
-        <HorizontalScrollView
-            android:id="@+id/format_scroller"
+            android:id="@+id/top_rows"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:scrollbars="none">
+            android:orientation="vertical">
 
+            <!-- Shown while recording, in place of the format pills. -->
             <LinearLayout
-                android:id="@+id/format_chips"
+                android:id="@+id/timer_row"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:background="@drawable/bg_timer"
+                android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp" />
-        </HorizontalScrollView>
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="6dp"
+                android:visibility="gone">
 
-        <!-- Pro only: what the camera is doing, tap any value to take control. -->
-        <HorizontalScrollView
-            android:id="@+id/pro_strip"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:scrollbars="none"
-            android:visibility="gone">
+                <TextView
+                    android:id="@+id/timer"
+                    style="@style/DF.Text.Value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="00:00:00"
+                    android:textSize="16sp" />
+            </LinearLayout>
 
+            <!-- The videos being made. Tap one to move its frame. -->
+            <HorizontalScrollView
+                android:id="@+id/format_scroller"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/format_chips"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="16dp" />
+            </HorizontalScrollView>
+
+            <!-- Pro only: what the camera is doing, tap any value to take control. -->
+            <HorizontalScrollView
+                android:id="@+id/pro_strip"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/readouts"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp" />
+            </HorizontalScrollView>
+
+            <!-- Pro: histogram and how far exposure is from a balanced picture. -->
             <LinearLayout
-                android:id="@+id/readouts"
+                android:id="@+id/monitor_row"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:layout_marginTop="8dp"
+                android:layout_marginEnd="16dp"
+                android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="12dp" />
-        </HorizontalScrollView>
+                android:visibility="gone">
 
-        <!-- Pro: histogram and how far exposure is from a balanced picture. -->
-        <LinearLayout
-            android:id="@+id/monitor_row"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="end"
-            android:layout_marginTop="8dp"
-            android:layout_marginEnd="16dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:visibility="gone">
+                <TextView
+                    android:id="@+id/exposure_meter"
+                    style="@style/DF.Text.Label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="10dp"
+                    android:shadowColor="#99000000"
+                    android:shadowRadius="4"
+                    android:textColor="@color/text_primary" />
+
+                <com.dualframe.camera.HistogramView
+                    android:id="@+id/histogram"
+                    android:layout_width="112dp"
+                    android:layout_height="52dp" />
+            </LinearLayout>
 
             <TextView
-                android:id="@+id/exposure_meter"
+                android:id="@+id/ae_lock_pill"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_glass_pill"
+                android:drawablePadding="6dp"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:letterSpacing="0.14"
+                android:paddingHorizontal="14dp"
+                android:text="@string/ae_af_lock"
+                android:textColor="@color/accent"
+                android:textSize="11sp"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/meter_row"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <TextView
+                    style="@style/DF.Text.Label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/audio_level" />
+
+                <com.dualframe.camera.AudioMeterView
+                    android:id="@+id/audio_meter"
+                    android:layout_width="120dp"
+                    android:layout_height="6dp"
+                    android:layout_marginStart="10dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/info"
                 style="@style/DF.Text.Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="10dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="8dp"
                 android:shadowColor="#99000000"
-                android:shadowRadius="4"
-                android:textColor="@color/text_primary" />
-
-            <com.dualframe.camera.HistogramView
-                android:id="@+id/histogram"
-                android:layout_width="112dp"
-                android:layout_height="52dp" />
+                android:shadowRadius="4" />
         </LinearLayout>
-
-        <TextView
-            android:id="@+id/ae_lock_pill"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
-            android:background="@drawable/bg_glass_pill"
-            android:drawablePadding="6dp"
-            android:fontFamily="sans-serif-medium"
-            android:gravity="center"
-            android:letterSpacing="0.14"
-            android:paddingHorizontal="14dp"
-            android:text="@string/ae_af_lock"
-            android:textColor="@color/accent"
-            android:textSize="11sp"
-            android:visibility="gone" />
-
-        <LinearLayout
-            android:id="@+id/meter_row"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:visibility="gone">
-
-            <TextView
-                style="@style/DF.Text.Label"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/audio_level" />
-
-            <com.dualframe.camera.AudioMeterView
-                android:id="@+id/audio_meter"
-                android:layout_width="120dp"
-                android:layout_height="6dp"
-                android:layout_marginStart="10dp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/info"
-            style="@style/DF.Text.Label"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
-            android:shadowColor="#99000000"
-            android:shadowRadius="4" />
     </LinearLayout>
 
     <!-- ───────────── Bottom ───────────── -->

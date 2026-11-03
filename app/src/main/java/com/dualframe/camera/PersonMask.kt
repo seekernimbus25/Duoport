@@ -12,6 +12,7 @@ import java.nio.channels.FileChannel
 import java.io.Closeable
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
@@ -213,6 +214,24 @@ class PersonMask(
         for (y in 0 until h) for (x in 0 until w) alpha[y * w + x] = all.get((y + oy) * MATTE + x + ox).coerceIn(0f, 1f)
         val gate = gate(person, w, h)
         for (i in alpha.indices) alpha[i] *= gate[i]
+        // Never less than Quick: whatever the segmenter calls person stays, the matte only adds
+        // the soft detail round it. On the dim antlers clip MODNet lost an antler now and then
+        // that Quick kept (DES-09 on build 199, "Quick is giving better results").
+        for (y in 0 until h) {
+            val my = ((y + 0.5f) / h * SIZE - 0.5f).coerceIn(0f, SIZE - 1f)
+            val y0 = my.toInt().coerceAtMost(SIZE - 2)
+            val fy = my - y0
+            for (x in 0 until w) {
+                val mx = ((x + 0.5f) / w * SIZE - 0.5f).coerceIn(0f, SIZE - 1f)
+                val x0 = mx.toInt().coerceAtMost(SIZE - 2)
+                val fx = mx - x0
+                val top = person[y0 * SIZE + x0] * (1f - fx) + person[y0 * SIZE + x0 + 1] * fx
+                val bottom = person[(y0 + 1) * SIZE + x0] * (1f - fx) + person[(y0 + 1) * SIZE + x0 + 1] * fx
+                val t = (((top * (1f - fy) + bottom * fy) - 0.4f) / 0.2f).coerceIn(0f, 1f)
+                val i = y * w + x
+                alpha[i] = max(alpha[i], t * t * (3f - 2f * t))
+            }
+        }
         // MODNet leaves a haze of half-transparent background around the person (tester: "a lot
         // of excessive area captured"). Snap the alpha to the picture's own edges (guided
         // filter), then drop the faint values and firm up the near-solid ones.

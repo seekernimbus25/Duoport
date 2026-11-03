@@ -314,6 +314,7 @@ class EyeContactEffect(
         /** Shader uniforms for each eye: (centre, axis), (width, lids, lift), (iris, radius), shift; GL pixels (+y up). */
         private fun correction(eyes: Pair<EyeTracker.Eye, EyeTracker.Eye>?, timeUs: Long): Array<FloatArray> {
             val still = arrayOf(floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(1f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(0f, 0f, 0f, 0f))
+                .also { it[2][2] = 1f }
             val none = still + still
             var targetX = 0f
             var targetY = 0f
@@ -378,7 +379,8 @@ class EyeContactEffect(
                     floatArrayOf(e.cx * k, height - e.cy * k, e.ax, -e.ay),
                     floatArrayOf(w, e.upper * w, e.lower * w, lift * w),
                     floatArrayOf(iu * w, ih * w, e.irisR * w, 0f),
-                    floatArrayOf(shiftX * w, -shiftY * w, 0f, 0f),
+                    // Up the eye (picture y points down).
+                    floatArrayOf(-shiftY * w, 0f, 0f, 0f),
                 )
             }
             return of(eyes.first) + of(eyes.second)
@@ -453,12 +455,15 @@ class EyeContactEffect(
         """
 
         // Each eye, in its own frame (u along the corners, h up from the centre line), sampled
-        // backwards (output p shows the picture at p - pull):
+        // backwards (output p shows the picture at src):
         // - the upper lid lifts by lid.w, stretching the opening up from the lower lid, which stays
-        //   put with everything below it, and easing back to nothing towards the brow;
-        // - the iris moves by the shift, fully at its own height, easing to nothing at the lower
-        //   lid (so no skin is pulled in from below) and towards the corners, cut at the upper lid
-        //   it slides under. The lids follow an arch, 1 in the middle and 0 at the corners.
+        //   put with everything below it, and easing back to nothing towards the brow. The lids
+        //   follow an arch, 1 in the middle and 0 at the corners;
+        // - the iris moves up as one piece by the shift (round pupil; T031 on build 199 stretched
+        //   it into an oval when the move eased off towards the lower lid), sliding under the upper
+        //   lid. Its bottom is tucked under the lower lid even at the lens, so what shows above the
+        //   lid after the move isn't in the picture: it repeats the iris's lowest visible row
+        //   (alt, mixed in by m), and the white beside it its row just above the lid.
         private const val WARP_FRAGMENT = """
             precision highp float;
             uniform sampler2D uTexSampler;
@@ -473,31 +478,62 @@ class EyeContactEffect(
             uniform vec4 uShift1;
             varying vec2 vTexCoord;
             // eye: centre, axis. lid: width, upper and lower lid height, lift. iris: u, h, radius.
-            vec2 pull(vec2 p, vec4 eye, vec4 lid, vec4 iris, vec4 shift) {
-              vec2 d = p - eye.xy;
+            // shift.x: the iris move up. False when p is not near this eye.
+            bool eyeAt(vec2 p, vec4 eye, vec4 lid, vec4 iris, vec4 shift, out vec2 src, out vec2 alt, out float m) {
+              vec2 ax = eye.zw;
               vec2 up = vec2(-eye.w, eye.z);
-              float u = dot(d, eye.zw);
+              vec2 d = p - eye.xy;
+              float u = dot(d, ax);
               float h = dot(d, up);
               float w = lid.x;
+              src = p;
+              alt = p;
+              m = 0.0;
+              if (abs(u) > w || abs(h) > w) return false;
               float a = 2.0 * u / w;
               float arch = clamp(1.0 - a * a, 0.0, 1.0);
               float bot = lid.z * arch;
               float lift = lid.w * arch;
               float top = lid.y * arch + lift;
-              if (h <= bot) return vec2(0.0);
-              float s = h <= top
-                  ? lift * (h - bot) / max(top - bot, 0.001)
-                  : lift * (1.0 - smoothstep(0.0, 0.45 * w, h - top));
-              float e = 0.04 * w;
-              float rise = smoothstep(0.0, 1.0, (h - bot) / max(iris.y - lid.z, 0.001));
-              float side = 1.0 - smoothstep(1.2 * iris.z, 2.6 * iris.z, abs(u - iris.x));
-              float under = 1.0 - smoothstep(top - e, top, h);
-              return up * s + shift.xy * rise * side * under;
+              float s = 0.0;
+              if (h > bot) {
+                s = h <= top
+                    ? lift * (h - bot) / max(top - bot, 0.05 * w)
+                    : lift * (1.0 - smoothstep(0.0, 0.45 * w, h - top));
+              }
+              // The iris goes up by the shift plus the lids' stretch at its centre.
+              float ai = 2.0 * iris.x / w;
+              float archI = max(0.0, 1.0 - ai * ai);
+              float botI = lid.z * archI;
+              float topI = (lid.y + lid.w) * archI;
+              float moved = shift.x + lid.w * archI * clamp((iris.y - botI) / max(topI - botI, 0.05 * w), 0.0, 1.0);
+              float r = iris.z;
+              float k = (1.0 - smoothstep(1.0, 1.7, length(vec2(u - iris.x, h - iris.y - moved)) / r))
+                  * step(bot, h) * (1.0 - smoothstep(top - 0.03 * w, top, h));
+              float sh = h - (s + k * (moved - s));
+              // The lower lid under the source point: below it is skin, not eye.
+              float qa = 2.0 * u / w;
+              float lidQ = lid.z * clamp(1.0 - qa * qa, 0.0, 1.0);
+              float shown = smoothstep(lidQ + 0.03 * w, lidQ + 0.06 * w, sh);
+              float inIris = 1.0 - smoothstep(0.9 * r, 1.05 * r, length(vec2(u - iris.x, sh - iris.y)));
+              float fill = max(sh, lidQ + 0.05 * w);
+              if (k > 0.0 && h > bot) sh = max(sh, lidQ + 0.04 * w);
+              src = eye.xy + ax * u + up * sh;
+              alt = eye.xy + ax * u + up * fill;
+              m = k > 0.0 ? (1.0 - shown) * inIris : 0.0;
+              return true;
             }
             void main() {
               vec2 p = vTexCoord * uSize;
-              vec2 s = pull(p, uEye0, uLid0, uIris0, uShift0) + pull(p, uEye1, uLid1, uIris1, uShift1);
-              gl_FragColor = texture2D(uTexSampler, (p - s) / uSize);
+              vec2 src;
+              vec2 alt;
+              float m;
+              if (!eyeAt(p, uEye0, uLid0, uIris0, uShift0, src, alt, m)) {
+                eyeAt(p, uEye1, uLid1, uIris1, uShift1, src, alt, m);
+              }
+              vec4 c = texture2D(uTexSampler, src / uSize);
+              if (m > 0.0) c = mix(c, texture2D(uTexSampler, alt / uSize), m);
+              gl_FragColor = c;
             }
         """
     }

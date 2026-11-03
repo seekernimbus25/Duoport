@@ -488,9 +488,8 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }
         scriptButton.setOnClickListener {
             val show = !teleprompter.isVisible
-            Glass.show(teleprompter, show)
+            showTeleprompter(show)
             if (!show) teleprompter.pause()
-            scriptButton.isSelected = show
         }
         settingsButton.setOnClickListener { showSettings() }
         torchButton.setOnClickListener {
@@ -1817,6 +1816,18 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
         }, EyeContactEffect.CALIBRATION_US / 1000)
     }
 
+    /**
+     * The teleprompter sits at the top, by the lens: while it shows, everything else up there
+     * (the other buttons, the video chips, the timer, Pro's readouts) steps aside so nothing
+     * overlaps the script (TP-04), and comes back when it closes.
+     */
+    private fun showTeleprompter(show: Boolean) {
+        Glass.show(teleprompter, show)
+        scriptButton.isSelected = show
+        Glass.show(findViewById(R.id.top_buttons), !show)
+        Glass.show(findViewById(R.id.top_rows), !show)
+    }
+
     /** The teleprompter reads upright however the phone is held, even mid-take. */
     private fun turnTeleprompter(rotation: Int) {
         teleprompter.turnTo(
@@ -3122,8 +3133,7 @@ class MainActivity : AppCompatActivity(), FrameOverlayView.Listener {
                 }
             }
             if (shot?.script?.isNotBlank() == true && !teleprompter.isVisible) {
-                Glass.show(teleprompter, true)
-                scriptButton.isSelected = true
+                showTeleprompter(true)
             }
         }
     }

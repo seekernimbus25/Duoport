@@ -196,6 +196,9 @@ object DualExporter {
                     if (words.isNotEmpty() && job.captionReview) {
                         _state.value = ExportState.ReviewCaptions(System.nanoTime())
                         words = CaptionReview.review(words)
+                        // The review screen has its own Style button: burn in what was picked
+                        // there, not the style from when recording stopped.
+                        current = current.copy(captionStyle = CaptionStyle.load(app))
                     }
                     if (words.isEmpty()) {
                         note = NO_CAPTIONS_NOTE

@@ -105,11 +105,11 @@ class DesignEffect(private val design: Design, private val live: Boolean = false
                 val viewport = IntArray(4)
                 GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
                 val placement = design.video
-                // The preview runs the model about 10× a second of video (and after any jump, e.g. a
-                // seek); frames in between reuse the last mask. Saving runs it on every frame: a
-                // mask 100 ms old, blended with older ones, smeared a moving head's edge (DES-09 on
-                // build 196, the left antler ghosted).
-                val every = if (live) MASK_EVERY_US else SAVE_MASK_EVERY_US
+                // The model runs about 10× a second of video (and after any jump, e.g. a seek);
+                // frames in between reuse the last mask. Every frame when saving made Fine edges
+                // take ~10 min for 42 s and Quick twice as long (build 199), so saving only carries
+                // less of the older masks over (SAVE_CARRY), which smeared a moving head's edge.
+                val every = MASK_EVERY_US
                 if (placement.cutout) {
                     finished?.let { (mask, jumped) ->
                         finished = null
@@ -415,14 +415,11 @@ class DesignEffect(private val design: Design, private val live: Boolean = false
         /** How often the cutout model runs, in video time: 10 masks a second. */
         private const val MASK_EVERY_US = 95_000L
 
-        /** Saving: a mask for every frame up to 30 fps (every other at 60). */
-        private const val SAVE_MASK_EVERY_US = 30_000L
-
         /**
-         * Saving: each frame's mask keeps less of the last, since they are a frame apart, not
-         * three; the edge snapping to the picture keeps them from flickering.
+         * Saving keeps less of the last mask than the preview: the edge snapping to the picture
+         * keeps them from flickering, and a moving head's edge lags less.
          */
-        private const val SAVE_CARRY = 0.45f
+        private const val SAVE_CARRY = 0.3f
 
         /** Matches the strip order of [GlUtil.getNormalizedCoordinateBounds]. */
         private val TEX_COORDS = floatArrayOf(0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 0f, 1f, 1f, 1f, 0f, 1f)
