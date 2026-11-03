@@ -150,7 +150,7 @@ class EyeContactEffect : GlEffect {
     private class Program(context: Context, useHdr: Boolean) :
         BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1) {
 
-        private val tracker = EyeTracker(context)
+        private val tracker = EyeTracker(context).also { Log.i(TAG, "Eye contact on for this video") }
         private val copyProgram = program(COPY_FRAGMENT)
         private val warpProgram = program(WARP_FRAGMENT)
         private var width = 1
@@ -169,6 +169,9 @@ class EyeContactEffect : GlEffect {
         /** The correction now applied, in eye widths (eased from frame to frame). */
         private var shiftX = 0f
         private var shiftY = 0f
+        /** How far the upper lids are lifted back up, in eye widths (eased like the shift). */
+        private var lift = 0f
+        private var frames = 0
 
         private fun program(fragment: String): GlProgram = try {
             GlProgram(VERTEX, fragment).apply {
@@ -253,6 +256,7 @@ class EyeContactEffect : GlEffect {
             val none = arrayOf(floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(1f, 1f, 0f, 0f), floatArrayOf(0f, 0f, 1f, 0f), floatArrayOf(1f, 1f, 0f, 0f))
             var targetX = 0f
             var targetY = 0f
+            var targetLift = 0f
             if (eyes != null) {
                 val (l, r) = eyes
                 val gx = (l.gx + r.gx) / 2f
@@ -280,21 +284,27 @@ class EyeContactEffect : GlEffect {
                         val strength = away * blink
                         targetX = dx.coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
                         targetY = dy.coerceIn(-MAX_SHIFT, MAX_SHIFT) * strength
+                        // Reading below the lens mostly lowers the upper lids (measured on T012:
+                        // openness 0.40 at the lens, ~0.35 reading, while the iris hardly moved
+                        // against the eye corners), so the lids are lifted back to their opening.
+                        targetLift = (cal[2] - open).coerceIn(0f, MAX_LIFT) * strength
+                    }
+                    if (++frames % 30 == 0) {
+                        Log.i(TAG, "t=${timeUs / 1000} ms open $open gaze $gx,$gy -> shift $targetX,$targetY lift $targetLift")
                     }
                 }
             }
             shiftX += (targetX - shiftX) * EASE
             shiftY += (targetY - shiftY) * EASE
-            if (eyes == null || (shiftX == 0f && shiftY == 0f)) return none
+            lift += (targetLift - lift) * EASE
+            if (eyes == null || (shiftX == 0f && shiftY == 0f && lift == 0f)) return none
             val k = width.toFloat() / smallW
             fun of(e: EyeTracker.Eye): Array<FloatArray> {
                 val w = e.width * k
                 return arrayOf(
                     floatArrayOf(e.cx * k, height - e.cy * k, e.ax, -e.ay),
-                    floatArrayOf(
-                        w * 0.62f, max(e.open * w * 0.75f, w * 0.2f),
-                        shiftX * w, -shiftY * w,
-                    ),
+                    // Eye width, lid lift (both px), iris shift (px, +y up).
+                    floatArrayOf(w, lift * w, shiftX * w, -shiftY * w),
                 )
             }
             return of(eyes.first) + of(eyes.second)
@@ -322,6 +332,8 @@ class EyeContactEffect : GlEffect {
         private const val ANALYSIS_LONG_SIDE = 960f
         /** Largest move, in eye widths: reading offsets measured on the 9a were up to ~0.06. */
         private const val MAX_SHIFT = 0.1f
+        /** Largest lid lift, in eye widths. */
+        private const val MAX_LIFT = 0.12f
         /** Offsets from here (eye widths) fade the correction out, gone by [AWAY_END]: a real look away. */
         private const val AWAY_START = 0.12f
         private const val AWAY_END = 0.2f
@@ -359,12 +371,18 @@ class EyeContactEffect : GlEffect {
             uniform vec4 uEye1;
             uniform vec4 uShape1;
             varying vec2 vTexCoord;
+            // shape: eye width, lid lift, iris shift (x, y). The region reaches up to the brow
+            // and only a little below the eye's centre line, so the upper lid and the iris move
+            // and the lower lid stays put.
             vec2 pull(vec2 p, vec4 eye, vec4 shape) {
               vec2 d = p - eye.xy;
-              float u = dot(d, eye.zw) / shape.x;
-              float v = dot(d, vec2(-eye.w, eye.z)) / shape.y;
-              float t = clamp((1.0 - sqrt(u * u + v * v)) / 0.5, 0.0, 1.0);
-              return shape.zw * t * t * (3.0 - 2.0 * t);
+              vec2 up = vec2(-eye.w, eye.z);
+              float u = dot(d, eye.zw) / (0.75 * shape.x);
+              float h = dot(d, up) / (0.75 * shape.x);
+              float above = max(h, 0.0);
+              float below = max(-h, 0.0) * 2.5;
+              float t = clamp((1.0 - sqrt(u * u + above * above + below * below)) / 0.6, 0.0, 1.0);
+              return (up * shape.y + shape.zw) * t * t * (3.0 - 2.0 * t);
             }
             void main() {
               vec2 p = vTexCoord * uSize;
