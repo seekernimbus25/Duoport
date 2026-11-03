@@ -32,9 +32,9 @@ import kotlin.math.sin
  */
 @OptIn(UnstableApi::class)
 class DesignEffect(private val design: Design, private val live: Boolean = false) : GlEffect {
-    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(context.applicationContext, design, useHdr)
+    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram = Program(context.applicationContext, design, live, useHdr)
 
-    private class Program(private val context: Context, private val design: Design, useHdr: Boolean) :
+    private class Program(private val context: Context, private val design: Design, private val live: Boolean, useHdr: Boolean) :
         BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1) {
 
         private val bgProgram = program(BG_FRAGMENT)
