@@ -87,6 +87,7 @@ android {
 
 dependencies {
     implementation(project(":studio-contracts"))
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     val camerax = "1.5.0"
     implementation("androidx.camera:camera-core:$camerax")
     implementation("androidx.camera:camera-camera2:$camerax")
