@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "DualFrame"
 include(":app")
+
+include(":studio-contracts")
