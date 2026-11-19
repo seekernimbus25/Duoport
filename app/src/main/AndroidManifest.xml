@@ -40,6 +40,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Explicit, consent-gated Studio capture handoff. -->
+        <activity
+            android:name=".StudioCaptureActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            tools:ignore="LockedOrientationActivity" />
+
         <activity
             android:name=".GalleryActivity"
             android:exported="false"
