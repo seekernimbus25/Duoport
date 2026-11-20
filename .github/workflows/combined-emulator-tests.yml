@@ -2,7 +2,7 @@ name: Combined Studio Duoport emulator acceptance
 on:
   push:
     branches: ["work/unified-studio-duoport-apk"]
-    paths: ["app/**", "studio-contracts/**", "scripts/emulator/combined_tests.py", ".github/workflows/combined-emulator-tests.yml"]
+    paths: ["app/**", "studio-contracts/**", "scripts/emulator/combined_tests.py", "scripts/emulator/run_combined.sh", ".github/workflows/combined-emulator-tests.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -42,7 +42,7 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back emulated -camera-front emulated
-          script: python3 -u scripts/emulator/combined_tests.py
+          script: bash scripts/emulator/run_combined.sh
       - name: Upload reports screenshots and crash logs
         if: always()
         uses: actions/upload-artifact@v4
