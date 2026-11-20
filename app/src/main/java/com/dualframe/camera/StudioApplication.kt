@@ -43,7 +43,21 @@ object StudioDiagnostics {
                 options.isSendDefaultPii = false
                 options.isAttachScreenshot = false
                 options.isAttachViewHierarchy = false
-                options.environment = if (BuildConfig.DEBUG) "development" else "sideload"
+                // Tracing and structured logs are enabled only after consent.
+                // Sample all debug traces; limit release traffic and storage costs.
+                options.tracesSampleRate = if (BuildConfig.DEBUG) 1.0 else 0.1
+                options.logs.isEnabled = true
+                // Never record or upload replays of creative work or live camera views.
+                options.sessionReplay.sessionSampleRate = 0.0
+                options.sessionReplay.onErrorSampleRate = 0.0
+                options.release = BuildConfig.APPLICATION_ID + "@" +
+                    BuildConfig.VERSION_NAME + "+" + BuildConfig.VERSION_CODE
+                options.dist = BuildConfig.VERSION_CODE.toString()
+                options.environment = when (BuildConfig.BUILD_TYPE) {
+                    "debug" -> "development"
+                    "play" -> "production"
+                    else -> "sideload"
+                }
             }
             Sentry.setTag("app", "filmmaking-studio-duoport")
             Sentry.setTag("package", BuildConfig.APPLICATION_ID)
@@ -82,7 +96,13 @@ object StudioDiagnostics {
     /** Safe verification event; it never intentionally crashes the application. */
     fun sendTestEvent(): Boolean {
         if (!started) return false
-        Sentry.captureException(IllegalStateException("Studio-Duoport diagnostics integration test"))
+        // A genuine in-app exception with a readable source stack, safely caught:
+        // this validates the running app's Sentry initialization without killing it.
+        try {
+            throw IllegalStateException("Studio-Duoport Sentry in-app verification error")
+        } catch (testError: IllegalStateException) {
+            Sentry.captureException(testError)
+        }
         return true
     }
 }
