@@ -125,16 +125,22 @@ jobs:
           name: DualFrame-play-bundle
           path: DualFrame.aab
 
-      # Every build on main becomes a GitHub Release, so the newest APK is
-      # always one tap away under Releases on the repo page.
+      # Every build on main, and on the current working branch, becomes a GitHub Release, so the
+      # newest APK is always at one fixed link: https://github.com/<owner>/<repo>/releases/latest
+      # (no GitHub sign-in needed, unlike workflow artifacts). Branch builds are labelled test builds.
       - name: Publish release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/relaxed-mayer-pg6qmm'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$GITHUB_REF_NAME" = "main" ]; then
+            title="DualFrame 1.0.${{ github.run_number }}"
+            notes="Built from ${GITHUB_SHA::7}. Download FilmmakingStudio-Duoport.apk below and open it on your phone to install."
+          else
+            title="Test build 1.0.${{ github.run_number }} (not merged to main)"
+            notes="Test build from branch $GITHUB_REF_NAME at ${GITHUB_SHA::7}, for device testing. Not reviewed for release and not merged to main. Download FilmmakingStudio-Duoport.apk below and open it on your phone to install."
+          fi
           gh release create "build-${{ github.run_number }}" FilmmakingStudio-Duoport.apk \
-            --title "DualFrame 1.0.${{ github.run_number }}" \
-            --notes "Built from ${GITHUB_SHA::7}. Download FilmmakingStudio-Duoport.apk below and open it on your phone to install." \
-            --latest
+            --target "$GITHUB_SHA" --title "$title" --notes "$notes" --latest
           # The Play bundle goes up to the Play Console by hand (or later by a Play API step).
           if [ -f DualFrame.aab ]; then gh release upload "build-${{ github.run_number }}" DualFrame.aab; fi
