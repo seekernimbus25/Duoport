@@ -340,12 +340,17 @@ def test_google_sign_in_ui():
     D.tap_xy(btn.cx,btn.cy)
     # The CI emulator has no Google account: Credential Manager must end in a plain message.
     outcomes=["No Google account","Google Play services","cancelled","Google sign-in failed","doesn't support","interrupted"]
-    end=time.time()+40
+    end=time.time()+60; seen=[]; focus=""
     while time.time()<end:
-        if any(D.find(text=o,contains=True,timeout=1) for o in outcomes): break
-        if not D.find(text="Settings",contains=True,timeout=1): D.ashell("input keyevent 4")  # dismiss a sheet
+        nodes=D.dump()
+        if any(D.find(text=o,contains=True,nodes=nodes) for o in outcomes): break
+        focus=D.current_package()
+        seen=[n.text for n in nodes if n.visible and n.text][:25]
+        # Google's own sheet or add-account screen is another app's window: Back dismisses it (= cancelled).
+        if PKG not in focus and time.time()>end-50: D.ashell("input keyevent 4")
+        time.sleep(2)
     else:
-        raise AssertionError("Google sign-in gave no message")
+        raise AssertionError("Google sign-in gave no message. Focus: "+" ".join(focus.split())[:200]+" | screen: "+" / ".join(seen))
     assert "studio" in D.ashell("dumpsys activity activities | grep -m1 ResumedActivity").lower() or D.find(text="Settings",timeout=3),"app left the foreground"
 
 def main():
