@@ -19,6 +19,12 @@ def click(v,contains=False,timeout=12):
 def scroll_click(label,contains=False):
     node=D.find(text=label,contains=contains,timeout=2)
     w,h=D.screen_size()
+    # Just off screen: nudge gently towards it (a full swipe can fling past a nearby target).
+    for _ in range(4):
+        if node is None or h*0.07<=node.cy<=h*0.93: break
+        if node.cy>h*0.93: D.swipe(w//2,int(h*0.70),w//2,int(h*0.45),700)
+        else: D.swipe(w//2,int(h*0.45),w//2,int(h*0.70),700)
+        D.sleep(0.5);node=D.find(text=label,contains=contains,timeout=1)
     if node is None or not (h*0.07<=node.cy<=h*0.93):
         node=D.scroll_to(text=label,contains=contains,max_swipes=8)
     if node is None:

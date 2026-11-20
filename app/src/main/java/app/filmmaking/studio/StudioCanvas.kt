@@ -5,7 +5,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -160,12 +164,17 @@ fun DiagramCanvas(diagram: JSONObject, selected: String?, onSelect: (String?) ->
         }
         .pointerInput(w, h) {
             fun metres(o: Offset) = Offset((o.x / size.width * w).coerceIn(0f, w), (o.y / size.height * h).coerceIn(0f, h))
-            detectDragGestures(
-                onDragStart = { o -> nearest(metres(o))?.let { e -> dragId = e.optString("id"); dragAt = metres(o); select(dragId) } },
-                onDrag = { change, _ -> if (dragId != null) { change.consume(); dragAt = metres(change.position) } },
-                onDragEnd = { dragId?.let { move(it, (round(dragAt.x * 10) / 10).toDouble(), (round(dragAt.y * 10) / 10).toDouble()) }; dragId = null },
-                onDragCancel = { dragId = null }
-            )
+            // Only a touch that starts on an element becomes a drag; any other swipe is left to the page scroll.
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val hit = nearest(metres(down.position)) ?: return@awaitEachGesture
+                val start = awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() } ?: return@awaitEachGesture
+                val id = hit.optString("id")
+                dragId = id; dragAt = metres(start.position); select(id)
+                val finished = drag(start.id) { change -> change.consume(); dragAt = metres(change.position) }
+                if (finished) move(id, (round(dragAt.x * 10) / 10).toDouble(), (round(dragAt.y * 10) / 10).toDouble())
+                dragId = null
+            }
         }) {
         val k = size.width / w
         for (i in 0..w.toInt()) drawLine(gridColor, Offset(i * k, 0f), Offset(i * k, size.height), 1f)

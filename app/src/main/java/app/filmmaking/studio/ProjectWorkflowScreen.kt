@@ -335,7 +335,9 @@ private fun BeatBoard(vm: StudioViewModel, project: StudioRecord, beats: List<St
         if (sorted.isEmpty()) Text("Add visual beats below or accept AI beats above.", style = MaterialTheme.typography.bodySmall)
         else Text("Drag ≡ to reorder. Shot links stay with their beat.", style = MaterialTheme.typography.bodySmall)
         live.forEachIndexed { i, id ->
-            val beat = byId[id] ?: return@forEachIndexed
+          // key(id): a card keeps its composition (and its in-flight drag gesture) when it changes slot.
+          key(id) {
+            val beat = byId[id] ?: return@key
             val b = data(beat); val linked = b.optJSONArray("shotIds").ids()
             val isDragged = dragging == id
             OutlinedCard(Modifier.fillMaxWidth().zIndex(if (isDragged) 1f else 0f)
@@ -344,7 +346,7 @@ private fun BeatBoard(vm: StudioViewModel, project: StudioRecord, beats: List<St
                 Column(Modifier.padding(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("≡", Modifier.size(48.dp).wrapContentSize().semantics { contentDescription = "Drag " + beat.title }
-                            .pointerInput(id) {
+                            .pointerInput(id, stored) {
                                 detectDragGestures(
                                     onDragStart = { dragging = id; dragOffset = 0f },
                                     onDrag = { change, amount ->
@@ -388,6 +390,7 @@ private fun BeatBoard(vm: StudioViewModel, project: StudioRecord, beats: List<St
                     }
                 }
             }
+          }
         }
     }
     linking?.let { beat ->
