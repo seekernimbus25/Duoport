@@ -333,10 +333,11 @@ def test_google_sign_in_ui():
     btn=D.scroll_to(text="Continue with Google",max_swipes=14)
     assert btn,"Continue with Google button missing"
     # The dump reports the label inside a disabled Compose button as enabled, so read the note instead.
-    if D.find(text="set up in this build",contains=True,timeout=2) or \
-            D.scroll_to(text="set up in this build",contains=True,max_swipes=2):
+    # The note sits right under the button; scrolling to look for it can push the button off screen.
+    if D.find(text="set up in this build",contains=True,timeout=2):
         return
-    btn=D.scroll_to(text="Continue with Google",max_swipes=3) or btn
+    btn=scroll_back_to("Continue with Google",max_swipes=4)
+    assert btn,"Continue with Google button not on screen to tap"
     D.tap_xy(btn.cx,btn.cy)
     # The CI emulator has no Google account: Credential Manager must end in a plain message.
     outcomes=["No Google account","Google Play services","cancelled","Google sign-in failed","doesn't support","interrupted"]
