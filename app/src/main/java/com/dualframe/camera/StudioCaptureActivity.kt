@@ -128,22 +128,28 @@ class StudioCaptureActivity : AppCompatActivity() {
                 }
             }.getOrNull()
             val mime = contentResolver.getType(uri) ?: "video/mp4"
+            val measured = if (mime.startsWith("video/")) measure(uri) else null
             records += Recording(
                 mediaId = mediaId, recordingId = recId,
                 role = if (isPrimary) RecordingRole.MASTER else RecordingRole.DERIVATIVE,
                 masterMediaId = if (isPrimary) null else primaryId,
                 outputFormat = label, uri = uri.toString(), displayName = display,
                 mime = mime, sizeBytes = bytes, startedAtMs = saved.createdAt,
-                photo = mime.startsWith("image/")
+                photo = mime.startsWith("image/"),
+                width = measured?.width, height = measured?.height, fps = measured?.fps,
+                videoCodec = measured?.codec, durationMs = measured?.durationMs
             )
         }
         if (records.isEmpty()) { fail("export-failed", "No readable saved media found"); return }
         StudioDiagnostics.breadcrumb("camera", "media_export_ready")
 
+        val master = records.first()
         val result = CameraResult(
             requestId = req.requestId, status = ResultStatus.CAPTURED,
             shotId = req.shot?.shotId, takeNumber = saved.number,
-            capturedAtMs = saved.createdAt, recordings = records, offline = true
+            capturedAtMs = saved.createdAt, recordings = records, offline = true,
+            // Measured from the saved master file, not copied from the plan.
+            actual = ActualSettings(fps = master.fps?.toDoubleOrNull(), codec = master.videoCodec)
         )
         val output = Intent().putExtra(DuoportIntent.EXTRA_RESULT_JSON, json.encodeToString(result))
         val clips = ClipData.newUri(contentResolver, "Duoport media", Uri.parse(records[0].uri))
@@ -153,6 +159,31 @@ class StudioCaptureActivity : AppCompatActivity() {
         setResult(Activity.RESULT_OK, output)
         finish()
     }
+
+    private data class Measured(val width: Int?, val height: Int?, val fps: String?, val codec: String?, val durationMs: Long?)
+
+    /** Technical metadata read from the real file; null fields when the container does not say. */
+    private fun measure(uri: Uri): Measured? = runCatching {
+        var width: Int? = null; var height: Int? = null; var fps: String? = null; var codec: String? = null; var duration: Long? = null
+        val extractor = android.media.MediaExtractor()
+        try {
+            extractor.setDataSource(this, uri, null)
+            for (i in 0 until extractor.trackCount) {
+                val f = extractor.getTrackFormat(i)
+                val m = f.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (!m.startsWith("video/")) continue
+                codec = m.removePrefix("video/")
+                if (f.containsKey(android.media.MediaFormat.KEY_WIDTH)) width = f.getInteger(android.media.MediaFormat.KEY_WIDTH)
+                if (f.containsKey(android.media.MediaFormat.KEY_HEIGHT)) height = f.getInteger(android.media.MediaFormat.KEY_HEIGHT)
+                if (f.containsKey(android.media.MediaFormat.KEY_FRAME_RATE)) fps = runCatching {
+                    f.getInteger(android.media.MediaFormat.KEY_FRAME_RATE).toString()
+                }.getOrElse { f.getFloat(android.media.MediaFormat.KEY_FRAME_RATE).toString() }
+                if (f.containsKey(android.media.MediaFormat.KEY_DURATION)) duration = f.getLong(android.media.MediaFormat.KEY_DURATION) / 1000L
+                break
+            }
+        } finally { extractor.release() }
+        Measured(width, height, fps, codec, duration)
+    }.getOrNull()
 
     private fun fail(code: String, message: String) {
         val req = request

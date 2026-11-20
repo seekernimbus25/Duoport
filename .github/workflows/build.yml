@@ -21,6 +21,13 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Unit tests and independent production-package validation
+        run: bash scripts/validate_export.sh
+
       - name: Verify Sentry client configuration is supplied
         env:
           STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}

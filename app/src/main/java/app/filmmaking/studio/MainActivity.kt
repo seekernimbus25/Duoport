@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.net.Uri
 import android.content.ContentResolver
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,6 +35,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
 import app.filmmaking.studio.data.*
+import app.filmmaking.studio.sync.StudioSync
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -51,7 +53,11 @@ class StudioViewModel(
     private val exporter: StudioExport,
     private val creative: StudioCreativeClient,
     private val verifier: MediaVerification,
-    private val externalCamera: ExternalCameraLog
+    private val externalCamera: ExternalCameraLog,
+    val features: FeatureRepository,
+    private val mediaImport: ExternalMediaImport,
+    val cloud: StudioSync,
+    private val appContext: android.content.Context
 ) : ViewModel() {
     val ideas = repo.ideas().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val projects = repo.projects().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -64,7 +70,20 @@ class StudioViewModel(
         private set
     var apiStatus by mutableStateOf("")
         private set
-    var session by mutableStateOf<StudioAuthClient.Session?>(null)
+    var session by mutableStateOf<StudioAuthClient.Session?>(cloud.sessions.load())
+        private set
+    var syncing by mutableStateOf(false)
+        private set
+    var syncSummary by mutableStateOf(cloud.lastSummary)
+        private set
+    var conflicts by mutableStateOf<List<app.filmmaking.studio.sync.SyncOp.Conflict>>(emptyList())
+        private set
+    var aiBusy by mutableStateOf(false)
+        private set
+    var conversationId by mutableStateOf<String?>(null)
+    var archiveResults by mutableStateOf<List<JSONObject>>(emptyList())
+        private set
+    var importing by mutableStateOf(false)
         private set
     var signingIn by mutableStateOf(false)
         private set
@@ -79,10 +98,19 @@ class StudioViewModel(
         private set
     var lastCost by mutableStateOf<Double?>(null)
         private set
-    private var conversationId = UUID.randomUUID().toString()
     val apiUrl get() = endpoint.baseUrl
 
-    private fun act(block: suspend () -> Unit) {
+    init { if (session != null) StudioSync.schedule(appContext) }
+
+    /** A valid access token (refreshed when close to expiry), or null when signed out. */
+    private suspend fun token(): String? = try {
+        cloud.sessions.fresh()?.also { session = it }?.accessToken
+    } catch (e: AuthException) {
+        if (cloud.sessions.load() == null) session = null
+        throw IllegalStateException("Session expired: sign in again")
+    }
+
+    fun act(block: suspend () -> Unit) {
         viewModelScope.launch {
             try { block() } catch (e: Exception) { notice = e.message ?: "Operation failed" }
         }
@@ -156,13 +184,13 @@ class StudioViewModel(
     }
     fun clearGenerated() { generatedOptions = null }
     fun generateOptions(project: StudioRecord, op: String, instructions: String) {
-        val token = session?.accessToken
-        if (token.isNullOrBlank()) { notice = "Sign in to request AI proposals"; return }
+        if (session == null) { notice = "Sign in to request AI proposals"; return }
         if (generating) return
         generating = true
         generatedOptions = null
         viewModelScope.launch {
             try {
+                val token = token() ?: error("Sign in to request AI proposals")
                 generatedOptions = creative.generate(token, project, op, instructions)
                 notice = "Review the AI proposals; nothing has been saved yet"
             } catch (error: Exception) {
@@ -212,38 +240,197 @@ class StudioViewModel(
         signingIn = true
         viewModelScope.launch {
             try {
-                session = auth.signIn(email, password)
-                notice = "Signed in to the existing Studio Supabase project"
+                session = auth.signIn(email, password).also { cloud.sessions.save(it) }
+                StudioSync.schedule(appContext)
+                StudioSync.requestSoon(appContext)
+                notice = "Signed in. Cloud sync runs in the background; conflicts always wait for you."
             } catch (e: Exception) { notice = e.message ?: "Sign-in failed" }
             finally { signingIn = false }
         }
     }
     fun signOut() {
+        cloud.sessions.clear()
+        StudioSync.cancel(appContext)
         session = null
         chat = emptyList()
         lastCost = null
-        conversationId = UUID.randomUUID().toString()
-        notice = "Signed out locally"
+        conflicts = emptyList()
+        conversationId = null
+        notice = "Signed out on this device. Your local data stays here."
     }
     fun clearChat() {
         chat = emptyList()
         lastCost = null
-        conversationId = UUID.randomUUID().toString()
+        conversationId = null
     }
-    fun ask(message: String, provider: String, project: StudioRecord?) {
-        val token = session?.accessToken
-        if (token == null) { notice = "Sign in before using AI"; return }
+
+    fun syncNow(choices: Map<String, app.filmmaking.studio.sync.Resolution> = emptyMap()) {
+        if (syncing) return
+        syncing = true
+        viewModelScope.launch {
+            try {
+                val report = cloud.run(choices)
+                conflicts = report.conflicts
+                syncSummary = report.summary
+                notice = "Cloud sync: " + report.summary + if (report.errors.isNotEmpty()) " — " + report.errors.first() else ""
+            } catch (e: Exception) {
+                notice = e.message ?: "Sync failed"
+            } finally { syncing = false }
+        }
+    }
+
+    fun importExternalFootage(projectId: String, uris: List<Uri>) {
+        if (importing || uris.isEmpty()) return
+        importing = true
+        viewModelScope.launch {
+            try { notice = mediaImport.import(projectId, uris).message }
+            catch (e: Exception) { notice = e.message ?: "Import failed" }
+            finally { importing = false }
+        }
+    }
+
+    /** Runs an AI op; [accept] stores the result as pending proposals only. */
+    fun aiCreate(projectId: String, op: String, instructions: String, targets: org.json.JSONArray,
+                 sources: org.json.JSONArray, extra: JSONObject = JSONObject(), count: Int = 4,
+                 accept: suspend (JSONObject) -> String) {
+        if (aiBusy) return
+        aiBusy = true
+        viewModelScope.launch {
+            try {
+                val t = token() ?: error("Sign in under Settings to use AI")
+                val result = creative.create(t, projectId, op, instructions, targets, sources, count, extra)
+                notice = accept(result)
+            } catch (e: Exception) { notice = e.message ?: "AI request failed" }
+            finally { aiBusy = false }
+        }
+    }
+
+    fun searchArchive(query: String) = act {
+        val t = token() ?: error("Sign in to search your Creative Archive")
+        val r = creative.searchArchive(t, query)
+        archiveResults = (0 until r.length()).map { r.getJSONObject(it) }
+        notice = archiveResults.size.toString() + " archive passage(s) found"
+    }
+
+    var recordingIdeaId by mutableStateOf<String?>(null)
+        private set
+    private var recorder: android.media.MediaRecorder? = null
+    private var recordingFile: java.io.File? = null
+
+    /** Voice notes are recorded into app-private storage and attached to the idea. */
+    fun toggleVoiceNote(ideaId: String) {
+        val active = recorder
+        if (active != null) {
+            runCatching { active.stop() }; active.release(); recorder = null
+            val file = recordingFile; val id = recordingIdeaId; recordingIdeaId = null
+            if (file != null && id != null && file.length() > 0) act {
+                features.attachToIdea(id, "voice", android.net.Uri.fromFile(file).toString(), "Voice note")
+                notice = "Voice note attached (kept on this device)"
+            }
+            return
+        }
+        if (androidx.core.content.ContextCompat.checkSelfPermission(appContext, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) { notice = "Allow microphone access (open the camera once) to record voice notes"; return }
+        val dir = java.io.File(appContext.filesDir, "voice").apply { mkdirs() }
+        val file = java.io.File(dir, UUID.randomUUID().toString() + ".m4a")
+        try {
+            val r = if (android.os.Build.VERSION.SDK_INT >= 31) android.media.MediaRecorder(appContext) else @Suppress("DEPRECATION") android.media.MediaRecorder()
+            r.setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+            r.setOutputFile(file.absolutePath)
+            r.prepare(); r.start()
+            recorder = r; recordingFile = file; recordingIdeaId = ideaId
+            notice = "Recording voice note… tap Stop when done"
+        } catch (e: Exception) { notice = "Could not start the microphone" }
+    }
+
+    private suspend fun downscaledJpeg(resolver: ContentResolver, uri: Uri, max: Int = 960): ByteArray = withContext(Dispatchers.IO) {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= max) sample *= 2
+        val raw = resolver.openInputStream(uri)?.use {
+            android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+        } ?: error("Cannot read image")
+        val scale = max.toFloat() / maxOf(raw.width, raw.height)
+        val bmp = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(raw, (raw.width * scale).toInt(), (raw.height * scale).toInt(), true) else raw
+        java.io.ByteArrayOutputStream().also { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, it) }.toByteArray()
+    }
+
+    fun addStoryboardFromImage(resolver: ContentResolver, uri: Uri, shotId: String) = act {
+        val bytes = downscaledJpeg(resolver, uri)
+        val dataUri = "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        val projectId = data(requireNotNull(shots.value.find { it.id == shotId })).getString("projectId")
+        features.addStoryboard(projectId, shotId, dataUri, "upload", JSONObject(), conceptual = false)
+        notice = "Storyboard frame added (downscaled to 960 px)"
+    }
+
+    fun attachIdeaImage(resolver: ContentResolver, uri: Uri, ideaId: String) = act {
+        val bytes = downscaledJpeg(resolver, uri)
+        val dir = java.io.File(appContext.filesDir, "idea-images").apply { mkdirs() }
+        val file = java.io.File(dir, UUID.randomUUID().toString() + ".jpg").apply { writeBytes(bytes) }
+        features.attachToIdea(ideaId, "image", android.net.Uri.fromFile(file).toString(), "Image")
+        notice = "Image attached to the idea (kept on this device)"
+    }
+
+    fun probeCamera() = act {
+        val profile = withContext(Dispatchers.Default) { app.filmmaking.studio.camera.CameraProfileProbe.probe(appContext) }
+        features.saveCameraProfile(profile, deviceReported = true)
+        notice = "Camera profile read from this phone (" + profile.optJSONArray("lenses")?.length() + " lens(es))"
+    }
+
+    fun exportFile(projectId: String, format: String, onReady: (ByteArray, String, String) -> Unit) = act {
+        val pkg = exporter.productionPackage(projectId)
+        val base = "studio-production-" + projectId.take(8)
+        when (format) {
+            "json" -> onReady(pkg.toString(2).toByteArray(), "application/json", "$base.json")
+            "md" -> onReady(ProductionPackage.markdown(pkg).toByteArray(), "text/markdown", "$base.md")
+            "csv" -> {
+                val out = java.io.ByteArrayOutputStream()
+                java.util.zip.ZipOutputStream(out).use { z ->
+                    ProductionPackage.csv(pkg).forEach { (n, c) -> z.putNextEntry(java.util.zip.ZipEntry(n)); z.write(c.toByteArray()); z.closeEntry() }
+                }
+                onReady(out.toByteArray(), "application/zip", "$base-csv.zip")
+            }
+            else -> {
+                val images = storyboardImages(pkg)
+                onReady(ProductionPackage.zip(pkg, images), "application/zip", "$base.zip")
+            }
+        }
+        notice = "Export ready to save (metadata only, never footage)"
+    }
+
+    private fun storyboardImages(pkg: JSONObject): Map<String, ByteArray> {
+        val out = mutableMapOf<String, ByteArray>()
+        val index = pkg.optJSONArray("storyboardIndex") ?: return out
+        val frames = workflowItems.value.filter { it.collection == "storyboards" }.associateBy { it.id }
+        for (i in 0 until index.length()) {
+            val f = index.getJSONObject(i); val file = f.optString("file").takeIf { it.isNotBlank() && it != "null" } ?: continue
+            val uri = frames[f.optString("id")]?.let { JSONObject(it.payload).optString("imageUri") } ?: continue
+            runCatching { out[file] = android.util.Base64.decode(uri.substringAfter(","), android.util.Base64.DEFAULT) }
+        }
+        return out
+    }
+    fun ask(message: String, provider: String, project: StudioRecord?, archive: Boolean = false,
+            mode: String = "Explore", role: String = "Creative Partner") {
+        if (session == null) { notice = "Sign in before using AI"; return }
         if (sending || message.isBlank()) return
         val model = if (provider == "anthropic") "claude-haiku-4-5" else "gpt-5-mini"
         sending = true
         viewModelScope.launch {
             try {
-                val reply = ai.ask(
-                    token, conversationId, provider, model, message.trim(), chat, project
-                )
-                chat = chat + AiTurn("user", message.trim()) + AiTurn("assistant", reply.text)
+                val t = token() ?: error("Sign in before using AI")
+                val conv = conversationId ?: features.newConversation(project?.id, if (provider == "anthropic") "Claude" else "OpenAI", mode, role).id
+                    .also { conversationId = it }
+                val history = workflowItems.value.filter { it.collection == "aiMessages" && data(it).optString("conversationId") == conv }
+                    .sortedBy { data(it).optString("at") }.map { AiTurn(data(it).optString("from"), data(it).optString("text")) }
+                // The question is saved before the call, so nothing typed is lost if the network drops.
+                features.addMessage(conv, "user", message.trim())
+                val reply = ai.ask(t, conv, provider, model, message.trim(), history, project, archive, mode, role)
+                features.addMessage(conv, "assistant", reply.text, reply.citations)
                 lastCost = reply.costUsd
-                notice = "AI response received"
+                notice = "AI response saved in this conversation"
             } catch (e: Exception) {
                 notice = e.message ?: "AI request failed"
             } finally { sending = false }
@@ -264,18 +451,22 @@ class MainActivity : ComponentActivity() {
         val creative = StudioCreativeClient(endpoint)
         val verifier = MediaVerification(this, StudioDatabase.get(this))
         val externalCamera = ExternalCameraLog(StudioDatabase.get(this))
+        val features = FeatureRepository(StudioDatabase.get(this))
+        val mediaImport = ExternalMediaImport(this, StudioDatabase.get(this))
+        val cloud = app.filmmaking.studio.sync.StudioSync(this)
         setContent {
             val vm: StudioViewModel = viewModel(factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    StudioViewModel(repo, endpoint, auth, ai, importer, workflow, exporter, creative, verifier, externalCamera) as T
+                    StudioViewModel(repo, endpoint, auth, ai, importer, workflow, exporter, creative, verifier, externalCamera,
+                        features, mediaImport, cloud, applicationContext) as T
             })
             MaterialTheme { StudioHome(vm) }
         }
     }
 }
 
-private fun data(record: StudioRecord): JSONObject = JSONObject(record.payload)
+internal fun data(record: StudioRecord): JSONObject = JSONObject(record.payload)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -301,6 +492,33 @@ private fun StudioHome(vm: StudioViewModel) {
     ) { uri ->
         if (uri != null) vm.restore(uri, context.contentResolver)
     }
+    // Exports: bytes are written only to a document the user picks.
+    var pendingFile by remember { mutableStateOf<ByteArray?>(null) }
+    fun writeTo(uri: Uri?) {
+        val bytes = pendingFile; pendingFile = null
+        if (uri == null || bytes == null) return
+        runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("Cannot write") }
+            .onSuccess { vm.report("Export saved outside the app") }.onFailure { vm.report("Failed to save export: " + it.message) }
+    }
+    val saveJson = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { writeTo(it) }
+    val saveMd = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { writeTo(it) }
+    val saveZip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { writeTo(it) }
+    var importProjectId by rememberSaveable { mutableStateOf<String?>(null) }
+    val pickFootage = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val pid = importProjectId; importProjectId = null
+        if (pid != null && uris.isNotEmpty()) vm.importExternalFootage(pid, uris)
+    }
+    var storyboardShot by rememberSaveable { mutableStateOf<String?>(null) }
+    val pickStoryboard = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val shot = storyboardShot; storyboardShot = null
+        if (uri != null && shot != null) vm.addStoryboardFromImage(context.contentResolver, uri, shot)
+    }
+    var imageIdea by rememberSaveable { mutableStateOf<String?>(null) }
+    val pickIdeaImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val idea = imageIdea; imageIdea = null
+        if (uri != null && idea != null) vm.attachIdeaImage(context.contentResolver, uri, idea)
+    }
+    var shootMode by rememberSaveable { mutableStateOf(false) }
     val ideas by vm.ideas.collectAsState()
     val projects by vm.projects.collectAsState()
     val scenes by vm.scenes.collectAsState()
@@ -322,6 +540,33 @@ private fun StudioHome(vm: StudioViewModel) {
         else if (req == null || shot == null) vm.report("Unmatched camera response: nothing imported.")
         else vm.importRecording(shot, req, result)
     }
+    fun recordShot(currentProject: StudioRecord, currentShot: StudioRecord) {
+        val p = data(currentShot)
+        val reqId = UUID.randomUUID().toString()
+        val shotSize = p.optJSONObject("camera")?.optString("shotSize") ?: "SHOT"
+        val allowed = setOf("EST","EWS","WS","FS","MWS","MS","MCU","CU","ECU","OTS","POV","2S","INS","LOW","HIGH","TOP","TRK","SHOT")
+        val request = OpenCameraRequest(
+            requestId = reqId, mode = OpenMode.SHOT,
+            shot = ShotContext(
+                projectId = currentProject.id, projectName = currentProject.title,
+                sceneId = p.optString("sceneId"), shotId = currentShot.id, shotCode = p.optString("code"),
+                shotType = if (shotSize in allowed) shotSize else "SHOT", title = currentShot.title,
+                instructions = p.optString("description"),
+                takeNumber = takes.count { data(it).optString("shotId") == currentShot.id } + 1
+            ),
+            teleprompter = p.optString("scriptPassage").takeIf { it.isNotBlank() }?.let { Teleprompter(it) }
+        )
+        pendingRequestId = reqId
+        pendingShotId = currentShot.id
+        try { launcher.launch(request) }
+        catch (error: ActivityNotFoundException) {
+            pendingRequestId = null; pendingShotId = null
+            vm.report("Install Duoport build with StudioCaptureActivity to film this shot.")
+        } catch (error: SecurityException) {
+            pendingRequestId = null; pendingShotId = null
+            vm.report("Duoport rejected the capture request.")
+        }
+    }
     val currentProject = projects.find { it.id == projectId }
     val currentShot = shots.find { it.id == shotId }
     val title = currentShot?.title ?: currentProject?.title ?: "Filmmaking Studio"
@@ -332,7 +577,8 @@ private fun StudioHome(vm: StudioViewModel) {
             navigationIcon = {
                 if (currentProject != null || currentShot != null) {
                     TextButton(onClick = {
-                        if (shotId != null) shotId = null
+                        if (shootMode) shootMode = false
+                        else if (shotId != null) shotId = null
                         else if (workspaceOpen) workspaceOpen = false
                         else projectId = null
                     }) { Text("Back") }
@@ -345,7 +591,7 @@ private fun StudioHome(vm: StudioViewModel) {
                     selected = tab == item,
                     onClick = {
                         StudioDiagnostics.breadcrumb("studio", "tab_" + item.lowercase())
-                        tab = item; projectId = null; shotId = null; workspaceOpen = false
+                        tab = item; projectId = null; shotId = null; workspaceOpen = false; shootMode = false
                     },
                     icon = { Text(when (item) {
                         "Home" -> "⌂"; "Ideas" -> "✦"; "Projects" -> "▣"; "AI" -> "✧"; else -> "⚙"
@@ -372,66 +618,27 @@ private fun StudioHome(vm: StudioViewModel) {
                     vm::rateTake,
                     vm::preferTake,
                     { filename -> vm.logExternalCameraFilename(currentShot.id, filename) },
-                    vm::removeExternalCameraReference
-                ) {
-                    val p = data(currentShot)
-                    val reqId = UUID.randomUUID().toString()
-                    val shotSize = p.optJSONObject("camera")?.optString("shotSize") ?: "SHOT"
-                    val allowed = setOf("EST","EWS","WS","FS","MWS","MS","MCU","CU","ECU","OTS","POV","2S","INS","LOW","HIGH","TOP","TRK","SHOT")
-                    val request = OpenCameraRequest(
-                        requestId = reqId, mode = OpenMode.SHOT,
-                        shot = ShotContext(
-                            projectId = currentProject.id, projectName = currentProject.title,
-                            sceneId = p.optString("sceneId"), shotId = currentShot.id,
-                            shotCode = p.optString("code"),
-                            shotType = if (shotSize in allowed) shotSize else "SHOT",
-                            title = currentShot.title,
-                            instructions = p.optString("description"),
-                            takeNumber = takes.count { data(it).optString("shotId") == currentShot.id } + 1
-                        ),
-                        teleprompter = p.optString("scriptPassage").takeIf { it.isNotBlank() }?.let {
-                            Teleprompter(it)
-                        }
-                    )
-                    pendingRequestId = reqId
-                    pendingShotId = currentShot.id
-                    try { launcher.launch(request) }
-                    catch (error: ActivityNotFoundException) {
-                        pendingRequestId = null
-                        pendingShotId = null
-                        vm.report("Install Duoport build with StudioCaptureActivity to film this shot.")
-                    }
-                    catch (error: SecurityException) {
-                        pendingRequestId = null
-                        pendingShotId = null
-                        vm.report("Duoport rejected the capture request.")
-                    }
-                }
+                    vm::removeExternalCameraReference,
+                    vm
+                ) { recordShot(currentProject, currentShot) }
+                currentProject != null && shootMode -> ShootModeScreen(
+                    vm, currentProject, shots.filter { data(it).optString("projectId") == currentProject.id }, workItems,
+                    { s -> recordShot(currentProject, s) }, { shootMode = false }
+                )
                 currentProject != null && workspaceOpen -> ProjectWorkflowScreen(
-                    currentProject,
+                    vm, currentProject,
+                    scenes.filter { data(it).optString("projectId") == currentProject.id }.sortedBy { data(it).optInt("order") },
                     shots.filter { data(it).optString("projectId") == currentProject.id },
-                    workItems.filter {
-                        data(it).optString("projectId") == currentProject.id
-                    },
-                    { kind, title, detail, shot -> vm.createWorkflow(currentProject.id, kind, title, detail, shot) },
-                    vm::updateWorkflow,
-                    { id -> vm.approveTreatment(currentProject.id, id) },
-                    vm::approveScript,
-                    vm::toggleChecklist,
-                    vm.session != null,
-                    vm.generating,
-                    vm.generatedOptions?.takeIf { it.projectId == currentProject.id },
-                    { op, instructions -> vm.generateOptions(currentProject, op, instructions) },
-                    vm::acceptGenerated,
-                    vm::clearGenerated,
-                    vm.verifying,
-                    { vm.verifyRecordedMedia(currentProject.id) },
-                    {
-                        vm.exportProduction(currentProject.id) { body ->
-                            pendingExport = body
-                            createJson.launch("studio-production-" + currentProject.id.take(8) + ".json")
+                    workItems,
+                    onExport = { format ->
+                        vm.exportFile(currentProject.id, format) { bytes, mime, name ->
+                            pendingFile = bytes
+                            when (mime) { "application/json" -> saveJson.launch(name); "text/markdown" -> saveMd.launch(name); else -> saveZip.launch(name) }
                         }
-                    }
+                    },
+                    onImportFootage = { importProjectId = currentProject.id; pickFootage.launch(arrayOf("video/*", "audio/*", "image/*", "application/octet-stream")) },
+                    onPickStoryboard = { id -> storyboardShot = id; pickStoryboard.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onShootMode = { shootMode = true }
                 )
                 currentProject != null -> ProjectScreen(
                     currentProject, scenes.filter { data(it).optString("projectId") == currentProject.id },
@@ -439,10 +646,15 @@ private fun StudioHome(vm: StudioViewModel) {
                     { vm.addScene(currentProject.id, it) }, vm::addShot, { shotId = it }, { workspaceOpen = true }
                 )
                 tab == "Home" -> HomeScreen(ideas.size, projects.size, shots.size, { tab = it }, { context.startActivity(Intent(context, DuoportMainActivity::class.java)) })
-                tab == "Ideas" -> IdeasScreen(ideas, vm::captureIdea, vm::convertIdea)
+                tab == "Ideas" -> IdeasScreen(ideas, vm::captureIdea, vm::convertIdea) { idea ->
+                    IdeaExtras(vm, idea, {
+                        imageIdea = idea.id
+                        pickIdeaImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }, vm.recordingIdeaId == idea.id) { vm.toggleVoiceNote(idea.id) }
+                }
                 tab == "Projects" -> ProjectsScreen(projects, vm::createProject, { projectId = it })
-                tab == "AI" -> AiScreen(vm, projects)
-                else -> SettingsScreen(vm,
+                tab == "AI" -> AiDirectorScreen(vm, projects, workItems)
+                else -> SettingsScreen(vm, workItems.firstOrNull { it.collection == "cameraProfiles" },
                     {
                         vm.backup { body ->
                             pendingExport = body
@@ -475,7 +687,8 @@ private fun HomeScreen(ideas: Int, projects: Int, shots: Int, navigate: (String)
 }
 
 @Composable
-private fun IdeasScreen(ideas: List<StudioRecord>, capture: (String) -> Unit, convert: (String) -> Unit) {
+private fun IdeasScreen(ideas: List<StudioRecord>, capture: (String) -> Unit, convert: (String) -> Unit,
+                        extras: @Composable (StudioRecord) -> Unit = {}) {
     var entry by rememberSaveable { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedTextField(value = entry, onValueChange = { entry = it }, modifier = Modifier.fillMaxWidth(),
@@ -489,6 +702,7 @@ private fun IdeasScreen(ideas: List<StudioRecord>, capture: (String) -> Unit, co
                         Text(data(item).optString("original"), style = MaterialTheme.typography.bodyMedium)
                         if (data(item).optString("status") == "Converted") Text("Converted to film")
                         else TextButton(onClick = { convert(item.id) }) { Text("Develop as film") }
+                        extras(item)
                     }
                 }
             }
@@ -571,6 +785,7 @@ private fun ShotScreen(
     preferTake: (String) -> Unit,
     addExternalFile: (String) -> Unit,
     removeExternalFile: (String) -> Unit,
+    vm: StudioViewModel,
     onShoot: () -> Unit
 ) {
     val plan = data(shot)
@@ -762,79 +977,20 @@ private fun ShotScreen(
                     }
                     if (!t.optBoolean("preferred"))
                         TextButton(onClick = { preferTake(take.id) }) { Text("Choose as preferred take") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AiScreen(vm: StudioViewModel, projects: List<StudioRecord>) {
-    var input by rememberSaveable { mutableStateOf("") }
-    var provider by rememberSaveable { mutableStateOf("anthropic") }
-    var projectId by rememberSaveable { mutableStateOf<String?>(null) }
-    var showProjects by remember { mutableStateOf(false) }
-    val project = projects.find { it.id == projectId }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("AI Director", style = MaterialTheme.typography.titleLarge)
-        if (vm.session == null) {
-            Text("Sign in under Settings using your existing Studio Supabase account.")
-            Text("Model API keys are securely stored on AWS, not in this APK.",
-                style = MaterialTheme.typography.bodySmall)
-            return@Column
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = provider == "anthropic", onClick = { provider = "anthropic" },
-                label = { Text("Claude Haiku") })
-            FilterChip(selected = provider == "openai", onClick = { provider = "openai" },
-                label = { Text("GPT-5 mini") })
-        }
-        Box {
-            OutlinedButton(onClick = { showProjects = true }) {
-                Text("Film context: " + (project?.title ?: "General conversation"))
-            }
-            DropdownMenu(expanded = showProjects, onDismissRequest = { showProjects = false }) {
-                DropdownMenuItem(text = { Text("General conversation") }, onClick = {
-                    projectId = null; showProjects = false; vm.clearChat()
-                })
-                projects.forEach { p ->
-                    DropdownMenuItem(text = { Text(p.title) }, onClick = {
-                        projectId = p.id; showProjects = false; vm.clearChat()
-                    })
-                }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Chat session is in memory only", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { vm.clearChat() }) { Text("Clear") }
-        }
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(vm.chat) { turn ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(if (turn.from == "user") "You" else "AI Director",
-                            style = MaterialTheme.typography.labelLarge)
-                        Text(turn.text)
+                    t.optJSONObject("settings")?.takeIf { it.length() > 0 }?.let { st ->
+                        Text("Actual: " + listOf("frameRate", "resolution", "codec", "lens").mapNotNull { k -> st.optString(k).takeIf { it.isNotBlank() } }
+                            .joinToString(" · ") + " (" + st.optString("source") + ")", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
         }
-        if (vm.lastCost != null) Text(
-            "Last estimated provider cost: $" + String.format("%.4f", vm.lastCost),
-            style = MaterialTheme.typography.labelSmall
-        )
-        OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.fillMaxWidth(),
-            label = { Text("Ask about story, shots, tone or direction") }, maxLines = 4)
-        Button(
-            enabled = input.isNotBlank() && !vm.sending,
-            onClick = { vm.ask(input, provider, project); input = "" },
-            modifier = Modifier.fillMaxWidth()
-        ) { Text(if (vm.sending) "Thinking…" else "Send to AI Director") }
+        HorizontalDivider()
+        TakeExtras(vm, shot, takes.sortedBy { data(it).optInt("number") })
     }
 }
 
 @Composable
-private fun SettingsScreen(vm: StudioViewModel, onBackup: () -> Unit, onRestore: () -> Unit) {
+private fun SettingsScreen(vm: StudioViewModel, cameraProfile: StudioRecord?, onBackup: () -> Unit, onRestore: () -> Unit) {
     val crashContext = LocalContext.current
     var crashConsent by remember { mutableStateOf(StudioDiagnostics.isEnabled(crashContext)) }
     var url by rememberSaveable { mutableStateOf(vm.apiUrl) }
@@ -866,10 +1022,14 @@ private fun SettingsScreen(vm: StudioViewModel, onBackup: () -> Unit, onRestore:
             }
         } else {
             Text("Signed in as " + session.email)
-            Text("Access token is kept only in memory; reopening the app requires signing in again.",
+            Text("You stay signed in on this device; the session renews itself and is never included in backups.",
                 style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { vm.signOut() }) { Text("Sign out") }
         }
+        HorizontalDivider()
+        CloudSyncSection(vm)
+        HorizontalDivider()
+        CameraProfileSection(vm, cameraProfile)
         HorizontalDivider()
         Text("Crash diagnostics", style = MaterialTheme.typography.titleLarge)
         Text("Share anonymous crash reports and ANR diagnostics with the Studio development team. " +
@@ -902,6 +1062,7 @@ private fun SettingsScreen(vm: StudioViewModel, onBackup: () -> Unit, onRestore:
         Text("Offline local storage", style = MaterialTheme.typography.titleMedium)
         Button(onClick = onBackup) { Text("Export offline backup JSON") }
         OutlinedButton(onClick = onRestore) { Text("Import backup (refuses conflicting records)") }
-        Text("Ideas, films, scenes and shot plans are saved on this device. Cloud sync and camera recording integration are not yet available.")
+        Text("Everything is saved on this device first. Cloud sync (when signed in) copies it to your Studio account; footage itself never leaves the phone.",
+            style = MaterialTheme.typography.bodySmall)
     }
 }

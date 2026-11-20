@@ -8,7 +8,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 data class AiTurn(val from: String, val text: String)
-data class AiAnswer(val text: String, val costUsd: Double?)
+data class AiAnswer(val text: String, val costUsd: Double?, val citations: JSONArray = JSONArray())
 
 /**
  * Authenticated AI Director chat via the user's AWS Lambda URL.
@@ -23,7 +23,10 @@ class StudioAiClient(private val endpoint: ApiEndpoint) {
         model: String,
         message: String,
         history: List<AiTurn>,
-        project: StudioRecord?
+        project: StudioRecord?,
+        useArchive: Boolean = false,
+        mode: String = "Explore",
+        role: String = "Creative Partner"
     ): AiAnswer = withContext(Dispatchers.IO) {
         require(provider == "anthropic" || provider == "openai")
         require(endpoint.baseUrl.startsWith("https://")) { "Configure an HTTPS AI endpoint in Settings" }
@@ -47,14 +50,15 @@ class StudioAiClient(private val endpoint: ApiEndpoint) {
             .put("conversationId", conversationId)
             .put("provider", provider)
             .put("model", model)
-            .put("mode", "Explore")
-            .put("role", "Creative Partner")
+            .put("mode", mode)
+            .put("role", role)
             .put("experiment", false)
             .put("screen", "android/ai-director")
             .put("message", message.take(4000))
             .put("history", h)
             .put("sources", sources)
             .put("allowedTargets", targets)
+        if (useArchive) payload.put("archive", JSONObject().put("enabled", true))
 
         val c = URL(endpoint.baseUrl.trimEnd('/') + "/api/v1/ai/chat").openConnection() as HttpURLConnection
         try {
@@ -75,6 +79,7 @@ class StudioAiClient(private val endpoint: ApiEndpoint) {
             val combined = StringBuilder()
             var complete: String? = null
             var cost: Double? = null
+            var citations = JSONArray()
             c.inputStream.bufferedReader().useLines { stream ->
                 stream.forEach { line ->
                     if (line.isBlank()) return@forEach
@@ -85,6 +90,7 @@ class StudioAiClient(private val endpoint: ApiEndpoint) {
                             complete = event.optString("text").ifBlank { combined.toString() }
                             val usage = event.optJSONObject("usage")
                             cost = usage?.optDouble("costUsd")?.takeIf { it.isFinite() }
+                            citations = event.optJSONArray("citations") ?: JSONArray()
                             if (event.optString("status") == "error")
                                 throw IllegalStateException("AI stream interrupted; please retry")
                         }
@@ -94,7 +100,7 @@ class StudioAiClient(private val endpoint: ApiEndpoint) {
             }
             val result = complete ?: combined.toString()
             require(result.isNotBlank()) { "AI returned no text; please retry" }
-            AiAnswer(result, cost)
+            AiAnswer(result, cost, citations)
         } finally { c.disconnect() }
     }
 }

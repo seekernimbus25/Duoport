@@ -87,4 +87,51 @@ class StudioCreativeClient(private val endpoint: ApiEndpoint) {
             )
         } finally { c.disconnect() }
     }
+
+    /**
+     * Any `/api/v1/ai/create` op (shots, critique, schedule, setup, production, refine_*).
+     * Returns the raw `result`; the caller stores it as a PENDING proposal, never as accepted data.
+     */
+    suspend fun create(
+        accessToken: String, projectId: String, op: String, instructions: String,
+        targets: JSONArray, sources: JSONArray, count: Int = 4, extra: JSONObject = JSONObject()
+    ): JSONObject = withContext(Dispatchers.IO) {
+        require(op in setOf("shots", "critique", "schedule", "setup", "production", "refine_treatment", "refine_beat")) { "Unsupported AI operation" }
+        val body = JSONObject().put("op", op).put("provider", "anthropic").put("model", "claude-haiku-4-5")
+            .put("projectId", projectId).put("instructions", instructions.take(2000)).put("count", count.coerceIn(1, 8))
+            .put("targets", targets).put("sources", sources)
+        extra.keys().forEach { body.put(it, extra.get(it)) }
+        post(accessToken, "/api/v1/ai/create", body)
+    }
+
+    /** Hybrid semantic + keyword search over the caller's own Creative Archive (RLS-scoped). */
+    suspend fun searchArchive(accessToken: String, query: String, limit: Int = 8): JSONArray = withContext(Dispatchers.IO) {
+        require(query.isNotBlank()) { "Enter something to search for" }
+        post(accessToken, "/api/v1/archive/search", JSONObject().put("query", query.take(500)).put("limit", limit.coerceIn(1, 30)))
+            .optJSONArray("results") ?: JSONArray()
+    }
+
+    private fun post(accessToken: String, path: String, payload: JSONObject): JSONObject {
+        require(accessToken.isNotBlank()) { "Sign in first" }
+        val base = endpoint.baseUrl
+        require(base.startsWith("https://")) { "Configure an HTTPS AI backend URL" }
+        val c = URL(base.trimEnd('/') + path).openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = "POST"; c.doOutput = true
+            c.connectTimeout = 15000; c.readTimeout = 180000
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("Authorization", "Bearer " + accessToken)
+            c.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(payload.toString()) }
+            val status = c.responseCode
+            val text = (if (status in 200..299) c.inputStream else c.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val json = runCatching { JSONObject(text) }.getOrNull()
+            if (status !in 200..299) throw IllegalStateException((json?.optString("error")?.takeIf { it.isNotBlank() }
+                ?: "AI request failed (HTTP $status)").take(260))
+            val response = json ?: error("AI service returned no JSON")
+            return if (path.endsWith("/ai/create")) (response.optJSONObject("result") ?: error("AI returned no structured result"))
+                .put("_usage", response.optJSONObject("usage") ?: JSONObject())
+                .put("_citations", response.optJSONArray("citations") ?: JSONArray())
+            else response
+        } finally { c.disconnect() }
+    }
 }

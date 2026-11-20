@@ -1,7 +1,7 @@
 name: Combined Studio Duoport emulator acceptance
 on:
   push:
-    branches: ["work/unified-studio-duoport-apk"]
+    branches: ["work/unified-studio-duoport-apk", "claude/**"]
     paths: ["app/**", "studio-contracts/**", "scripts/emulator/combined_tests.py", "scripts/emulator/run_combined.sh", ".github/workflows/combined-emulator-tests.yml"]
   workflow_dispatch:
 permissions:

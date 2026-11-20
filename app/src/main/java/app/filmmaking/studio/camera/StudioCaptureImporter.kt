@@ -70,6 +70,7 @@ class StudioCaptureImporter(private val context: Context, private val db: Studio
                 if (file.height != null) media.put("height", file.height)
                 if (file.fps != null) media.put("frameRate", file.fps)
                 file.durationMs?.let { media.put("durationSec", it / 1000.0) }
+                if (file.videoCodec != null) media.put("videoCodec", file.videoCodec)
                 if (file.sha256 != null) media.put("checksum", JSONObject().put("algo","sha256").put("value",file.sha256))
                 dao.upsert(StudioRecord("media", file.mediaId, file.displayName, media.toString()))
                 ids.put(file.mediaId)
@@ -78,7 +79,7 @@ class StudioCaptureImporter(private val context: Context, private val db: Studio
             val take = JSONObject().put("id", takeId).put("projectId", projectId)
                 .put("shotId", expectedShotId).put("number", number).put("mediaAssetIds", ids)
                 .put("durationSec", duration).put("capturedAt", date)
-                .put("settings", JSONObject()).put("preferred", false).put("favourite", false)
+                .put("settings", actualSettings(result)).put("preferred", false).put("favourite", false)
                 .put("quality", "review").put("directorNotes", "")
                 .put("continuityNotes", "").put("kind", "picture")
                 .put("recordingId", result.recordings.first().recordingId)
@@ -90,5 +91,21 @@ class StudioCaptureImporter(private val context: Context, private val db: Studio
                 updatedAt = System.currentTimeMillis(), dirty = true))
             "Take " + number + " imported (" + result.recordings.size + " actual file(s), not yet checksum verified)"
         }
+    }
+
+    /** Take.settings holds ACTUAL capture settings only: what Duoport reported or measured. */
+    private fun actualSettings(result: CameraResult): JSONObject {
+        val out = JSONObject()
+        val master = result.recordings.firstOrNull { it.role == RecordingRole.MASTER }
+        val a = result.actual
+        (a?.fps?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() } ?: master?.fps)?.let { out.put("frameRate", it) }
+        if (master?.width != null && master.height != null) out.put("resolution", "${master.width}x${master.height}")
+        a?.lensLabel?.let { out.put("lens", it) }
+        a?.profile?.let { out.put("profile", it) }
+        a?.iso?.let { out.put("iso", it.toString()) }
+        a?.whiteBalance?.let { out.put("whiteBalance", it) }
+        (a?.codec ?: master?.videoCodec)?.let { out.put("codec", it) }
+        if (out.length() > 0) out.put("source", "device-reported")
+        return out
     }
 }

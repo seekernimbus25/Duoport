@@ -44,15 +44,42 @@ interface StudioDao {
 
     @Query("UPDATE studio_records SET deletedAt = :at, updatedAt = :at, dirty = 1 WHERE collection = :collection AND id = :id")
     suspend fun tombstone(collection: String, id: String, at: Long = System.currentTimeMillis())
+
+    @Query("SELECT * FROM sync_base WHERE userId = :userId")
+    suspend fun syncBase(userId: String): List<SyncBaseRow>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveSyncBase(rows: List<SyncBaseRow>)
 }
 
-@Database(entities = [StudioRecord::class], version = 1, exportSchema = false)
+/**
+ * Per-user, per-record sync base: the cloud version and payload hash this device last agreed on.
+ * Keyed by cloud table (artifact versions are separate rows in the cloud).
+ */
+@Entity(tableName = "sync_base", primaryKeys = ["userId", "cloudTable", "id"])
+data class SyncBaseRow(
+    val userId: String,
+    val cloudTable: String,
+    val id: String,
+    val version: Long,
+    val hash: String
+)
+
+val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `sync_base` (`userId` TEXT NOT NULL, `cloudTable` TEXT NOT NULL, " +
+            "`id` TEXT NOT NULL, `version` INTEGER NOT NULL, `hash` TEXT NOT NULL, PRIMARY KEY(`userId`, `cloudTable`, `id`))")
+    }
+}
+
+@Database(entities = [StudioRecord::class, SyncBaseRow::class], version = 2, exportSchema = false)
 abstract class StudioDatabase : RoomDatabase() {
     abstract fun dao(): StudioDao
     companion object {
         @Volatile private var instance: StudioDatabase? = null
         fun get(context: Context): StudioDatabase = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(context.applicationContext, StudioDatabase::class.java, "studio.db").build().also { instance = it }
+            instance ?: Room.databaseBuilder(context.applicationContext, StudioDatabase::class.java, "studio.db")
+                .addMigrations(MIGRATION_1_2).build().also { instance = it }
         }
     }
 }
