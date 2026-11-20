@@ -20,8 +20,7 @@ import java.util.UUID
  * shot-list exporter; no simulated media or fabricated camera metadata is returned.
  * Wait until exports have finished before backing out of the camera screen.
  *
- * Dev caller validation is package-based. Production should additionally pin the
- * trusted Studio signing certificate and use a stable release signing identity.
+ * This Activity is not exported. Only this app can invoke the internal camera handoff.
  */
 class StudioCaptureActivity : AppCompatActivity() {
     private val json = Json { ignoreUnknownKeys = true }
@@ -35,7 +34,7 @@ class StudioCaptureActivity : AppCompatActivity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
-        if (callingPackage != "app.filmmaking.studio" ||
+        if (intent?.component?.packageName != packageName ||
             intent?.action != DuoportIntent.ACTION_OPEN) {
             setResult(Activity.RESULT_CANCELED); finish(); return
         }
