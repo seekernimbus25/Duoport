@@ -25,13 +25,22 @@ jobs:
         run: ./gradlew assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk DualFrame.apk
+        run: cp app/build/outputs/apk/release/app-release.apk FilmmakingStudio-Duoport.apk
+
+      # One package, ONE launcher: Studio. Duoport's native camera is internal.
+      - name: Verify combined launcher and package
+        run: |
+          AAPT=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)
+          test -n "$AAPT"
+          "$AAPT" dump badging FilmmakingStudio-Duoport.apk > /tmp/studio-badging.txt
+          grep -F "package: name='com.dualframe.camera'" /tmp/studio-badging.txt
+          grep -F "launchable-activity: name='app.filmmaking.studio.MainActivity'" /tmp/studio-badging.txt
 
       # Google Play needs native libraries aligned for 16 KB memory pages (0x4000 or more).
       - name: Report native library page alignment
         run: |
           rm -rf /tmp/apk && mkdir -p /tmp/apk
-          unzip -q -o DualFrame.apk 'lib/arm64-v8a/*' -d /tmp/apk || true
+          unzip -q -o FilmmakingStudio-Duoport.apk 'lib/arm64-v8a/*' -d /tmp/apk || true
           for so in /tmp/apk/lib/arm64-v8a/*.so; do
             [ -f "$so" ] || continue
             echo "$(basename "$so"): $(readelf -lW "$so" | awk '/LOAD/ {print $NF; exit}')"
@@ -44,10 +53,10 @@ jobs:
           python3 - <<'PY'
           import struct, sys, zipfile
           bad = []
-          for i in zipfile.ZipFile("DualFrame.apk").infolist():
+          for i in zipfile.ZipFile("FilmmakingStudio-Duoport.apk").infolist():
               if not (i.filename.endswith(".so") and ("arm64" in i.filename or "x86_64" in i.filename)):
                   continue
-              d = zipfile.ZipFile("DualFrame.apk").read(i)
+              d = zipfile.ZipFile("FilmmakingStudio-Duoport.apk").read(i)
               phoff = struct.unpack_from("<Q", d, 0x20)[0]
               size, count = struct.unpack_from("<HH", d, 0x36)
               aligns = [struct.unpack_from("<Q", d, phoff + k * size + 0x30)[0]
@@ -61,8 +70,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DualFrame-apk
-          path: DualFrame.apk
+          name: Studio-Duoport-apk
+          path: FilmmakingStudio-Duoport.apk
 
       # Google Play bundle, signed with the private upload key from repository secrets.
       # Skipped until the secrets exist (see docs/PLAY_STORE.md).
@@ -98,9 +107,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "build-${{ github.run_number }}" DualFrame.apk \
+          gh release create "build-${{ github.run_number }}" FilmmakingStudio-Duoport.apk \
             --title "DualFrame 1.0.${{ github.run_number }}" \
-            --notes "Built from ${GITHUB_SHA::7}. Download DualFrame.apk below and open it on your phone to install." \
+            --notes "Built from ${GITHUB_SHA::7}. Download FilmmakingStudio-Duoport.apk below and open it on your phone to install." \
             --latest
           # The Play bundle goes up to the Play Console by hand (or later by a Play API step).
           if [ -f DualFrame.aab ]; then gh release upload "build-${{ github.run_number }}" DualFrame.aab; fi
