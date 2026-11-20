@@ -187,7 +187,7 @@ fun IdeaExtras(vm: StudioViewModel, idea: StudioRecord, onPickImage: () -> Unit,
 
 /** #4: persistent conversations, mode / role, archive retrieval with citations. */
 @Composable
-fun AiDirectorScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: List<StudioRecord>) {
+fun AiDirectorScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: List<StudioRecord>, onAddDocument: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     var provider by rememberSaveable { mutableStateOf("anthropic") }
     var projectId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -196,7 +196,6 @@ fun AiDirectorScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: Lis
     var archive by rememberSaveable { mutableStateOf(false) }
     var showProjects by remember { mutableStateOf(false) }
     var showConversations by remember { mutableStateOf(false) }
-    var query by rememberSaveable { mutableStateOf("") }
     val project = projects.find { it.id == projectId }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("AI Director", style = MaterialTheme.typography.titleLarge)
@@ -262,6 +261,9 @@ fun AiDirectorScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: Lis
                 Text(if (vm.sending) "Thinking…" else "Send to AI Director")
             }
             OutlinedButton(enabled = input.isNotBlank(), onClick = { vm.searchArchive(input) }) { Text("Search archive") }
+        }
+        TextButton(enabled = !vm.aiBusy, onClick = onAddDocument) {
+            Text(if (vm.aiBusy) "Indexing…" else "Add PDF / DOCX / text to my private archive")
         }
     }
 }

@@ -305,6 +305,23 @@ class StudioViewModel(
         }
     }
 
+    private val archive by lazy { ArchiveClient(appContext, endpoint) }
+    fun uploadToArchive(uri: Uri, projectId: String?) {
+        if (aiBusy) return
+        aiBusy = true
+        viewModelScope.launch {
+            try {
+                token() ?: error("Sign in to use your Creative Archive")
+                val s = cloud.sessions.load() ?: error("Sign in to use your Creative Archive")
+                val r = archive.upload(s, uri, projectId)
+                notice = r.optString("title") + ": " + r.optString("status", "uploaded") +
+                    (if (r.has("chunks")) " (" + r.optInt("chunks") + " passages)" else "") +
+                    if (r.optString("status") == "needs_ocr") " — scanned PDF, text could not be extracted" else ""
+            } catch (e: Exception) { notice = e.message ?: "Archive upload failed" }
+            finally { aiBusy = false }
+        }
+    }
+
     fun searchArchive(query: String) = act {
         val t = token() ?: error("Sign in to search your Creative Archive")
         val r = creative.searchArchive(t, query)
@@ -519,6 +536,9 @@ private fun StudioHome(vm: StudioViewModel) {
         if (uri != null && idea != null) vm.attachIdeaImage(context.contentResolver, uri, idea)
     }
     var shootMode by rememberSaveable { mutableStateOf(false) }
+    val pickArchive = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.uploadToArchive(uri, null)
+    }
     val ideas by vm.ideas.collectAsState()
     val projects by vm.projects.collectAsState()
     val scenes by vm.scenes.collectAsState()
@@ -653,7 +673,10 @@ private fun StudioHome(vm: StudioViewModel) {
                     }, vm.recordingIdeaId == idea.id) { vm.toggleVoiceNote(idea.id) }
                 }
                 tab == "Projects" -> ProjectsScreen(projects, vm::createProject, { projectId = it })
-                tab == "AI" -> AiDirectorScreen(vm, projects, workItems)
+                tab == "AI" -> AiDirectorScreen(vm, projects, workItems) {
+                    pickArchive.launch(arrayOf("application/pdf", "text/plain", "text/markdown",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                }
                 else -> SettingsScreen(vm, workItems.firstOrNull { it.collection == "cameraProfiles" },
                     {
                         vm.backup { body ->
