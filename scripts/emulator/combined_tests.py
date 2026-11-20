@@ -98,7 +98,10 @@ def workflow():
 def settings():
     click("AI");see("Sign in under Settings",True)
     click("Settings");see("Your Studio account")
-    see("Test connection");see("Export offline backup JSON")
+    see("Test connection")
+    # Crash-diagnostics settings push storage actions below the fold.
+    assert D.scroll_to(text="Export offline backup JSON",max_swipes=10),"Backup action not reachable"
+    assert D.scroll_to(text="Import backup",contains=True,max_swipes=4),"Restore action not reachable"
 def test_real_recording():
     # Positive camera handoff, real emulator MediaStore save and take import.
     D.relaunch()
@@ -113,8 +116,12 @@ def test_real_recording():
     D.ashell("input keyevent 4");D.sleep(2)
     if D.find(rid="record_button",timeout=1):
         D.ashell("input keyevent 4");D.sleep(2)
-    see("Recorded takes:",contains=True,timeout=20)
-    assert not D.find(text="Recorded takes: 0",timeout=2),"Recording not imported into Studio"
+    see("imported",contains=True,timeout=25)
+    # The takes list sits below the external-camera section: scroll, then assert real data.
+    count=D.scroll_to(text="Recorded takes:",contains=True,max_swipes=12)
+    assert count,"Recorded takes section not reachable"
+    assert count.text.strip()!="Recorded takes: 0","Recording not imported into Studio: "+count.text
+    assert D.scroll_to(text="Take 1",contains=True,max_swipes=6),"Take 1 card not shown"
 
 def test_external_camera_filenames():
     # Real UI: log first filename, infer prefix + padded next number, persist offline.
@@ -126,11 +133,12 @@ def test_external_camera_filenames():
     D.tap_xy(entry.cx,entry.cy)
     D.type_text("DJI_0045.MP4")
     scroll_click("Log external camera take")
-    see("DJI_0045.MP4",timeout=20)
+    see("External camera filename saved",contains=True,timeout=20)
+    assert D.scroll_to(text="DJI_0045.MP4",max_swipes=10),"Logged DJI_0045.MP4 card not shown"
     assert D.scroll_to(text="File number only (suffix)",max_swipes=10), "Next-number field missing"
     see("Filename: DJI_0046.MP4",timeout=10)
     scroll_click("Log external camera take")
-    see("DJI_0046.MP4",timeout=20)
+    assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Logged DJI_0046.MP4 card not shown"
     D.relaunch()
     click("Projects");click("CinemaIdeaAlpha")
     scroll_click("HeroCloseup",True)
@@ -141,10 +149,50 @@ def test_backend_health_and_backup():
     click("Settings")
     click("Test connection")
     see("Server: ready",contains=True,timeout=20)
-    click("Export offline backup JSON")
+    scroll_click("Export offline backup JSON")
     D.sleep(2)
     assert "com.google.android.documentsui" in D.current_package() or D.find(text="SAVE",contains=True,timeout=1), "Backup picker did not open"
     D.ashell("input keyevent 4");D.sleep(1)
+
+def open_workspace(tab_name):
+    D.relaunch();click("Projects");click("CinemaIdeaAlpha")
+    click("Open Develop",True)
+    tab=see("Shoot")
+    if tab_name=="Wrap":
+        w,h=D.screen_size()
+        D.swipe(min(w-110,tab.cx+160),tab.cy,max(110,w//4),tab.cy,420)
+    click(tab_name)
+
+def test_shoot_mode():
+    open_workspace("Shoot")
+    click("Enter Shoot Mode",True)
+    see("Shoot Mode",timeout=15)
+    see("HeroCloseup",contains=True)
+    scroll_click("Log room tone take")
+    see("Room tone take logged",contains=True,timeout=15)
+    assert D.scroll_to(text="roomTone",contains=True,max_swipes=6),"Room tone take not shown as the last take"
+    scroll_click("Exit Shoot Mode")
+    see("Enter Shoot Mode",contains=True,timeout=10)
+
+def test_wrap_readiness_exports():
+    open_workspace("Wrap")
+    see("Production wrap",timeout=15)
+    assert D.scroll_to(text="Ready for editorial handoff",contains=True,max_swipes=10),"Readiness levels missing"
+    # Not verified: the DJI names were logged but their footage was never imported.
+    assert D.find(text="✗ Ready for editorial handoff",timeout=2) or D.find(text="✗ Actual media verified",timeout=2),"Readiness wrongly claims handoff"
+    D.relaunch();open_workspace("Wrap")
+    scroll_click("Markdown")
+    D.sleep(2)
+    assert "com.google.android.documentsui" in D.current_package() or D.find(text="SAVE",contains=True,timeout=1),"Markdown export picker did not open"
+    D.ashell("input keyevent 4");D.sleep(1)
+
+def test_sync_gating_and_camera_profile():
+    D.relaunch();click("Settings")
+    assert D.scroll_to(text="Cloud sync",max_swipes=10),"Cloud sync section missing"
+    see("Sign in to copy",contains=True)
+    scroll_click("Read this phone's camera capabilities")
+    see("Camera profile read",contains=True,timeout=20)
+    assert D.scroll_to(text="verified (device-reported)",contains=True,max_swipes=6),"Profile not labelled device-reported"
 
 def main():
     print("Emulator OS",D.ashell("getprop ro.build.version.release"),flush=True)
@@ -168,6 +216,9 @@ def main():
         ("COMB-08","Unauthenticated AI gated and settings available",settings),
         ("COMB-10","AWS health and Android backup document picker",test_backend_health_and_backup),
         ("COMB-11","DJI filenames auto-increment and persist offline",test_external_camera_filenames),
+        ("COMB-12","Shoot Mode logs a room-tone take offline",test_shoot_mode),
+        ("COMB-13","Wrap readiness never claims unimported footage; Markdown export",test_wrap_readiness_exports),
+        ("COMB-14","Cloud sync gated when signed out; device camera profile verified",test_sync_gating_and_camera_profile),
     ]:case(id,title,fn)
     with open(os.path.join(OUT,"results.json"),"w") as f:json.dump(rows,f,indent=2)
     report=["# Combined Android Emulator Acceptance","","| Test | Status | Result |","|---|---|---|"]
