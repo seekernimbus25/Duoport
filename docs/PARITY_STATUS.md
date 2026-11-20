@@ -38,3 +38,9 @@ External camera footage import (handoff step 5) is covered by
 
 Not production-ready: no physical-device QA, no live authenticated AI or sync run, Sentry not
 receiving events until `STUDIO_SENTRY_DSN` is set, no release signing / Play publishing.
+
+## Verified CI evidence (same commit `f900ae7`)
+- Android 14 emulator: **21/21** instrumentation tests and **14/14** UI acceptance cases (COMB-01…14) —
+  https://github.com/seekernimbus25/Duoport/actions/runs/44705358334
+- Release build + JVM unit tests + web `validate-package.mjs` on the exported package —
+  https://github.com/seekernimbus25/Duoport/actions/runs/44705358228
