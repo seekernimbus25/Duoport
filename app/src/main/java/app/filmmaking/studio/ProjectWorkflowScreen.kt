@@ -336,8 +336,8 @@ private fun BeatBoard(vm: StudioViewModel, project: StudioRecord, beats: List<St
         else Text("Drag ≡ to reorder. Shot links stay with their beat.", style = MaterialTheme.typography.bodySmall)
         live.forEachIndexed { i, id ->
           // key(id): a card keeps its composition (and its in-flight drag gesture) when it changes slot.
+          val beat = byId[id] ?: return@forEachIndexed
           key(id) {
-            val beat = byId[id] ?: return@key
             val b = data(beat); val linked = b.optJSONArray("shotIds").ids()
             val isDragged = dragging == id
             OutlinedCard(Modifier.fillMaxWidth().zIndex(if (isDragged) 1f else 0f)
