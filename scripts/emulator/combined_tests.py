@@ -60,16 +60,20 @@ def plans():
     scroll_click("HeroCloseup",True);see("Record this shot in Duoport")
 def shot_persist():
     click("Edit camera",True)
-    click("Save planned shot offline")
+    # The editor is long: the Save action is below the initial viewport.
+    scroll_click("Save planned shot offline")
     D.relaunch();click("Projects");click("CinemaIdeaAlpha")
     see("OpeningScene",True);scroll_click("HeroCloseup",True)
-    see("Record this shot in Duoport")
+    assert D.scroll_to(text="Record this shot in Duoport",max_swipes=10),"Shot was not persisted after relaunch"
 def cancel():
-    click("Record this shot in Duoport")
+    # Start independently, so an earlier editor failure cannot mask this test.
+    D.relaunch();click("Projects");click("CinemaIdeaAlpha")
+    scroll_click("HeroCloseup",True)
+    scroll_click("Record this shot in Duoport")
     see("Film a Studio shot",timeout=16)
     click("Cancel")
     see("Camera cancelled",True,timeout=16)
-    see("Recorded takes: 0")
+    assert D.scroll_to(text="Recorded takes: 0",max_swipes=8),"Cancelled recording incorrectly created a take"
 def camera():
     click("Home");click("Open Duoport camera")
     for _ in range(3):
