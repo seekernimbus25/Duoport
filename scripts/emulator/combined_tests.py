@@ -17,8 +17,12 @@ def see(v,contains=False,timeout=12):
 def click(v,contains=False,timeout=12):
     n=see(v,contains,timeout);D.tap_xy(n.cx,n.cy)
 def scroll_click(label,contains=False):
-    node=D.scroll_to(text=label,contains=contains,max_swipes=8)
-    if node is None: raise AssertionError("Cannot reach "+label)
+    node=D.find(text=label,contains=contains,timeout=2)
+    w,h=D.screen_size()
+    if node is None or not (h*0.07<=node.cy<=h*0.93):
+        node=D.scroll_to(text=label,contains=contains,max_swipes=8)
+    if node is None:
+        raise AssertionError("Cannot reach "+label+": "+repr([n.text for n in D.dump() if n.text][:30]))
     D.tap_xy(node.cx,node.cy)
 def scroll_back_to(label,contains=False,max_swipes=10):
     """Content moves DOWN (finger swipes down) until an element above the viewport shows."""
