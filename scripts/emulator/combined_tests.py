@@ -20,6 +20,14 @@ def scroll_click(label,contains=False):
     node=D.scroll_to(text=label,contains=contains,max_swipes=8)
     if node is None: raise AssertionError("Cannot reach "+label)
     D.tap_xy(node.cx,node.cy)
+def scroll_back_to(label,contains=False,max_swipes=10):
+    """Content moves DOWN (finger swipes down) until an element above the viewport shows."""
+    w,h=D.screen_size()
+    for _ in range(max_swipes+1):
+        n=D.find(text=label,contains=contains,timeout=0,nodes=D.dump())
+        if n is not None and h*0.07<=n.cy<=h*0.93: return n
+        D.swipe(w//2,int(h*0.35),w//2,int(h*0.85),400)
+    return D.find(text=label,contains=contains,timeout=1)
 def enter(label,value):
     n=see(label);D.tap_xy(n.cx,n.cy);D.type_text(value)
 def safe():
@@ -135,9 +143,11 @@ def test_external_camera_filenames():
     scroll_click("Log external camera take")
     see("External camera filename saved",contains=True,timeout=20)
     assert D.scroll_to(text="DJI_0045.MP4",max_swipes=10),"Logged DJI_0045.MP4 card not shown"
-    assert D.scroll_to(text="File number only (suffix)",max_swipes=10), "Next-number field missing"
+    # The number field sits ABOVE the logged cards we just scrolled to.
+    assert scroll_back_to("File number only (suffix)"), "Next-number field missing"
     see("Filename: DJI_0046.MP4",timeout=10)
     scroll_click("Log external camera take")
+    see("External camera filename saved",contains=True,timeout=20)
     assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Logged DJI_0046.MP4 card not shown"
     D.relaunch()
     click("Projects");click("CinemaIdeaAlpha")
@@ -146,7 +156,8 @@ def test_external_camera_filenames():
     assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Second filename not saved"
 
 def test_backend_health_and_backup():
-    click("Settings")
+    # Fresh start: Settings keeps its scroll position from the previous case otherwise.
+    D.relaunch();click("Settings")
     click("Test connection")
     see("Server: ready",contains=True,timeout=20)
     scroll_click("Export offline backup JSON")
@@ -172,6 +183,7 @@ def test_shoot_mode():
     see("Room tone take logged",contains=True,timeout=15)
     assert D.scroll_to(text="roomTone",contains=True,max_swipes=6),"Room tone take not shown as the last take"
     scroll_click("Exit Shoot Mode")
+    # Back on the same workspace tab (Shoot), not reset to Develop.
     see("Enter Shoot Mode",contains=True,timeout=10)
 
 def test_wrap_readiness_exports():

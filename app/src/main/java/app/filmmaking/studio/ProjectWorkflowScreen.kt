@@ -63,9 +63,10 @@ fun ProjectWorkflowScreen(
     onExport: (String) -> Unit,
     onImportFootage: () -> Unit,
     onPickStoryboard: (String) -> Unit,
-    onShootMode: () -> Unit
+    onShootMode: () -> Unit,
+    section: String,
+    onSection: (String) -> Unit
 ) {
-    var section by rememberSaveable(project.id) { mutableStateOf("Develop") }
     var creating by remember { mutableStateOf<WorkflowKind?>(null) }
     var editing by remember { mutableStateOf<StudioRecord?>(null) }
     var newTitle by remember { mutableStateOf("") }
@@ -79,7 +80,7 @@ fun ProjectWorkflowScreen(
 
     Column(Modifier.fillMaxSize()) {
         ScrollableTabRow(selectedTabIndex = sections.indexOf(section).coerceAtLeast(0), edgePadding = 8.dp) {
-            sections.forEach { tab -> Tab(selected = section == tab, onClick = { section = tab }, text = { Text(tab) }) }
+            sections.forEach { tab -> Tab(selected = section == tab, onClick = { onSection(tab) }, text = { Text(tab) }) }
         }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = PaddingValues(vertical = 10.dp)) {

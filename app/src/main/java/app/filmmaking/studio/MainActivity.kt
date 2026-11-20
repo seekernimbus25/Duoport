@@ -536,6 +536,8 @@ private fun StudioHome(vm: StudioViewModel) {
         if (uri != null && idea != null) vm.attachIdeaImage(context.contentResolver, uri, idea)
     }
     var shootMode by rememberSaveable { mutableStateOf(false) }
+    // Hoisted so leaving Shoot Mode (or a shot) returns to the same workspace tab.
+    var workspaceSection by rememberSaveable { mutableStateOf("Develop") }
     val pickArchive = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.uploadToArchive(uri, null)
     }
@@ -611,7 +613,7 @@ private fun StudioHome(vm: StudioViewModel) {
                     selected = tab == item,
                     onClick = {
                         StudioDiagnostics.breadcrumb("studio", "tab_" + item.lowercase())
-                        tab = item; projectId = null; shotId = null; workspaceOpen = false; shootMode = false
+                        tab = item; projectId = null; shotId = null; workspaceOpen = false; shootMode = false; workspaceSection = "Develop"
                     },
                     icon = { Text(when (item) {
                         "Home" -> "⌂"; "Ideas" -> "✦"; "Projects" -> "▣"; "AI" -> "✧"; else -> "⚙"
@@ -658,7 +660,9 @@ private fun StudioHome(vm: StudioViewModel) {
                     },
                     onImportFootage = { importProjectId = currentProject.id; pickFootage.launch(arrayOf("video/*", "audio/*", "image/*", "application/octet-stream")) },
                     onPickStoryboard = { id -> storyboardShot = id; pickStoryboard.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    onShootMode = { shootMode = true }
+                    onShootMode = { shootMode = true },
+                    section = workspaceSection,
+                    onSection = { workspaceSection = it }
                 )
                 currentProject != null -> ProjectScreen(
                     currentProject, scenes.filter { data(it).optString("projectId") == currentProject.id },
