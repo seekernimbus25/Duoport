@@ -33,6 +33,7 @@ checks the acceptance rule; "Device QA" is what still needs a real phone (none o
 | 26 | Backup/import | Keeps every id; refuses conflicting records | existing instrumentation | — |
 | 27 | Camera profile | Camera2 probe → `verified: true` only when device-reported | `cameraProfileIsVerifiedOnlyWhenDeviceReported`, COMB-14 | — |
 | 28 | Google sign-in | Credential Manager → Supabase `id_token` with nonce; session restore and local sign-out; ownership gate and RLS check before any link/sync; local work never deleted (docs/GOOGLE_SIGN_IN.md) | `GoogleSignInFlowTest`, COMB-20 | real Google account on a real phone; Google Cloud OAuth clients and Supabase Google provider must be set up first |
+| 29 | Reference board images | Paste a copied image or link, fetch from a link (direct image, or a page's og:image; HTTPS only, ≤ 12 MB, magic bytes checked, SVG refused) or pick from the phone; the picture is downloaded and kept on the board as a 960 px JPEG, with the source site shown as credit; optional shot it inspires; syncs as a normal `references` record (`kind: image`) | `ImageLinkFetcherTest`, COMB-21 | a real link and a copied image on a real phone (CI emulator is offline-safe only) |
 
 External camera footage import (handoff step 5) is covered by
 `externalFootageImportVerifiesChecksumAndOnlyMatchesLoggedNames` (real MediaStore content URI).

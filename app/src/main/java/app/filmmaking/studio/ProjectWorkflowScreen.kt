@@ -75,6 +75,7 @@ fun ProjectWorkflowScreen(
     onImportFootage: () -> Unit,
     onPickStoryboard: (String) -> Unit,
     onPickContinuityPhoto: (String, String) -> Unit,
+    onPickReference: () -> Unit,
     onShootMode: () -> Unit,
     section: String,
     onSection: (String) -> Unit
@@ -104,6 +105,7 @@ fun ProjectWorkflowScreen(
                     item { ShotProposalPanel(vm, of("shotProposals")) }
                 }
                 "Visual" -> {
+                    item { ReferenceBoardPanel(vm, project, shots, of("references").count { data(it).optString("image").startsWith("data:image/") }, onPickReference) }
                     item { StoryboardPanel(vm, project, shots, scenes, of("storyboards"), onPickStoryboard) }
                     item { DiagramPanel(vm, project, scenes, shots, of("diagrams"), allRecords.filter { it.collection == "recipes" && it.deletedAt == null }) }
                 }
@@ -267,6 +269,7 @@ private fun WorkflowCard(vm: StudioViewModel, item: StudioRecord, kind: Workflow
                         }
                     }
                 }
+                WorkflowKind.REFERENCE -> ReferenceDetails(vm, item, json, shots)
                 else -> Unit
             }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -282,6 +285,92 @@ private fun WorkflowCard(vm: StudioViewModel, item: StudioRecord, kind: Workflow
         }
     }
     if (critiqueOpen) CritiqueDialog(vm, item) { critiqueOpen = false }
+}
+
+/** The fetched picture itself, where it came from, and which shot it inspires. */
+@Composable
+private fun ReferenceDetails(vm: StudioViewModel, item: StudioRecord, json: JSONObject, shots: List<StudioRecord>) {
+    val img = rememberDataImage(json.optString("image").takeIf { it.startsWith("data:image/") })
+    if (img != null) androidx.compose.foundation.Image(img, item.title, Modifier.fillMaxWidth().heightIn(max = 420.dp),
+        contentScale = androidx.compose.ui.layout.ContentScale.Fit)
+    val source = json.optString("sourceUrl").takeIf { it.isNotBlank() }
+        ?.let { runCatching { android.net.Uri.parse(it).host?.removePrefix("www.") }.getOrNull() }
+    val from = when (json.optString("addedFrom")) { "link" -> "From a link"; "clipboard" -> "Pasted"; "phone" -> "From this phone"; else -> null }
+    listOfNotNull(from, source?.let { "source: $it" }).takeIf { it.isNotEmpty() }?.let {
+        Text(it.joinToString(" · "), style = MaterialTheme.typography.labelSmall)
+    }
+    val attached = json.optJSONArray("attachedShotIds").ids().firstOrNull()
+    var open by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { open = true }) {
+            Text("Inspires: " + (shots.find { it.id == attached }?.let(::shotLabel) ?: "the whole film"))
+        }
+        DropdownMenu(open, { open = false }) {
+            DropdownMenuItem(text = { Text("The whole film (no shot)") }, onClick = { open = false; vm.attachReference(item.id, null) })
+            shots.forEach { s -> DropdownMenuItem(text = { Text(shotLabel(s)) }, onClick = { open = false; vm.attachReference(item.id, s.id) }) }
+        }
+    }
+}
+
+/**
+ * Inspiration images on the board: paste a copied image or link, fetch a link (the phone downloads the picture
+ * itself and keeps a copy), or pick one from the phone. Each waits in a preview until it is named and saved.
+ */
+@Composable
+private fun ReferenceBoardPanel(vm: StudioViewModel, project: StudioRecord, shots: List<StudioRecord>, imageCount: Int, pickFromPhone: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var linkOpen by remember { mutableStateOf(false) }
+    var link by remember { mutableStateOf("") }
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Reference board", style = MaterialTheme.typography.titleMedium)
+            Text("Inspiration images for the look of the film: paste one you copied, fetch one from a link, or pick one from this phone. " +
+                if (imageCount == 0) "None yet." else "$imageCount image(s) below.", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Button(enabled = !vm.referenceBusy, onClick = { vm.referenceFromClipboard(context) }) { Text("Paste") }
+                OutlinedButton(enabled = !vm.referenceBusy, onClick = { link = ""; linkOpen = true }) { Text("From a link") }
+                OutlinedButton(enabled = !vm.referenceBusy, onClick = pickFromPhone) { Text("From this phone") }
+            }
+            if (vm.referenceBusy) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("Getting the image…", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+    if (linkOpen) AlertDialog(onDismissRequest = { linkOpen = false }, title = { Text("Image from a link") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Link to an image or a web page") }, singleLine = true)
+            Text("The phone downloads the picture and keeps a copy on the board, so it still shows if the site changes. " +
+                "For a web page, its preview image is used. It's an inspiration reference: check usage rights before you publish it.",
+                style = MaterialTheme.typography.bodySmall)
+        }
+    }, confirmButton = {
+        TextButton(enabled = link.isNotBlank(), onClick = { linkOpen = false; vm.referenceFromLink(link) }) { Text("Fetch image") }
+    }, dismissButton = { TextButton(onClick = { linkOpen = false }) { Text("Cancel") } })
+
+    val draft = vm.referenceDraft ?: return
+    var title by remember(draft) { mutableStateOf(draft.title) }
+    var notes by remember(draft) { mutableStateOf("") }
+    var shotId by remember(draft) { mutableStateOf<String?>(null) }
+    var shotMenu by remember { mutableStateOf(false) }
+    AlertDialog(onDismissRequest = vm::discardReference, title = { Text("Add to the reference board") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            rememberDataImage(draft.image)?.let { androidx.compose.foundation.Image(it, "Reference preview", Modifier.fillMaxWidth().heightIn(max = 320.dp),
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit) }
+            draft.sourceUrl?.let { u -> runCatching { android.net.Uri.parse(u).host?.removePrefix("www.") }.getOrNull() }
+                ?.let { Text("From $it", style = MaterialTheme.typography.labelSmall) }
+            OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("Title") }, singleLine = true)
+            OutlinedTextField(notes, { notes = it }, Modifier.fillMaxWidth(), label = { Text("What you like about it (optional)") }, minLines = 2)
+            Box {
+                OutlinedButton(onClick = { shotMenu = true }) { Text("Inspires: " + (shots.find { it.id == shotId }?.let(::shotLabel) ?: "the whole film")) }
+                DropdownMenu(shotMenu, { shotMenu = false }) {
+                    DropdownMenuItem(text = { Text("The whole film (no shot)") }, onClick = { shotMenu = false; shotId = null })
+                    shots.forEach { s -> DropdownMenuItem(text = { Text(shotLabel(s)) }, onClick = { shotMenu = false; shotId = s.id }) }
+                }
+            }
+        }
+    }, confirmButton = {
+        TextButton(onClick = { vm.saveReference(project.id, title, notes, shotId) }) { Text("Save to board") }
+    }, dismissButton = { TextButton(onClick = vm::discardReference) { Text("Discard") } })
 }
 
 /** #8: critique items are shown; saving the revised draft creates a NEW draft version only. */

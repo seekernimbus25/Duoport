@@ -496,6 +496,82 @@ class StudioViewModel(
         notice = "Image attached to the idea (kept on this device)"
     }
 
+    /** A reference image waiting to be named and saved to the board (or discarded). */
+    class ReferenceDraft(val image: String, val sourceUrl: String?, val title: String, val from: String)
+    var referenceDraft by mutableStateOf<ReferenceDraft?>(null)
+        private set
+    var referenceBusy by mutableStateOf(false)
+        private set
+    private val linkFetcher = ImageLinkFetcher()
+
+    private fun draft(work: suspend () -> ReferenceDraft) {
+        if (referenceBusy) return
+        referenceBusy = true
+        viewModelScope.launch {
+            try { referenceDraft = work() }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { notice = e.message ?: "Couldn't get that image" }
+            finally { referenceBusy = false }
+        }
+    }
+
+    private fun jpegUri(bytes: ByteArray) = "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+
+    private suspend fun fromLink(url: String, from: String): ReferenceDraft {
+        val f = linkFetcher.fetch(url)
+        val bytes = withContext(Dispatchers.Default) { downscaledJpeg(f.bytes) }
+        val host = runCatching { android.net.Uri.parse(f.pageUrl).host?.removePrefix("www.") }.getOrNull().orEmpty()
+        return ReferenceDraft(jpegUri(bytes), f.pageUrl, f.pageTitle ?: host, from)
+    }
+
+    fun referenceFromLink(url: String) = draft { fromLink(url, "link") }
+
+    fun referenceFromPhone(resolver: ContentResolver, uri: Uri) = draft { ReferenceDraft(jpegUri(downscaledJpeg(resolver, uri)), null, "", "phone") }
+
+    /** Reads the clipboard once, on tap: a copied image is used directly; a copied link is fetched. */
+    fun referenceFromClipboard(context: android.content.Context) {
+        val cm = context.getSystemService(android.content.ClipboardManager::class.java)
+        val clip = cm?.primaryClip
+        if (clip == null || clip.itemCount == 0) { notice = "The clipboard is empty. Copy an image or a link first."; return }
+        val resolver = context.contentResolver
+        val image = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+            .firstOrNull { u -> resolver.getType(u)?.startsWith("image/") == true || clip.description.hasMimeType("image/*") }
+        if (image != null) { draft { ReferenceDraft(jpegUri(downscaledJpeg(resolver, image)), null, "", "clipboard") }; return }
+        val text = clip.getItemAt(0).coerceToText(context)?.toString()?.trim().orEmpty()
+        if (Regex("^(https?://)?[\\w.-]+\\.[a-z]{2,}(/\\S*)?$", RegexOption.IGNORE_CASE).matches(text)) { draft { fromLink(text, "clipboard") }; return }
+        notice = if (text.isBlank()) "The clipboard doesn't hold an image. Long-press an image, choose Copy image, then Paste here."
+            else "The clipboard holds text, not an image or a link."
+    }
+
+    fun saveReference(projectId: String, title: String, notes: String, shotId: String?) = act {
+        val d = referenceDraft ?: return@act
+        workflow.addImageReference(projectId, title.ifBlank { d.title }, d.image, notes, d.sourceUrl, d.from, shotId)
+        referenceDraft = null
+        notice = "Saved to the reference board"
+    }
+
+    fun discardReference() { referenceDraft = null }
+
+    fun attachReference(id: String, shotId: String?) = act { workflow.attachReference(id, shotId) }
+
+    /** Downscales fetched bytes to [max] px JPEG; transparent images get a white background. */
+    private fun downscaledJpeg(bytes: ByteArray, max: Int = 960): ByteArray {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw ImageLinkException("That image format can't be read on this phone.")
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= max) sample *= 2
+        val raw = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+            ?: throw ImageLinkException("That image format can't be read on this phone.")
+        val scale = minOf(1f, max.toFloat() / maxOf(raw.width, raw.height))
+        val out = android.graphics.Bitmap.createBitmap(maxOf(1, (raw.width * scale).toInt()), maxOf(1, (raw.height * scale).toInt()), android.graphics.Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(out).apply {
+            drawColor(android.graphics.Color.WHITE)
+            drawBitmap(raw, null, android.graphics.Rect(0, 0, out.width, out.height), android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+        }
+        return java.io.ByteArrayOutputStream().also { out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, it) }.toByteArray()
+    }
+
     /** Approved Creative DNA the AI may use: identity preferences plus choices scoped to this film. */
     fun memoriesFor(projectId: String?): List<JSONObject> = CreativeDna.approved(workflowItems.value, projectId)
 
@@ -717,6 +793,9 @@ private fun StudioHome(vm: StudioViewModel) {
         val idea = imageIdea; imageIdea = null
         if (uri != null && idea != null) vm.attachIdeaImage(context.contentResolver, uri, idea)
     }
+    val pickReference = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) vm.referenceFromPhone(context.contentResolver, uri)
+    }
     var shootMode by rememberSaveable { mutableStateOf(false) }
     var dnaOpen by rememberSaveable { mutableStateOf(false) }
     // Hoisted so leaving Shoot Mode (or a shot) returns to the same workspace tab.
@@ -844,6 +923,7 @@ private fun StudioHome(vm: StudioViewModel) {
                     onImportFootage = { importProjectId = currentProject.id; pickFootage.launch(arrayOf("video/*", "audio/*", "image/*", "application/octet-stream")) },
                     onPickStoryboard = { id -> storyboardShot = id; pickStoryboard.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onPickContinuityPhoto = { id, which -> continuityTarget = "$which:$id"; pickContinuity.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onPickReference = { pickReference.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onShootMode = { shootMode = true },
                     section = workspaceSection,
                     onSection = { workspaceSection = it }

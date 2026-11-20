@@ -102,6 +102,41 @@ class ProjectWorkflowRepository(private val db: StudioDatabase) {
         return row(kind.collection, key, title, obj).also { dao.upsert(it) }
     }
 
+    /**
+     * An image on the project's reference board (web `CreativeReference` kind "image"). [image] is a downscaled
+     * data URI kept with the record, so it works offline and syncs; [sourceUrl] records where it came from.
+     */
+    suspend fun addImageReference(projectId: String, title: String, image: String, notes: String,
+                                  sourceUrl: String?, addedFrom: String, shotId: String?): StudioRecord {
+        require(image.startsWith("data:image/")) { "No image to save" }
+        require(addedFrom in setOf("link", "phone", "clipboard"))
+        requireNotNull(dao.find("projects", projectId)) { "Project not found" }
+        val shotIds = JSONArray(); val sceneIds = JSONArray()
+        if (!shotId.isNullOrBlank()) {
+            val shot = requireNotNull(dao.find("shots", shotId)) { "Shot not found" }
+            shotIds.put(shotId); doc(shot).optString("sceneId").takeIf { it.isNotBlank() }?.let { sceneIds.put(it) }
+        }
+        val key = uid(); val stamp = now()
+        val name = title.trim().ifBlank { "Reference" }.take(200)
+        val obj = JSONObject().put("id", key).put("projectId", projectId).put("kind", "image").put("title", name)
+            .put("image", image).put("notes", notes.take(4000)).put("attachedSceneIds", sceneIds).put("attachedShotIds", shotIds)
+            .put("addedFrom", addedFrom).put("createdAt", stamp).put("updatedAt", stamp)
+        sourceUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") }?.let { obj.put("sourceUrl", it.take(2000)) }
+        return row("references", key, name, obj).also { dao.upsert(it) }
+    }
+
+    /** Pins a reference to one shot (and its scene), or clears the pin. The image and notes stay as they are. */
+    suspend fun attachReference(id: String, shotId: String?) {
+        val item = requireNotNull(dao.find("references", id)); val body = doc(item)
+        val shotIds = JSONArray(); val sceneIds = JSONArray()
+        if (!shotId.isNullOrBlank()) {
+            val shot = requireNotNull(dao.find("shots", shotId)) { "Shot not found" }
+            shotIds.put(shotId); doc(shot).optString("sceneId").takeIf { it.isNotBlank() }?.let { sceneIds.put(it) }
+        }
+        body.put("attachedShotIds", shotIds).put("attachedSceneIds", sceneIds).put("updatedAt", now())
+        dao.upsert(item.copy(payload = body.toString(), updatedAt = System.currentTimeMillis(), dirty = true))
+    }
+
     suspend fun update(collection: String, id: String, title: String, detail: String) {
         val item = requireNotNull(dao.find(collection, id))
         val body = doc(item)

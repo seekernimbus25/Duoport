@@ -310,6 +310,23 @@ def test_sentry_opt_in_event():
     see("Diagnostic test event queued",contains=True,timeout=10)
     D.sleep(20)  # let the SDK deliver before the emulator shuts down
 
+def test_reference_board_inputs():
+    # Offline-safe checks of the three ways in: nothing copied, a non-web link, and the phone picker opening.
+    open_workspace("Visual")
+    see("Reference board",timeout=15)
+    scroll_click("Paste")
+    see("The clipboard",contains=True,timeout=10)
+    scroll_click("From a link")
+    see("Image from a link")
+    enter("Link to an image or a web page","ftp://example.com/still.jpg")
+    click("Fetch image")
+    see("Only web links",contains=True,timeout=10)
+    scroll_click("From this phone")
+    time.sleep(3)
+    if not D.find(text="Reference board",timeout=2): D.back(force=True)
+    assert D.in_app(),"App left the foreground after the picker"
+    see("Reference board",timeout=10)
+
 def test_google_sign_in_ui():
     """Continue with Google exists; never crashes; without a client ID it says so plainly."""
     D.relaunch();click("Settings")
@@ -362,6 +379,7 @@ def main():
         ("COMB-18","Creative DNA explicit preference persists offline",test_creative_dna_preferences),
         ("COMB-19","Opt-in Sentry diagnostic test event is sent",test_sentry_opt_in_event),
         ("COMB-20","Continue with Google is present and fails safely without an account",test_google_sign_in_ui),
+        ("COMB-21","Reference board: paste, link and phone inputs fail safely offline",test_reference_board_inputs),
     ]:case(id,title,fn)
     with open(os.path.join(OUT,"results.json"),"w") as f:json.dump(rows,f,indent=2)
     report=["# Combined Android Emulator Acceptance","","| Test | Status | Result |","|---|---|---|"]
