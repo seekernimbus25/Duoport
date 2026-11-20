@@ -29,8 +29,48 @@ class StudioSync(context: Context) {
     val lastSummary: String get() = status.getString("summary", "Never synced").orEmpty()
     val lastSyncAt: Long get() = status.getLong("at", 0L)
 
+    private val ownerPrefs = app.getSharedPreferences("studio_local_owner", Context.MODE_PRIVATE)
+
+    /** The account this phone's local work is linked to. Kept on sign-out so another account can't absorb it. */
+    val owner: LocalOwner?
+        get() = ownerPrefs.getString("user", null)?.let { LocalOwner(it, ownerPrefs.getString("email", "").orEmpty()) }
+
+    /** Account whose identity and the cloud's RLS were confirmed on this phone for this sign-in. */
+    private val verifiedUser: String? get() = ownerPrefs.getString("verified", null)
+
+    /**
+     * Run after every sign-in or session restore, before any sync: confirms with the server that the token belongs
+     * to [session]'s account and that RLS isolates it, then decides what may happen to local work.
+     * Returns the decision, or throws with a plain-language reason (sync stays off; nothing local changes).
+     */
+    suspend fun prepare(session: StudioAuthClient.Session, auth: StudioAuthClient): LinkDecision {
+        ownerPrefs.edit().remove("verified").apply()
+        val serverId = auth.user(session.accessToken).optString("id")
+        check(serverId.isNotBlank() && serverId == session.userId) { "The server did not confirm this account. Sign in again." }
+        CloudAccessCheck.verify(SupabaseRest({ session.accessToken }), session.userId)?.let { error(it) }
+        ownerPrefs.edit().putString("verified", session.userId).apply()
+        val decision = OwnershipGate.decide(owner, db.dao().syncedUserIds().toSet(), session.userId, db.dao().liveCount())
+        if (decision == LinkDecision.LinkEmpty || decision == LinkDecision.Proceed) link(session)
+        return decision
+    }
+
+    /** Links this phone's local work to [session]'s account (only after [prepare] verified it). */
+    fun link(session: StudioAuthClient.Session) {
+        check(verifiedUser == session.userId) { "Verify the account before linking local work" }
+        val current = owner
+        check(current == null || current.userId == session.userId) { "Local work belongs to another account" }
+        ownerPrefs.edit().putString("user", session.userId).putString("email", session.email).apply()
+    }
+
+    /** Forgets the verification on sign-out (the owner link and all local data stay). */
+    fun signedOut() { ownerPrefs.edit().remove("verified").apply() }
+
     suspend fun run(choices: Map<String, Resolution> = emptyMap()): SyncReport = lock.withLock {
         val session = sessions.fresh() ?: error("Sign in to sync with the cloud")
+        // Never sync one account's local work into another, and never before RLS was confirmed.
+        check(owner?.userId == session.userId && verifiedUser == session.userId) {
+            "Sync is paused: this phone's work is not linked to " + session.email.ifBlank { "this account" } + "."
+        }
         val api = SupabaseRest({ session.accessToken })
         val engine = SyncEngine(db, api, session.userId.ifBlank { error("Sign in again to enable sync") },
             sessions.deviceId) { saveRecoveryPoint() }
@@ -74,7 +114,8 @@ class StudioSync(context: Context) {
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val sync = StudioSync(applicationContext)
-        if (sync.sessions.load() == null) return Result.success()
+        val session = sync.sessions.load() ?: return Result.success()
+        if (sync.owner?.userId != session.userId) return Result.success() // not linked: never sync
         return try {
             sync.run()
             Result.success()

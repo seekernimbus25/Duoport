@@ -48,6 +48,12 @@ interface StudioDao {
     @Query("UPDATE studio_records SET deletedAt = :at, updatedAt = :at, dirty = 1 WHERE collection = :collection AND id = :id")
     suspend fun tombstone(collection: String, id: String, at: Long = System.currentTimeMillis())
 
+    @Query("SELECT DISTINCT userId FROM sync_base")
+    suspend fun syncedUserIds(): List<String>
+
+    @Query("SELECT COUNT(*) FROM studio_records WHERE deletedAt IS NULL")
+    suspend fun liveCount(): Int
+
     @Query("SELECT * FROM sync_base WHERE userId = :userId")
     suspend fun syncBase(userId: String): List<SyncBaseRow>
 

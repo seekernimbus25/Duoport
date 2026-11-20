@@ -40,6 +40,11 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import app.filmmaking.studio.data.GoogleAuthConfig
+import app.filmmaking.studio.data.GoogleCredentials
+import app.filmmaking.studio.data.GoogleIdToken
+import app.filmmaking.studio.data.GoogleSignInException
+import app.filmmaking.studio.sync.LinkDecision
 import org.json.JSONObject
 import java.util.UUID
 
@@ -101,7 +106,100 @@ class StudioViewModel(
         private set
     val apiUrl get() = endpoint.baseUrl
 
-    init { if (session != null) StudioSync.schedule(appContext) }
+    /** Why cloud sync is off for the signed-in account (null = linked, verified and syncing). */
+    var syncBlocked by mutableStateOf<String?>(null)
+        private set
+    /** Unlinked local items waiting for the person's decision before they are copied to the account. */
+    var pendingLink by mutableStateOf<Int?>(null)
+        private set
+    var restoring by mutableStateOf(false)
+        private set
+    val googleWebClientId: String? = GoogleAuthConfig.webClientIdOrNull(com.dualframe.camera.BuildConfig.GOOGLE_WEB_CLIENT_ID)
+
+    init { session?.let { restore(it) } }
+
+    /** Session restore on launch: renew the token, then re-confirm the account and RLS before any sync. */
+    private fun restore(saved: StudioAuthClient.Session) {
+        restoring = true
+        viewModelScope.launch {
+            try {
+                val s = cloud.sessions.fresh() ?: saved
+                session = s
+                checkAccount(s)
+            } catch (e: AuthException) {
+                if (cloud.sessions.load() == null) {
+                    session = null; StudioSync.cancel(appContext); cloud.signedOut()
+                    notice = "Your session ended. Sign in again; your work on this phone is untouched."
+                } else syncBlocked = "Offline: couldn't confirm your account. Sync waits; your work stays on this phone."
+            } catch (e: Exception) {
+                syncBlocked = "Offline: couldn't confirm your account. Sync waits; your work stays on this phone."
+            } finally { restoring = false }
+        }
+    }
+
+    /** Confirms identity + RLS with the server, then applies the ownership decision. Never deletes local data. */
+    private suspend fun checkAccount(s: StudioAuthClient.Session) {
+        pendingLink = null
+        try {
+            when (val d = cloud.prepare(s, auth)) {
+                LinkDecision.Proceed, LinkDecision.LinkEmpty -> {
+                    syncBlocked = null
+                    StudioSync.schedule(appContext); StudioSync.requestSoon(appContext)
+                }
+                is LinkDecision.AskToLink -> {
+                    StudioSync.cancel(appContext)
+                    pendingLink = d.localItems
+                    syncBlocked = "This phone's work isn't linked to " + s.email + " yet."
+                }
+                is LinkDecision.OtherAccount -> {
+                    StudioSync.cancel(appContext)
+                    syncBlocked = "This phone's work belongs to " + d.ownerEmail + ". Cloud sync is off while you're signed in as " +
+                        s.email + ", so nothing is mixed. Your local work is untouched."
+                }
+            }
+        } catch (e: Exception) {
+            StudioSync.cancel(appContext)
+            syncBlocked = e.message ?: "Couldn't verify the account. Sync stays off."
+        }
+    }
+
+    fun confirmLink() = act {
+        val s = session ?: return@act
+        cloud.link(s)
+        pendingLink = null; syncBlocked = null
+        StudioSync.schedule(appContext); StudioSync.requestSoon(appContext)
+        notice = "Linked. This phone's work will be copied to " + s.email + " and stays on this phone too."
+    }
+    fun declineLink() {
+        pendingLink = null
+        syncBlocked = "Not linked: this phone's work stays on this phone only. You can link it from Settings at any time."
+    }
+    fun reviewLink() = act { session?.let { checkAccount(it) } }
+
+    private suspend fun afterSignIn(s: StudioAuthClient.Session) {
+        cloud.sessions.save(s)
+        session = s
+        checkAccount(s)
+        notice = "Signed in as " + s.email + (if (syncBlocked == null) ". Cloud sync runs in the background." else ".")
+    }
+
+    /** Continue with Google: [fetch] runs Credential Manager on the Activity; the token is exchanged with Supabase here. */
+    suspend fun signInWithGoogle(fetch: suspend () -> GoogleIdToken) {
+        if (signingIn) return
+        signingIn = true
+        try {
+            val t = fetch()
+            afterSignIn(auth.signInWithGoogle(t.idToken, t.rawNonce))
+        } catch (e: GoogleSignInException) {
+            notice = e.message.orEmpty()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: java.io.IOException) {
+            notice = "No connection to the sign-in service. Your work stays on this phone; try again when online."
+        } catch (e: Exception) {
+            notice = e.message ?: "Google sign-in failed"
+        } finally { signingIn = false }
+    }
 
     /** A valid access token (refreshed when close to expiry), or null when signed out. */
     private suspend fun token(): String? = try {
@@ -241,18 +339,24 @@ class StudioViewModel(
         signingIn = true
         viewModelScope.launch {
             try {
-                session = auth.signIn(email, password).also { cloud.sessions.save(it) }
-                StudioSync.schedule(appContext)
-                StudioSync.requestSoon(appContext)
-                notice = "Signed in. Cloud sync runs in the background; conflicts always wait for you."
+                afterSignIn(auth.signIn(email, password))
             } catch (e: Exception) { notice = e.message ?: "Sign-in failed" }
             finally { signingIn = false }
         }
     }
+    /** Signs this phone out. Local projects, scenes, takes and unsynced clips are never deleted. */
     fun signOut() {
+        val token = session?.accessToken
+        viewModelScope.launch {
+            token?.let { auth.logout(it) }          // revoke this device's refresh token (best effort)
+            GoogleCredentials.clear(appContext)      // show the account picker again next time
+        }
         cloud.sessions.clear()
+        cloud.signedOut()
         StudioSync.cancel(appContext)
         session = null
+        syncBlocked = null
+        pendingLink = null
         chat = emptyList()
         lastCost = null
         conflicts = emptyList()
@@ -1123,22 +1227,43 @@ private fun SettingsScreen(vm: StudioViewModel, cameraProfile: StudioRecord?, on
         HorizontalDivider()
         Text("Your Studio account", style = MaterialTheme.typography.titleLarge)
         val session = vm.session
+        if (vm.restoring) Text("Restoring your session…", style = MaterialTheme.typography.bodySmall)
         if (session == null) {
-            Text("Use the email/password account from the existing Lovable-linked Supabase project.")
+            Text("Sign in to copy your films to the cloud and use AI. Your work on this phone stays here either way.",
+                style = MaterialTheme.typography.bodySmall)
+            val activity = androidx.compose.ui.platform.LocalContext.current
+            val scope = rememberCoroutineScope()
+            val clientId = vm.googleWebClientId
+            Button(enabled = !vm.signingIn && clientId != null, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                onClick = { scope.launch { vm.signInWithGoogle { GoogleCredentials.request(activity, clientId!!) } } }) {
+                Text(if (vm.signingIn) "Signing in…" else "Continue with Google")
+            }
+            if (clientId == null) Text("Google sign-in isn't set up in this build. Use email and password below.",
+                style = MaterialTheme.typography.bodySmall)
+            Text("Or use your email and password", style = MaterialTheme.typography.labelLarge)
             OutlinedTextField(value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(),
                 label = { Text("Email") }, singleLine = true)
             OutlinedTextField(value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(),
                 label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(),
                 singleLine = true)
-            Button(enabled = !vm.signingIn && email.isNotBlank() && password.isNotBlank(),
+            OutlinedButton(enabled = !vm.signingIn && email.isNotBlank() && password.isNotBlank(),
                 onClick = { vm.signIn(email, password); password = "" }) {
-                Text(if (vm.signingIn) "Signing in…" else "Sign in")
+                Text(if (vm.signingIn) "Signing in…" else "Sign in with email")
             }
         } else {
-            Text("Signed in as " + session.email)
-            Text("You stay signed in on this device; the session renews itself and is never included in backups.",
-                style = MaterialTheme.typography.bodySmall)
+            Text("Signed in as " + session.email + if (session.provider == "google") " (Google)" else "")
+            Text("You stay signed in on this device; the session renews itself and is never included in backups. " +
+                "Signing out keeps all your work on this phone.", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { vm.signOut() }) { Text("Sign out") }
+        }
+        vm.pendingLink?.let { items ->
+            AlertDialog(onDismissRequest = { vm.declineLink() },
+                title = { Text("Link this phone's work to your account?") },
+                text = { Text("This phone has " + items + " item(s) (films, scenes, shots, takes and logged camera clips) that aren't " +
+                    "linked to any account. Linking copies them to " + (session?.email ?: "your account") + " in the cloud; " +
+                    "they also stay on this phone. Nothing is deleted either way.") },
+                confirmButton = { TextButton(onClick = { vm.confirmLink() }) { Text("Link and sync") } },
+                dismissButton = { TextButton(onClick = { vm.declineLink() }) { Text("Not now") } })
         }
         HorizontalDivider()
         CloudSyncSection(vm)

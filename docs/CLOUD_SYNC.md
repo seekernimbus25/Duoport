@@ -30,6 +30,13 @@ is renewed automatically when it is about to expire. A revoked refresh token sig
 WorkManager runs a sync every 6 hours on any network while signed in, and shortly after sign-in.
 Background runs never resolve conflicts.
 
+## Which account the phone's work belongs to
+Sign-in is email/password or **Continue with Google** (docs/GOOGLE_SIGN_IN.md). Before any sync,
+the session is confirmed with the server and RLS is probed on the live tables. Local work is
+then linked to one account: silently if the phone is empty, otherwise only after the person
+confirms. A different account signing in on the same phone gets sync paused, never a copy of
+the first account's work. Sign-out keeps all local data and the link.
+
 ## Verification status
 - Logic: JVM tests (`app/src/test/.../SyncTest.kt`) drive two simulated devices against an
   in-memory cloud with the trigger semantics: create, pull, edit propagation, tombstone

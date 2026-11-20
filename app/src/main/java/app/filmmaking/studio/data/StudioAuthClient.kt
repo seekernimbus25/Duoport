@@ -14,13 +14,18 @@ import java.net.URL
  * The refresh token is kept in app-private storage (allowBackup=false) so sessions survive
  * restarts and background sync can renew the short-lived access token.
  */
-class StudioAuthClient {
+class StudioAuthClient(
+    private val baseUrl: String = StudioConfig.SUPABASE_URL,
+    private val apiKey: String = StudioConfig.SUPABASE_PUBLISHABLE_KEY
+) {
     data class Session(
         val accessToken: String,
         val email: String,
         val refreshToken: String = "",
         val expiresAtMs: Long = 0L,
-        val userId: String = ""
+        val userId: String = "",
+        /** "email" or "google": how this device signed in (display only; the account is userId). */
+        val provider: String = "email"
     ) {
         fun expiringSoon(now: Long = System.currentTimeMillis()) = expiresAtMs - now < 90_000L
     }
@@ -28,20 +33,61 @@ class StudioAuthClient {
     suspend fun signIn(email: String, password: String): Session =
         token("password", JSONObject().put("email", email.trim()).put("password", password), email.trim())
 
-    suspend fun refresh(old: Session): Session {
-        require(old.refreshToken.isNotBlank()) { "Session expired: sign in again" }
-        return token("refresh_token", JSONObject().put("refresh_token", old.refreshToken), old.email)
+    /**
+     * Supabase native Google sign-in: exchange a Google ID token (audience = the OAuth Web client ID) for a
+     * Supabase session. [rawNonce] is the value whose SHA-256 was given to Google; Supabase checks the pair.
+     */
+    suspend fun signInWithGoogle(idToken: String, rawNonce: String): Session = try {
+        token("id_token", idTokenBody(idToken, rawNonce), "", provider = "google")
+    } catch (e: AuthException) {
+        throw AuthException(e.status, GoogleAuthErrors.explain(e.status, e.message.orEmpty()))
     }
 
-    private suspend fun token(grant: String, body: JSONObject, email: String): Session = withContext(Dispatchers.IO) {
-        val url = URL(StudioConfig.SUPABASE_URL.trimEnd('/') + "/auth/v1/token?grant_type=" + grant)
+    suspend fun refresh(old: Session): Session {
+        require(old.refreshToken.isNotBlank()) { "Session expired: sign in again" }
+        return token("refresh_token", JSONObject().put("refresh_token", old.refreshToken), old.email, old.provider)
+    }
+
+    /** The account the server says this access token belongs to (`GET /auth/v1/user`). */
+    suspend fun user(accessToken: String): JSONObject = withContext(Dispatchers.IO) {
+        val (code, text) = http("GET", "/auth/v1/user", null, accessToken)
+        if (code !in 200..299) throw AuthException(code, "Could not confirm the signed-in account (HTTP $code)")
+        JSONObject(text)
+    }
+
+    /** Revokes this device's refresh token on the server (`scope=local`: other devices stay signed in). */
+    suspend fun logout(accessToken: String) = withContext(Dispatchers.IO) {
+        runCatching { http("POST", "/auth/v1/logout?scope=local", "{}", accessToken) }
+        Unit
+    }
+
+    private fun http(method: String, path: String, body: String?, bearer: String): Pair<Int, String> {
+        val c = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = method
+            c.connectTimeout = 12000
+            c.readTimeout = 15000
+            c.setRequestProperty("apikey", apiKey)
+            c.setRequestProperty("Authorization", "Bearer $bearer")
+            if (body != null) {
+                c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
+            }
+            val text = (if (c.responseCode in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            return c.responseCode to text
+        } finally { c.disconnect() }
+    }
+
+    private suspend fun token(grant: String, body: JSONObject, email: String, provider: String = "email"): Session = withContext(Dispatchers.IO) {
+        val url = URL(baseUrl.trimEnd('/') + "/auth/v1/token?grant_type=" + grant)
         val c = url.openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"
             c.connectTimeout = 12000
             c.readTimeout = 15000
             c.doOutput = true
-            c.setRequestProperty("apikey", StudioConfig.SUPABASE_PUBLISHABLE_KEY)
+            c.setRequestProperty("apikey", apiKey)
             c.setRequestProperty("Content-Type", "application/json")
             c.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
             val response = (if (c.responseCode in 200..299) c.inputStream else c.errorStream)
@@ -62,9 +108,15 @@ class StudioAuthClient {
                 email = parsed?.optJSONObject("user")?.optString("email")?.ifBlank { null } ?: email,
                 refreshToken = parsed?.optString("refresh_token").orEmpty(),
                 expiresAtMs = System.currentTimeMillis() + expiresIn * 1000L,
-                userId = parsed?.optJSONObject("user")?.optString("id").orEmpty()
+                userId = parsed?.optJSONObject("user")?.optString("id").orEmpty(),
+                provider = provider
             )
         } finally { c.disconnect() }
+    }
+
+    companion object {
+        fun idTokenBody(idToken: String, rawNonce: String): JSONObject =
+            JSONObject().put("provider", "google").put("id_token", idToken).put("nonce", rawNonce)
     }
 }
 
@@ -82,19 +134,20 @@ class SessionStore(context: Context, private val auth: StudioAuthClient) {
             email = prefs.getString("email", "").orEmpty(),
             refreshToken = prefs.getString("refresh", "").orEmpty(),
             expiresAtMs = prefs.getLong("expires", 0L),
-            userId = prefs.getString("user", "").orEmpty()
+            userId = prefs.getString("user", "").orEmpty(),
+            provider = prefs.getString("provider", "email").orEmpty()
         )
     }
 
     fun save(s: StudioAuthClient.Session) {
         prefs.edit().putString("access", s.accessToken).putString("email", s.email)
             .putString("refresh", s.refreshToken).putLong("expires", s.expiresAtMs)
-            .putString("user", s.userId).apply()
+            .putString("user", s.userId).putString("provider", s.provider).apply()
     }
 
     /** Signs out locally; the device id is kept so the cloud can still tell devices apart. */
     fun clear() {
-        prefs.edit().remove("access").remove("email").remove("refresh").remove("expires").remove("user").apply()
+        prefs.edit().remove("access").remove("email").remove("refresh").remove("expires").remove("user").remove("provider").apply()
     }
 
     /** A valid access token, refreshing it first when it is about to expire. */

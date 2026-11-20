@@ -11,6 +11,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Public client config only (never the Google client secret). Set once per job so every Gradle
+      # invocation configures the app identically; a step without them silently rebuilt the APK empty.
+      STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
+      STUDIO_GOOGLE_WEB_CLIENT_ID: ${{ vars.STUDIO_GOOGLE_WEB_CLIENT_ID || secrets.STUDIO_GOOGLE_WEB_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,19 +33,20 @@ jobs:
       - name: Unit tests and independent production-package validation
         run: bash scripts/validate_export.sh
 
-      - name: Verify Sentry client configuration is supplied
-        env:
-          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
+      - name: Verify public client configuration is supplied
         run: |
           if [ -z "$STUDIO_SENTRY_DSN" ]; then
             echo "::warning::STUDIO_SENTRY_DSN is absent. This APK will build, but crash reporting will remain disabled."
           else
             echo "::notice::Sentry DSN supplied for Android release build (value not logged)."
           fi
+          if [ -z "$STUDIO_GOOGLE_WEB_CLIENT_ID" ]; then
+            echo "::warning::STUDIO_GOOGLE_WEB_CLIENT_ID is absent. Continue with Google stays disabled; email sign-in still works."
+          else
+            echo "::notice::Google Web client ID supplied (public identifier)."
+          fi
 
       - name: Build release APK
-        env:
-          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
         run: ./gradlew assembleRelease --stacktrace
 
       - name: Rename APK
@@ -97,7 +103,6 @@ jobs:
       - name: Build Play bundle
         id: play
         env:
-          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
           UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
           UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
           UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}

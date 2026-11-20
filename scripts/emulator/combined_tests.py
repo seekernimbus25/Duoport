@@ -301,6 +301,25 @@ def test_sentry_opt_in_event():
     see("Diagnostic test event queued",contains=True,timeout=10)
     D.sleep(20)  # let the SDK deliver before the emulator shuts down
 
+def test_google_sign_in_ui():
+    """Continue with Google exists; never crashes; without a client ID it says so plainly."""
+    D.relaunch();click("Settings")
+    btn=D.scroll_to(text="Continue with Google",max_swipes=14)
+    assert btn,"Continue with Google button missing"
+    if not btn.enabled:
+        see("Google sign-in isn't set up in this build",contains=True,timeout=5)
+        return
+    D.tap_xy(btn.cx,btn.cy)
+    # The CI emulator has no Google account: Credential Manager must end in a plain message.
+    outcomes=["No Google account","Google Play services","cancelled","Google sign-in failed","doesn't support","interrupted"]
+    end=time.time()+40
+    while time.time()<end:
+        if any(D.find(text=o,contains=True,timeout=1) for o in outcomes): break
+        if not D.find(text="Settings",contains=True,timeout=1): D.ashell("input keyevent 4")  # dismiss a sheet
+    else:
+        raise AssertionError("Google sign-in gave no message")
+    assert "studio" in D.ashell("dumpsys activity activities | grep -m1 ResumedActivity").lower() or D.find(text="Settings",timeout=3),"app left the foreground"
+
 def main():
     print("Emulator OS",D.ashell("getprop ro.build.version.release"),flush=True)
     print(D.adb("install -r -g "+os.environ["NEW_APK"],timeout=180,check=True))
@@ -331,6 +350,7 @@ def main():
         ("COMB-17","Beat board drag reorder persists",test_beat_drag_reorder),
         ("COMB-18","Creative DNA explicit preference persists offline",test_creative_dna_preferences),
         ("COMB-19","Opt-in Sentry diagnostic test event is sent",test_sentry_opt_in_event),
+        ("COMB-20","Continue with Google is present and fails safely without an account",test_google_sign_in_ui),
     ]:case(id,title,fn)
     with open(os.path.join(OUT,"results.json"),"w") as f:json.dump(rows,f,indent=2)
     report=["# Combined Android Emulator Acceptance","","| Test | Status | Result |","|---|---|---|"]

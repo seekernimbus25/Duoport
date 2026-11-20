@@ -32,6 +32,7 @@ checks the acceptance rule; "Device QA" is what still needs a real phone (none o
 | 25 | Cloud copy & sync | Room ⇄ Supabase, conflicts, tombstones, WorkManager (docs/CLOUD_SYNC.md) | `SyncTest` (two simulated devices) | live two-device sync with a real account; `external_clip` migration must be applied |
 | 26 | Backup/import | Keeps every id; refuses conflicting records | existing instrumentation | — |
 | 27 | Camera profile | Camera2 probe → `verified: true` only when device-reported | `cameraProfileIsVerifiedOnlyWhenDeviceReported`, COMB-14 | — |
+| 28 | Google sign-in | Credential Manager → Supabase `id_token` with nonce; session restore and local sign-out; ownership gate and RLS check before any link/sync; local work never deleted (docs/GOOGLE_SIGN_IN.md) | `GoogleSignInFlowTest`, COMB-20 | real Google account on a real phone; Google Cloud OAuth clients and Supabase Google provider must be set up first |
 
 External camera footage import (handoff step 5) is covered by
 `externalFootageImportVerifiesChecksumAndOnlyMatchesLoggedNames` (real MediaStore content URI).
@@ -39,8 +40,9 @@ External camera footage import (handoff step 5) is covered by
 Two-account archive isolation (run locally with two existing test accounts; nothing is committed):
 `STUDIO_LIVE_A_EMAIL=… STUDIO_LIVE_A_PASSWORD=… STUDIO_LIVE_B_EMAIL=… STUDIO_LIVE_B_PASSWORD=… [STUDIO_LIVE_API=https://…] ./gradlew --no-daemon :app:testDebugUnitTest --tests '*ArchiveIsolationLiveTest*'`
 
-Not production-ready: no physical-device QA, no live authenticated AI or sync run, Sentry not
-receiving events until `STUDIO_SENTRY_DSN` is set, no release signing / Play publishing.
+Not production-ready: no physical-device QA, no live authenticated AI or sync run, no real
+Google sign-in yet, Sentry delivery from the emulator not yet confirmed, no release signing /
+Play publishing. Toolchain: Kotlin 2.4.21, KSP 2.3.14, AGP 8.13.2, Gradle 8.14.3.
 
 ## Verified CI evidence (same commit `f900ae7`)
 - Android 14 emulator: **21/21** instrumentation tests and **14/14** UI acceptance cases (COMB-01…14) —

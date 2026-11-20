@@ -16,6 +16,17 @@ require(studioSentryDsn.isEmpty() ||
     (studioSentryDsn.startsWith("https://") && !studioSentryDsn.contains('"') &&
         !studioSentryDsn.contains('\\'))) { "STUDIO_SENTRY_DSN must be a valid HTTPS DSN" }
 
+// Google Sign-In: the OAuth *Web* client ID (Google Cloud > Credentials) used as Credential Manager's
+// server client ID, so Google issues an ID token Supabase Auth accepts. It is a public identifier, not a
+// secret; the Google client SECRET is never read here and must never be in the APK.
+// Supplied by the environment (CI: repository variable or secret) or ~/.gradle/gradle.properties.
+val googleWebClientId = (System.getenv("STUDIO_GOOGLE_WEB_CLIENT_ID")
+    ?: (project.findProperty("studio.googleWebClientId") as String?)).orEmpty().trim()
+require(googleWebClientId.isEmpty() ||
+    Regex("^[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com$").matches(googleWebClientId)) {
+    "STUDIO_GOOGLE_WEB_CLIENT_ID must be a Google OAuth client ID (…apps.googleusercontent.com), never a client secret"
+}
+
 android {
     namespace = "com.dualframe.camera"
     compileSdk = 36
@@ -28,6 +39,7 @@ android {
         versionName = "1.0.$buildNumber"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "SENTRY_DSN", "\"$studioSentryDsn\"")
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
     }
 
     signingConfigs {
@@ -91,10 +103,11 @@ android {
         checkReleaseBuilds = false
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures { compose = true; buildConfig = true }
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }
 
 dependencies {
@@ -113,6 +126,10 @@ dependencies {
     implementation("androidx.room:room-ktx:2.7.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.work:work-runtime-ktx:2.10.2")
+    // Native Google Sign-In through Android Credential Manager (no Firebase); the ID token goes to Supabase Auth.
+    implementation("androidx.credentials:credentials:1.6.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.2.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

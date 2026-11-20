@@ -31,7 +31,10 @@ class SupabaseRest(
     private val accessToken: () -> String,
     private val baseUrl: String = StudioConfig.SUPABASE_URL,
     private val apiKey: String = StudioConfig.SUPABASE_PUBLISHABLE_KEY
-) : CloudApi {
+) : CloudApi, RawRest {
+    override suspend fun request(method: String, path: String, body: String?, prefer: String?): Pair<Int, String> =
+        call(method, path, body, prefer)
+
     private val pageSize = 500
 
     private fun enc(v: String) = URLEncoder.encode(v, "UTF-8")

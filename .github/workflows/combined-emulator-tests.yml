@@ -13,6 +13,11 @@ jobs:
   combined:
     runs-on: ubuntu-latest
     timeout-minutes: 65
+    env:
+      # Public client config only (never the Google client secret). Set once per job so every Gradle
+      # invocation configures the app identically; a step without them silently rebuilt the APK empty.
+      STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
+      STUDIO_GOOGLE_WEB_CLIENT_ID: ${{ vars.STUDIO_GOOGLE_WEB_CLIENT_ID || secrets.STUDIO_GOOGLE_WEB_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -21,9 +26,8 @@ jobs:
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
       - name: Build emulator debug APK
-        env:
-          # Public client DSN (never logged); lets COMB-19 send one opt-in diagnostic event.
-          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
+        # The job-level DSN lets COMB-19 send one opt-in diagnostic event. run_combined.sh calls Gradle
+        # again (connectedDebugAndroidTest); with the same env it reuses this APK instead of rebuilding it.
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: Enable KVM
         run: |

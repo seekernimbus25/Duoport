@@ -107,6 +107,11 @@ fun CloudSyncSection(vm: StudioViewModel) {
             Text("Sign in to copy this device's films to your Studio cloud and sync with your other devices.", style = MaterialTheme.typography.bodySmall)
             return@Column
         }
+        vm.syncBlocked?.let { why ->
+            Text(why, style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(enabled = !vm.restoring, onClick = { vm.reviewLink() }) { Text("Check again / link this phone's work") }
+            return@Column
+        }
         Text("Last result: " + vm.syncSummary, style = MaterialTheme.typography.bodySmall)
         Text("Background sync runs every few hours on any network. No last-write-wins: when both devices changed a record you decide.",
             style = MaterialTheme.typography.bodySmall)
