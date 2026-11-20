@@ -210,6 +210,78 @@ def test_sync_gating_and_camera_profile():
     see("Camera profile read",contains=True,timeout=20)
     assert D.scroll_to(text="verified (device-reported)",contains=True,max_swipes=6),"Profile not labelled device-reported"
 
+def by_desc(desc,timeout=12):
+    n=D.find(desc=desc,contains=True,timeout=timeout)
+    if n is None: raise AssertionError("Missing element "+desc+": "+repr([x.text for x in D.dump() if x.text][:30]))
+    return n
+def reach_desc(desc,max_swipes=10):
+    w,h=D.screen_size()
+    for _ in range(max_swipes+1):
+        n=D.find(desc=desc,contains=True,timeout=0,nodes=D.dump())
+        if n is not None and h*0.12<=n.cy<=h*0.88: return n
+        D.swipe(w//2,int(h*0.75),w//2,int(h*0.40),400)
+    raise AssertionError("Cannot reach "+desc)
+
+def test_storyboard_sketch():
+    open_workspace("Visual")
+    see("Storyboards",timeout=15)
+    scroll_click("Sketch")
+    pad=by_desc("Sketch area")
+    # A real finger stroke across the frame.
+    D.swipe(pad.x1+int((pad.x2-pad.x1)*0.2),pad.y1+int((pad.y2-pad.y1)*0.3),pad.x1+int((pad.x2-pad.x1)*0.8),pad.y1+int((pad.y2-pad.y1)*0.7),700)
+    click("Save sketch")
+    see("Sketch saved",contains=True,timeout=15)
+    assert D.scroll_to(text="· drawing",contains=True,max_swipes=6),"Sketch version not listed"
+    D.relaunch();open_workspace("Visual")
+    assert D.scroll_to(text="· drawing",contains=True,max_swipes=6),"Sketch not persisted"
+
+def test_diagram_canvas_drag():
+    open_workspace("Visual")
+    n=D.scroll_to(text="New diagram name",max_swipes=10)
+    assert n,"Diagram form missing"
+    D.tap_xy(n.cx,n.cy);D.type_text("BlockingOne")
+    scroll_click("Create diagram")
+    scroll_click("+ Element")
+    see("Add element")
+    enter("Label","CamA")
+    click("Add")
+    assert D.scroll_to(text="“CamA” at 5.0m, 4.0m",contains=True,max_swipes=8),"Element not added at 5,4"
+    canvas=reach_desc("Diagram canvas, 1 elements")
+    cw=canvas.x2-canvas.x1
+    # Element sits at the canvas centre (5 m of 10, 4 m of 8): drag it 2 m right.
+    D.swipe(canvas.cx,canvas.cy,canvas.cx+int(cw*0.2),canvas.cy,900)
+    D.sleep(2)
+    assert D.find(text="“CamA” at 5.0m",contains=True,timeout=2) is None,"Drag did not move the element"
+    assert D.scroll_to(text="“CamA” at",contains=True,max_swipes=4),"Element lost after drag"
+
+def test_beat_drag_reorder():
+    open_workspace("Story")
+    for name in ("BeatOne","BeatTwo"):
+        scroll_click("+ Visual beat")
+        see("Add Visual beat")
+        enter("Title",name)
+        click("Save offline")
+        see(name,timeout=15)
+    D.relaunch();open_workspace("Story")
+    first=see("1. BeatOne");second=see("2. BeatTwo")
+    handle=by_desc("Drag BeatOne")
+    D.swipe(handle.cx,handle.cy,handle.cx,handle.cy+int((second.cy-first.cy)*1.3),1200)
+    D.sleep(2)
+    see("1. BeatTwo",timeout=10);see("2. BeatOne")
+    D.relaunch();open_workspace("Story")
+    see("1. BeatTwo",timeout=12)
+
+def test_creative_dna_preferences():
+    D.relaunch();click("AI");click("Creative DNA")
+    see("Explicit preferences",timeout=12)
+    see("Sign in under Settings to analyse your archive.")
+    enter("e.g. I prefer long, observational takes","PreferStillFrames")
+    click("Add preference")
+    see("PreferStillFrames",timeout=12)
+    D.relaunch();click("AI");click("Creative DNA")
+    see("PreferStillFrames",timeout=12)
+    see("1 explicit preference(s)",contains=True)
+
 def main():
     print("Emulator OS",D.ashell("getprop ro.build.version.release"),flush=True)
     print(D.adb("install -r -g "+os.environ["NEW_APK"],timeout=180,check=True))
@@ -235,6 +307,10 @@ def main():
         ("COMB-12","Shoot Mode logs a room-tone take offline",test_shoot_mode),
         ("COMB-13","Wrap readiness never claims unimported footage; Markdown export",test_wrap_readiness_exports),
         ("COMB-14","Cloud sync gated when signed out; device camera profile verified",test_sync_gating_and_camera_profile),
+        ("COMB-15","Storyboard sketch by finger persists as a drawing version",test_storyboard_sketch),
+        ("COMB-16","Diagram canvas: drag moves an element in metres",test_diagram_canvas_drag),
+        ("COMB-17","Beat board drag reorder persists",test_beat_drag_reorder),
+        ("COMB-18","Creative DNA explicit preference persists offline",test_creative_dna_preferences),
     ]:case(id,title,fn)
     with open(os.path.join(OUT,"results.json"),"w") as f:json.dump(rows,f,indent=2)
     report=["# Combined Android Emulator Acceptance","","| Test | Status | Result |","|---|---|---|"]

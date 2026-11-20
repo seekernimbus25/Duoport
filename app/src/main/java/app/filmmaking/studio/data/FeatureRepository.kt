@@ -73,6 +73,16 @@ class FeatureRepository(private val db: StudioDatabase) {
         save(beats[i], a.put("order", ob)); save(beats[j], b.put("order", oa))
     }
 
+    /** Drag reorder: rewrites only `order` (1..n) on beats whose position changed; shot links never move. */
+    suspend fun reorderBeats(projectId: String, orderedIds: List<String>) = db.withTransaction {
+        val beats = dao.listByProject("beats", projectId).filter { it.deletedAt == null }
+        require(orderedIds.toSet() == beats.map { it.id }.toSet() && orderedIds.size == beats.size) { "The beat list changed; try again" }
+        orderedIds.forEachIndexed { i, id ->
+            val r = beats.first { it.id == id }; val b = JSONObject(r.payload)
+            if (b.optDouble("order") != (i + 1).toDouble()) save(r, b.put("order", i + 1))
+        }
+    }
+
     suspend fun linkBeatShots(beatId: String, shotIds: List<String>) = db.withTransaction {
         val beat = get("beats", beatId); val b = JSONObject(beat.payload)
         val old = b.optJSONArray("shotIds").strings().toSet()
@@ -139,14 +149,34 @@ class FeatureRepository(private val db: StudioDatabase) {
     }
 
     // ---------- #9 Storyboards: chosen frame unique per shot ----------
-    suspend fun addStoryboard(projectId: String, shotId: String, imageUri: String, source: String, annotations: JSONObject, conceptual: Boolean): StudioRecord {
+    /**
+     * A frame needs an image, sketch strokes (0..1 coordinates, the web's portable vector) or an archive passage.
+     * AI frames are always conceptual references.
+     */
+    suspend fun addStoryboard(projectId: String, shotId: String, imageUri: String?, source: String, annotations: JSONObject, conceptual: Boolean,
+                              strokes: JSONArray? = null, archiveRef: JSONObject? = null): StudioRecord {
         require(source in setOf("upload", "drawing", "archive", "ai"))
+        require(!imageUri.isNullOrBlank() || (strokes != null && strokes.length() > 0) || archiveRef != null) { "The frame is empty" }
+        if (source == "drawing") require(strokes != null && strokes.length() > 0) { "Draw something first" }
+        if (source == "archive") require(archiveRef != null && archiveRef.optString("documentId").isNotBlank()) { "Pick an archive passage" }
         get("shots", shotId)
         val n = dao.listByProject("storyboards", projectId).count { JSONObject(it.payload).optString("shotId") == shotId } + 1
+        val ann = JSONObject(); for (k in ANNOTATION_KEYS) ann.put(k, annotations.optString(k))
         val b = JSONObject().put("projectId", projectId).put("shotId", shotId).put("version", n).put("source", source)
-            .put("imageUri", imageUri).put("conceptual", conceptual || source == "ai").put("annotations", annotations)
+            .put("conceptual", conceptual || source == "ai").put("annotations", ann)
             .put("chosen", false).put("createdAt", now())
+        if (!imageUri.isNullOrBlank()) b.put("imageUri", imageUri)
+        if (strokes != null && strokes.length() > 0) b.put("strokes", strokes)
+        if (archiveRef != null) b.put("archiveRef", JSONObject().put("documentId", archiveRef.optString("documentId"))
+            .put("title", archiveRef.optString("title").take(200)).put("excerpt", archiveRef.optString("excerpt").take(600)))
         return insert("storyboards", b, "Frame v$n")
+    }
+
+    suspend fun setStoryboardAnnotations(frameId: String, values: Map<String, String>) {
+        val f = get("storyboards", frameId); val b = JSONObject(f.payload)
+        val ann = b.optJSONObject("annotations") ?: JSONObject()
+        values.forEach { (k, v) -> require(k in ANNOTATION_KEYS) { "Unknown annotation" }; ann.put(k, v.take(500)) }
+        save(f, b.put("annotations", ann))
     }
 
     suspend fun chooseStoryboard(frameId: String) = db.withTransaction {
@@ -189,6 +219,32 @@ class FeatureRepository(private val db: StudioDatabase) {
             els.put(JSONObject().put("id", uid()).put("type", type).put("x", x).put("y", y).put("rotation", rotation).put("label", label.take(80)))
         }
     }
+
+    /** Drag on the canvas: position is clamped to the set; an approved diagram forks a draft (element ids kept). */
+    suspend fun moveDiagramElement(diagramId: String, elementId: String, x: Double, y: Double): String {
+        val d = JSONObject(get("diagrams", diagramId).payload)
+        val w = d.optDouble("width", 10.0); val h = d.optDouble("height", 8.0)
+        val cx = round2(x.coerceIn(0.0, w)); val cy = round2(y.coerceIn(0.0, h))
+        return editDiagram(diagramId) { els -> mapElement(els, elementId) { e ->
+            val dx = cx - e.optDouble("x"); val dy = cy - e.optDouble("y")
+            e.put("x", cx).put("y", cy)
+            // Moves and walls keep their shape: the end point travels with the start point.
+            if (e.has("x2") && e.has("y2")) e.put("x2", round2((e.optDouble("x2") + dx).coerceIn(0.0, w))).put("y2", round2((e.optDouble("y2") + dy).coerceIn(0.0, h)))
+            e
+        } }
+    }
+
+    suspend fun rotateDiagramElement(diagramId: String, elementId: String, degrees: Double): String =
+        editDiagram(diagramId) { els -> mapElement(els, elementId) { e -> e.put("rotation", (((e.optDouble("rotation", 0.0) + degrees) % 360) + 360) % 360) } }
+
+    suspend fun renameDiagramElement(diagramId: String, elementId: String, label: String): String =
+        editDiagram(diagramId) { els -> mapElement(els, elementId) { e -> e.put("label", label.take(80)) } }
+
+    private fun mapElement(els: JSONArray, id: String, f: (JSONObject) -> JSONObject): JSONArray {
+        require((0 until els.length()).any { els.getJSONObject(it).optString("id") == id }) { "Element no longer exists" }
+        return JSONArray().also { out -> for (i in 0 until els.length()) { val e = els.getJSONObject(i); out.put(if (e.optString("id") == id) f(e) else e) } }
+    }
+    private fun round2(v: Double) = Math.round(v * 100) / 100.0
 
     suspend fun removeDiagramElement(diagramId: String, elementId: String): String = editDiagram(diagramId) { els ->
         JSONArray((0 until els.length()).map { els.getJSONObject(it) }.filter { it.optString("id") != elementId })
@@ -372,6 +428,16 @@ class FeatureRepository(private val db: StudioDatabase) {
     }
 
     // ---------- #21 Coverage, pickups, omissions ----------
+    /** Planned / actual reference photos (downscaled JPEG data URIs, as on the web). */
+    suspend fun setContinuityPhoto(id: String, which: String, dataUri: String?) {
+        require(which == "planned" || which == "actual")
+        dataUri?.let { require(it.startsWith("data:image/")) { "Unsupported image" } }
+        val r = get("continuity", id); val b = JSONObject(r.payload)
+        val key = which + "Image"
+        if (dataUri == null) b.remove(key) else b.put(key, dataUri)
+        save(r, b)
+    }
+
     suspend fun addPickup(sceneId: String, title: String, reason: String): StudioRecord = db.withTransaction {
         val shot = StudioRepository(db).addShot(sceneId, title)
         val b = JSONObject(shot.payload).put("pickup", true).put("purpose", reason.take(500))
@@ -389,6 +455,47 @@ class FeatureRepository(private val db: StudioDatabase) {
 
     suspend fun removeRecord(collection: String, id: String) { get(collection, id); dao.tombstone(collection, id) }
 
+    // ---------- #24 Creative DNA: nothing inferred is used until the creator approves it ----------
+    suspend fun addPreference(text: String): StudioRecord {
+        require(text.trim().length >= 3) { "Write the preference first" }
+        return insert("memories", JSONObject().put("text", text.trim().take(500)).put("scope", "identity").put("status", "approved")
+            .put("source", "user").put("createdAt", now()), text.trim())
+    }
+
+    /** Stores only inferred items that carry evidence; experiments are returned to the caller and not saved. */
+    suspend fun saveDnaSuggestions(suggestions: JSONArray): Pair<Int, List<JSONObject>> = db.withTransaction {
+        var saved = 0; val experiments = mutableListOf<JSONObject>()
+        val existing = dao.listByCollection("memories").filter { it.deletedAt == null }.map { JSONObject(it.payload).optString("text").trim().lowercase() }.toSet()
+        for (i in 0 until suggestions.length()) {
+            val s = suggestions.optJSONObject(i) ?: continue
+            val text = s.optString("text").trim(); if (text.length < 5) continue
+            if (s.optString("kind") == "experiment") { experiments += s; continue }
+            val ev = s.optJSONArray("evidence") ?: JSONArray()
+            if (s.optString("kind") != "inferred" || ev.length() == 0 || text.lowercase() in existing) continue
+            insert("memories", JSONObject().put("text", text.take(500)).put("scope", "identity").put("status", "proposed")
+                .put("source", "assistant").put("category", s.optString("category").take(60)).put("evidence", ev).put("createdAt", now()), text)
+            saved++
+        }
+        saved to experiments
+    }
+
+    suspend fun approveMemory(id: String) {
+        val r = get("memories", id); save(r, JSONObject(r.payload).put("status", "approved"))
+    }
+
+    suspend fun editMemory(id: String, text: String) {
+        require(text.trim().length >= 3) { "The text is too short" }
+        val r = get("memories", id); save(r, JSONObject(r.payload).put("text", text.trim().take(500)), text.trim())
+    }
+
+    /** "Try in <film>": an experiment scoped to one project, never part of the long-term identity. */
+    suspend fun saveExperiment(projectId: String, text: String, category: String): StudioRecord {
+        get("projects", projectId)
+        val t = "Experiment: " + text.trim()
+        return insert("memories", JSONObject().put("text", t.take(500)).put("scope", "project").put("projectId", projectId)
+            .put("status", "approved").put("source", "assistant").put("category", category.take(60)).put("createdAt", now()), t)
+    }
+
     // ---------- #27 Camera profile: verified only when device-reported ----------
     suspend fun saveCameraProfile(profile: JSONObject, deviceReported: Boolean) {
         val id = "00000000-0000-4000-8000-0000000000ca"
@@ -398,7 +505,15 @@ class FeatureRepository(private val db: StudioDatabase) {
     }
 
     companion object {
+        val ANNOTATION_KEYS = listOf("composition", "movement", "lighting", "intent")
         val DIAGRAM_TYPES = listOf("camera", "subject", "furniture", "wall", "door", "window", "cameraMove", "subjectMove",
             "key", "fill", "back", "practical", "natural", "reflector", "diffuser", "negative")
     }
+}
+
+/** What the AI may read from Creative DNA: approved identity preferences plus approved choices for this film only. */
+object CreativeDna {
+    fun approved(records: List<StudioRecord>, projectId: String?): List<JSONObject> = records
+        .filter { it.collection == "memories" && it.deletedAt == null }.map { JSONObject(it.payload) }
+        .filter { it.optString("status") == "approved" && (it.optString("scope") == "identity" || (projectId != null && it.optString("projectId") == projectId)) }
 }

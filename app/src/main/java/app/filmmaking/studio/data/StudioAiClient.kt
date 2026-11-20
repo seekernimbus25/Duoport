@@ -26,13 +26,17 @@ class StudioAiClient(private val endpoint: ApiEndpoint) {
         project: StudioRecord?,
         useArchive: Boolean = false,
         mode: String = "Explore",
-        role: String = "Creative Partner"
+        role: String = "Creative Partner",
+        memories: List<JSONObject> = emptyList()
     ): AiAnswer = withContext(Dispatchers.IO) {
         require(provider == "anthropic" || provider == "openai")
         require(endpoint.baseUrl.startsWith("https://")) { "Configure an HTTPS AI endpoint in Settings" }
         val h = JSONArray()
         history.takeLast(12).forEach { h.put(JSONObject().put("from", it.from).put("text", it.text.take(8000))) }
         val sources = JSONArray()
+        // Approved Creative DNA only (web layer A); proposed suggestions are never sent.
+        memories.forEach { m -> sources.put(JSONObject().put("layer", "A")
+            .put("label", if (m.optString("scope") == "identity") "Memory" else "Project choice").put("text", m.optString("text").take(500))) }
         val targets = JSONObject()
             .put("artifactIds", JSONArray())
             .put("shotIds", JSONArray())

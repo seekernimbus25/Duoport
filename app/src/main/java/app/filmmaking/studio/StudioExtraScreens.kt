@@ -267,3 +267,117 @@ fun AiDirectorScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: Lis
         }
     }
 }
+
+/**
+ * #24 Creative DNA. Explicit preferences are typed by the creator; discovery reads chosen archive
+ * documents and only proposes patterns backed by verbatim quotes. Nothing proposed is used by the AI
+ * until it is approved; experiments stay temporary unless saved to one film.
+ */
+@Composable
+fun CreativeDnaScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: List<StudioRecord>) {
+    val memories = all.filter { it.collection == "memories" && it.deletedAt == null }
+    val explicit = memories.filter { data(it).optString("status") == "approved" && data(it).optString("scope") == "identity" }
+    val pending = memories.filter { data(it).optString("status") == "proposed" }
+    val projectChoices = memories.filter { data(it).optString("status") == "approved" && data(it).optString("scope") == "project" }
+    var preference by rememberSaveable { mutableStateOf("") }
+    var focus by rememberSaveable { mutableStateOf("") }
+    var provider by rememberSaveable { mutableStateOf("anthropic") }
+    var picked by remember { mutableStateOf(setOf<String>()) }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            Text("Creative DNA", style = MaterialTheme.typography.titleLarge)
+            Text(explicit.size.toString() + " explicit preference(s) · " + pending.size + " inferred awaiting approval · " +
+                projectChoices.size + " project choice(s). Only approved items are sent to the AI.", style = MaterialTheme.typography.bodySmall)
+        }
+        item { Text("Explicit preferences", style = MaterialTheme.typography.titleMedium) }
+        items(explicit, key = { it.id }) { m -> MemoryCard(vm, m, editable = true) }
+        item {
+            OutlinedTextField(preference, { preference = it }, Modifier.fillMaxWidth(), label = { Text("e.g. I prefer long, observational takes") }, maxLines = 3)
+            Button(enabled = preference.trim().length >= 3, onClick = { vm.act { vm.features.addPreference(preference) }; preference = "" }) { Text("Add preference") }
+        }
+        item {
+            HorizontalDivider()
+            Text("Discover patterns in your work", style = MaterialTheme.typography.titleMedium)
+            Text("The AI reads selected archive documents and suggests possible patterns, each backed by quotes. " +
+                "Nothing becomes part of your Creative DNA until you approve it.", style = MaterialTheme.typography.bodySmall)
+            if (vm.session == null) Text("Sign in under Settings to analyse your archive.", style = MaterialTheme.typography.bodySmall)
+            else OutlinedButton(enabled = !vm.aiBusy, onClick = { vm.loadArchiveDocs() }) { Text(if (vm.archiveDocs.isEmpty()) "Load my indexed documents" else "Refresh documents") }
+        }
+        items(vm.archiveDocs, key = { "doc:" + it.optString("id") }) { d ->
+            val id = d.optString("id")
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Checkbox(checked = id in picked, enabled = id in picked || picked.size < 8,
+                    onCheckedChange = { on -> picked = if (on) picked + id else picked - id })
+                Text(d.optString("title"), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        if (vm.archiveDocs.isNotEmpty()) item {
+            OutlinedTextField(focus, { focus = it }, Modifier.fillMaxWidth(), label = { Text("Optional focus, e.g. how I write voiceovers") }, singleLine = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = provider == "anthropic", onClick = { provider = "anthropic" }, label = { Text("Claude Haiku 4.5") })
+                FilterChip(selected = provider == "openai", onClick = { provider = "openai" }, label = { Text("GPT-5 mini") })
+            }
+            Button(enabled = picked.isNotEmpty() && !vm.aiBusy, onClick = { vm.discoverDna(picked.toList(), provider, focus) }) {
+                Text(if (vm.aiBusy) "Reading…" else "Analyse " + picked.size + " document(s)")
+            }
+            Text("Up to 8 documents. Cost is checked against your per-request and daily AI limits on the server.", style = MaterialTheme.typography.labelSmall)
+        }
+        if (pending.isNotEmpty()) item { Text("Inferred — awaiting approval", style = MaterialTheme.typography.titleMedium) }
+        items(pending, key = { it.id }) { m -> MemoryCard(vm, m, editable = true) }
+        if (vm.dnaExperiments.isNotEmpty()) item { Text("Temporary experiments — beyond your habits (not saved)", style = MaterialTheme.typography.titleMedium) }
+        items(vm.dnaExperiments) { x ->
+            var choose by remember { mutableStateOf(false) }
+            OutlinedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp)) {
+                    Text(x.optString("text"))
+                    Row {
+                        Box {
+                            TextButton(enabled = projects.isNotEmpty(), onClick = { choose = true }) { Text("Try in a film…") }
+                            DropdownMenu(choose, { choose = false }) {
+                                projects.forEach { p -> DropdownMenuItem({ Text(p.title) }, {
+                                    choose = false
+                                    vm.act { vm.features.saveExperiment(p.id, x.optString("text"), x.optString("category")); vm.dismissExperiment(x)
+                                        vm.report("Saved as an experiment for " + p.title) }
+                                }) }
+                            }
+                        }
+                        TextButton(onClick = { vm.dismissExperiment(x) }) { Text("Dismiss") }
+                    }
+                }
+            }
+        }
+        if (projectChoices.isNotEmpty()) item { Text("Project choices & experiments", style = MaterialTheme.typography.titleMedium) }
+        items(projectChoices, key = { it.id }) { m ->
+            val film = projects.find { it.id == data(m).optString("projectId") }?.title ?: "film"
+            MemoryCard(vm, m, editable = false, note = "Only for " + film)
+        }
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun MemoryCard(vm: StudioViewModel, m: StudioRecord, editable: Boolean, note: String? = null) {
+    val d = data(m)
+    val proposed = d.optString("status") == "proposed"
+    var text by remember(m.id, d.optString("text")) { mutableStateOf(d.optString("text")) }
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            val tag = listOfNotNull(if (proposed) "Inferred" else if (d.optString("source") == "user") "Explicit" else "Approved",
+                d.optString("category").ifBlank { null }, note).joinToString(" · ")
+            Text(tag, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            if (editable) OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), maxLines = 4)
+            else Text(d.optString("text"))
+            val ev = d.optJSONArray("evidence") ?: JSONArray()
+            for (i in 0 until ev.length()) {
+                val e = ev.getJSONObject(i)
+                Text("“" + e.optString("quote") + "” — " + e.optString("title") + (if (!e.isNull("page") && e.has("page")) ", p." + e.optInt("page") else ""),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                if (editable && text.trim() != d.optString("text")) TextButton(onClick = { vm.act { vm.features.editMemory(m.id, text) } }) { Text("Save edit") }
+                if (proposed) TextButton(onClick = { vm.act { if (text.trim() != d.optString("text")) vm.features.editMemory(m.id, text); vm.features.approveMemory(m.id); vm.report("Added to Creative DNA") } }) { Text("Approve") }
+                TextButton(onClick = { vm.act { vm.features.removeRecord("memories", m.id) } }) { Text(if (proposed) "Reject" else "Remove") }
+            }
+        }
+    }
+}

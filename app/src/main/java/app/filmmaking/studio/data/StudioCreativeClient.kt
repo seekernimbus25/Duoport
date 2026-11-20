@@ -111,6 +111,32 @@ class StudioCreativeClient(private val endpoint: ApiEndpoint) {
             .optJSONArray("results") ?: JSONArray()
     }
 
+    /**
+     * Optional conceptual storyboard frame (server: gpt-image-1, low quality). The caller must have shown
+     * [STORYBOARD_IMAGE_COST_USD] and had the creator confirm it; the server refuses a lower confirmation.
+     */
+    suspend fun storyboardImage(accessToken: String, shotId: String, prompt: String): String = withContext(Dispatchers.IO) {
+        require(prompt.trim().length >= 5) { "Describe the frame first" }
+        val r = post(accessToken, "/api/v1/ai/storyboard-image", JSONObject().put("shotId", shotId.take(100))
+            .put("prompt", prompt.trim().take(1500)).put("confirmCostUsd", STORYBOARD_IMAGE_COST_USD))
+        r.optString("imageDataUri").takeIf { it.startsWith("data:image/") } ?: error("No image returned")
+    }
+
+    /** Creative DNA discovery over the caller's own indexed archive documents; every inferred item carries quotes. */
+    suspend fun discoverDna(accessToken: String, documentIds: List<String>, provider: String, model: String,
+                            existing: List<String>, focus: String): JSONObject = withContext(Dispatchers.IO) {
+        require(documentIds.isNotEmpty() && documentIds.size <= MAX_DNA_DOCS) { "Pick 1 to $MAX_DNA_DOCS documents" }
+        val body = JSONObject().put("documentIds", JSONArray(documentIds)).put("provider", provider).put("model", model)
+            .put("existing", JSONArray(existing.take(40).map { it.take(500) }))
+        if (focus.isNotBlank()) body.put("focus", focus.trim().take(300))
+        post(accessToken, "/api/v1/archive/dna", body)
+    }
+
+    companion object {
+        const val STORYBOARD_IMAGE_COST_USD = 0.016
+        const val MAX_DNA_DOCS = 8
+    }
+
     private fun post(accessToken: String, path: String, payload: JSONObject): JSONObject {
         require(accessToken.isNotBlank()) { "Sign in first" }
         val base = endpoint.baseUrl

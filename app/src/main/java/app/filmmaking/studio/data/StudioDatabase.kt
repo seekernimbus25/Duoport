@@ -30,6 +30,9 @@ interface StudioDao {
     @Query("SELECT * FROM studio_records ORDER BY collection, updatedAt")
     suspend fun allRecords(): List<StudioRecord>
 
+    @Query("SELECT * FROM studio_records WHERE collection = :collection AND deletedAt IS NULL")
+    suspend fun listByCollection(collection: String): List<StudioRecord>
+
     @Query("SELECT * FROM studio_records WHERE collection = :collection AND id = :id LIMIT 1")
     suspend fun find(collection: String, id: String): StudioRecord?
 

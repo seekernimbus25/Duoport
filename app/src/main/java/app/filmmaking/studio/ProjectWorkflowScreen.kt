@@ -1,5 +1,6 @@
 package app.filmmaking.studio
 
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,7 +11,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.filmmaking.studio.data.*
 import org.json.JSONArray
@@ -45,11 +53,14 @@ private fun JSONArray?.ids(): List<String> = this?.let { a -> (0 until a.length(
 private fun shotLabel(s: StudioRecord) = data(s).optString("code") + " " + s.title
 
 /** Context the AI is allowed to see: the film plus the selected items only. */
-private fun filmSources(project: StudioRecord): JSONArray {
+private fun filmSources(project: StudioRecord, memories: List<JSONObject> = emptyList()): JSONArray {
     val p = data(project)
     val text = listOf(p.optString("name"), p.optString("concept"), p.optString("logline"), p.optString("mood"))
         .filter { it.isNotBlank() }.joinToString("\n").ifBlank { project.title }
-    return JSONArray().put(JSONObject().put("layer", "C").put("label", "Current film").put("text", text.take(8000)))
+    val out = JSONArray()
+    // Approved Creative DNA first (web layer A), then the film itself.
+    memories.forEach { m -> out.put(JSONObject().put("layer", "A").put("label", if (m.optString("scope") == "identity") "Memory" else "Project choice").put("text", m.optString("text").take(500))) }
+    return out.put(JSONObject().put("layer", "C").put("label", "Current film").put("text", text.take(8000)))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,6 +74,7 @@ fun ProjectWorkflowScreen(
     onExport: (String) -> Unit,
     onImportFootage: () -> Unit,
     onPickStoryboard: (String) -> Unit,
+    onPickContinuityPhoto: (String, String) -> Unit,
     onShootMode: () -> Unit,
     section: String,
     onSection: (String) -> Unit
@@ -129,7 +141,7 @@ fun ProjectWorkflowScreen(
                 }
                 items(ordered, key = { it.collection + "/" + it.id }) { item ->
                     val kind = kinds.first { it.collection == item.collection }
-                    WorkflowCard(vm, item, kind, shots) {
+                    WorkflowCard(vm, item, kind, shots, onPickContinuityPhoto) {
                         editing = item; creating = kind; newTitle = item.title; newDetail = recordDetail(item)
                         shotId = data(item).optString("shotId").takeIf { it.isNotBlank() }
                     }
@@ -206,7 +218,8 @@ private fun AiProposals(vm: StudioViewModel, project: StudioRecord, op: String) 
 }
 
 @Composable
-private fun WorkflowCard(vm: StudioViewModel, item: StudioRecord, kind: WorkflowKind, shots: List<StudioRecord>, edit: () -> Unit) {
+private fun WorkflowCard(vm: StudioViewModel, item: StudioRecord, kind: WorkflowKind, shots: List<StudioRecord>,
+                         pickPhoto: (String, String) -> Unit = { _, _ -> }, edit: () -> Unit) {
     val json = data(item)
     var critiqueOpen by remember { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
@@ -238,6 +251,20 @@ private fun WorkflowCard(vm: StudioViewModel, item: StudioRecord, kind: Workflow
                         FilterChip(selected = json.optBoolean("resolved"), onClick = {
                             vm.act { vm.features.setContinuity(item.id, resolved = !json.optBoolean("resolved")) }
                         }, label = { Text(if (json.optBoolean("resolved")) "Resolved" else "Open") })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("planned" to "Planned photo", "actual" to "Actual photo").forEach { (which, label) ->
+                            val img = rememberDataImage(json.optString(which + "Image").ifBlank { null })
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                if (img != null) androidx.compose.foundation.Image(img, label, Modifier.fillMaxWidth().aspectRatio(4f / 3f),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                Text(label, style = MaterialTheme.typography.labelSmall)
+                                Row {
+                                    TextButton(onClick = { pickPhoto(item.id, which) }) { Text(if (img == null) "Add" else "Replace") }
+                                    if (img != null) TextButton(onClick = { vm.act { vm.features.setContinuityPhoto(item.id, which, null) } }) { Text("Remove") }
+                                }
+                            }
+                        }
                     }
                 }
                 else -> Unit
@@ -291,30 +318,68 @@ private fun CritiqueDialog(vm: StudioViewModel, artifact: StudioRecord, close: (
     }, dismissButton = { TextButton(onClick = close) { Text("Close") } })
 }
 
-/** #6/#7: reorder swaps order only; shot links survive; AI shots become pending proposals. */
+/** #6/#7: drag (or ↑/↓) rewrites `order` only; shot links survive; AI shots become pending proposals. */
 @Composable
 private fun BeatBoard(vm: StudioViewModel, project: StudioRecord, beats: List<StudioRecord>, shots: List<StudioRecord>, scenes: List<StudioRecord>) {
     var linking by remember { mutableStateOf<StudioRecord?>(null) }
     val sorted = beats.sortedBy { data(it).optDouble("order") }
+    val stored = sorted.map { it.id }
+    // Live order while dragging; reset whenever the stored order changes.
+    val live = remember(stored) { mutableStateListOf<String>().apply { addAll(stored) } }
+    val heights = remember { mutableStateMapOf<String, Int>() }
+    var dragging by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    val byId = sorted.associateBy { it.id }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Beat board (" + sorted.size + ")", style = MaterialTheme.typography.titleMedium)
         if (sorted.isEmpty()) Text("Add visual beats below or accept AI beats above.", style = MaterialTheme.typography.bodySmall)
-        sorted.forEachIndexed { i, beat ->
+        else Text("Drag ≡ to reorder. Shot links stay with their beat.", style = MaterialTheme.typography.bodySmall)
+        live.forEachIndexed { i, id ->
+            val beat = byId[id] ?: return@forEachIndexed
             val b = data(beat); val linked = b.optJSONArray("shotIds").ids()
-            OutlinedCard(Modifier.fillMaxWidth()) {
+            val isDragged = dragging == id
+            OutlinedCard(Modifier.fillMaxWidth().zIndex(if (isDragged) 1f else 0f)
+                .graphicsLayer { translationY = if (isDragged) dragOffset else 0f; shadowElevation = if (isDragged) 12f else 0f }
+                .onGloballyPositioned { heights[id] = it.size.height }) {
                 Column(Modifier.padding(10.dp)) {
-                    Text((i + 1).toString() + ". " + beat.title, style = MaterialTheme.typography.titleSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("≡", Modifier.size(48.dp).wrapContentSize().semantics { contentDescription = "Drag " + beat.title }
+                            .pointerInput(id) {
+                                detectDragGestures(
+                                    onDragStart = { dragging = id; dragOffset = 0f },
+                                    onDrag = { change, amount ->
+                                        change.consume(); dragOffset += amount.y
+                                        val at = live.indexOf(id)
+                                        val gap = 6.dp.toPx()
+                                        if (dragOffset > 0 && at < live.lastIndex) {
+                                            val next = (heights[live[at + 1]] ?: 0) + gap
+                                            if (dragOffset > next / 2) { live.add(at + 1, live.removeAt(at)); dragOffset -= next }
+                                        } else if (dragOffset < 0 && at > 0) {
+                                            val prev = (heights[live[at - 1]] ?: 0) + gap
+                                            if (-dragOffset > prev / 2) { live.add(at - 1, live.removeAt(at)); dragOffset += prev }
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        dragging = null; dragOffset = 0f
+                                        val order = live.toList()
+                                        if (order != stored) vm.act { vm.features.reorderBeats(project.id, order) }
+                                    },
+                                    onDragCancel = { dragging = null; dragOffset = 0f; live.clear(); live.addAll(stored) }
+                                )
+                            }, style = MaterialTheme.typography.titleLarge)
+                        Text((i + 1).toString() + ". " + beat.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    }
                     Text("Linked shots: " + (shots.filter { it.id in linked }.joinToString { data(it).optString("code") }.ifBlank { "none" }),
                         style = MaterialTheme.typography.bodySmall)
                     Row(Modifier.horizontalScroll(rememberScrollState())) {
                         TextButton(enabled = i > 0, onClick = { vm.act { vm.features.moveBeat(project.id, beat.id, true) } }) { Text("↑ Up") }
-                        TextButton(enabled = i < sorted.lastIndex, onClick = { vm.act { vm.features.moveBeat(project.id, beat.id, false) } }) { Text("↓ Down") }
+                        TextButton(enabled = i < live.lastIndex, onClick = { vm.act { vm.features.moveBeat(project.id, beat.id, false) } }) { Text("↓ Down") }
                         TextButton(onClick = { linking = beat }) { Text("Link shots") }
                         val scene = shots.firstOrNull { it.id in linked }?.let { data(it).optString("sceneId") } ?: scenes.firstOrNull()?.id
                         TextButton(enabled = vm.session != null && !vm.aiBusy && scene != null, onClick = {
                             vm.aiCreate(project.id, "shots", "", JSONArray().put(JSONObject().put("kind", "beat").put("id", beat.id)
                                 .put("label", beat.title).put("text", listOf(b.optString("intention"), b.optString("visual"), b.optString("passage")).joinToString("\n"))),
-                                filmSources(project), count = 3) { r ->
+                                filmSources(project, vm.memoriesFor(project.id)), count = 3) { r ->
                                 val arr = r.optJSONArray("shots") ?: JSONArray()
                                 vm.features.saveShotProposals(project.id, scene!!, beat.id, (0 until arr.length()).map { arr.getJSONObject(it) }, "ai:claude-haiku-4-5")
                                 arr.length().toString() + " shot proposal(s) waiting for review — nothing was added to the shot list"
@@ -362,30 +427,102 @@ private fun ShotProposalPanel(vm: StudioViewModel, proposals: List<StudioRecord>
     }
 }
 
-/** #9: images are downscaled to ≤960 px; one chosen frame per shot. */
+/** #9: photo / sketch / archive passage / optional paid AI frame; versions kept; one chosen frame per shot. */
 @Composable
 private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: List<StudioRecord>, frames: List<StudioRecord>, pick: (String) -> Unit) {
+    var sketching by remember { mutableStateOf<StudioRecord?>(null) }
+    var archiveFor by remember { mutableStateOf<StudioRecord?>(null) }
+    var aiFor by remember { mutableStateOf<StudioRecord?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Storyboards", style = MaterialTheme.typography.titleMedium)
         if (shots.isEmpty()) Text("Add shots first.", style = MaterialTheme.typography.bodySmall)
         shots.forEach { s ->
-            val mine = frames.filter { data(it).optString("shotId") == s.id }.sortedBy { data(it).optInt("version") }
+            val mine = frames.filter { data(it).optString("shotId") == s.id }.sortedByDescending { data(it).optInt("version") }
+            val chosen = mine.firstOrNull { data(it).optBoolean("chosen") }
             OutlinedCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(10.dp)) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(shotLabel(s) + " · " + mine.size + " frame(s)", style = MaterialTheme.typography.titleSmall)
-                    mine.forEach { f ->
-                        val fb = data(f)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("v" + fb.optInt("version") + " · " + fb.optString("source") + (if (fb.optBoolean("conceptual")) " · conceptual" else "") +
-                                if (fb.optBoolean("chosen")) " · ✓ chosen" else "", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            if (!fb.optBoolean("chosen")) TextButton(onClick = { vm.act { vm.features.chooseStoryboard(f.id) } }) { Text("Choose") }
+                    if (chosen != null) {
+                        FrameView(data(chosen), Modifier.fillMaxWidth())
+                        AnnotationEditor(vm, chosen)
+                    } else if (mine.isNotEmpty()) Text("No frame chosen yet — tap a version below.", style = MaterialTheme.typography.bodySmall)
+                    if (mine.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        mine.forEach { f ->
+                            val fb = data(f)
+                            Column(Modifier.width(132.dp)) {
+                                FrameView(fb, Modifier.fillMaxWidth())
+                                Text("v" + fb.optInt("version") + " · " + fb.optString("source") + if (fb.optBoolean("chosen")) " · ✓ chosen" else "",
+                                    style = MaterialTheme.typography.labelSmall)
+                                if (!fb.optBoolean("chosen")) TextButton(onClick = { vm.act { vm.features.chooseStoryboard(f.id) } }) { Text("Choose") }
+                            }
                         }
                     }
-                    TextButton(onClick = { pick(s.id) }) { Text("Add frame from photos") }
+                    Row(Modifier.horizontalScroll(rememberScrollState())) {
+                        TextButton(onClick = { pick(s.id) }) { Text("Add frame from photos") }
+                        TextButton(onClick = { sketching = s }) { Text("Sketch") }
+                        TextButton(enabled = vm.session != null, onClick = { archiveFor = s }) { Text("From archive") }
+                        TextButton(enabled = vm.session != null && !vm.aiBusy, onClick = { aiFor = s }) { Text("AI frame") }
+                    }
                 }
             }
         }
     }
+    sketching?.let { shot ->
+        val base = frames.firstOrNull { data(it).optString("shotId") == shot.id && data(it).optBoolean("chosen") }?.let { data(it).optString("imageUri").ifBlank { null } }
+        AlertDialog(onDismissRequest = { sketching = null }, title = { Text("Sketch " + data(shot).optString("code")) }, text = {
+            SketchPad(base, onSave = { strokes ->
+                vm.act { vm.features.addStoryboard(project.id, shot.id, base, "drawing", JSONObject(), false, strokes = strokes); vm.report("Sketch saved as a new storyboard version") }
+                sketching = null
+            }, onCancel = { sketching = null })
+        }, confirmButton = {})
+    }
+    archiveFor?.let { shot ->
+        var q by remember(shot.id) { mutableStateOf("") }
+        AlertDialog(onDismissRequest = { archiveFor = null }, title = { Text("Reference from your archive") }, text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), label = { Text("e.g. steam, window light") }, singleLine = true)
+                Button(enabled = q.isNotBlank() && !vm.aiBusy, onClick = { vm.searchArchive(q) }) { Text("Search") }
+                vm.archiveResults.forEach { h ->
+                    OutlinedCard(onClick = {
+                        vm.act { vm.features.addStoryboard(project.id, shot.id, null, "archive", JSONObject(), false,
+                            archiveRef = JSONObject().put("documentId", h.optString("document_id")).put("title", h.optString("title")).put("excerpt", h.optString("content").take(600)))
+                            vm.report("Archive passage attached as a storyboard reference") }
+                        archiveFor = null
+                    }, modifier = Modifier.fillMaxWidth()) { Text(h.optString("title") + " — " + h.optString("content").take(140) + "…", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall) }
+                }
+                Text("Your archive holds text, so this attaches a cited passage as the reference.", style = MaterialTheme.typography.labelSmall)
+            }
+        }, confirmButton = {}, dismissButton = { TextButton(onClick = { archiveFor = null }) { Text("Close") } })
+    }
+    aiFor?.let { shot ->
+        val sb = data(shot); val cam = sb.optJSONObject("camera") ?: JSONObject(); val light = sb.optJSONObject("lighting") ?: JSONObject()
+        var prompt by remember(shot.id) { mutableStateOf(listOf(cam.optString("shotSize"), shot.title + ".", sb.optString("purpose"), light.optString("source"))
+            .filter { it.isNotBlank() }.joinToString(" ")) }
+        val cost = "%.3f".format(StudioCreativeClient.STORYBOARD_IMAGE_COST_USD)
+        AlertDialog(onDismissRequest = { aiFor = null }, title = { Text("Generate a conceptual frame?") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(prompt, { prompt = it }, Modifier.fillMaxWidth(), label = { Text("Describe the frame") }, maxLines = 5)
+                Text("One image with OpenAI (gpt-image-1, low quality). Estimated cost: $" + cost + ", counted against your daily AI limit. " +
+                    "AI frames are conceptual references, not technically accurate.", style = MaterialTheme.typography.bodySmall)
+            }
+        }, confirmButton = {
+            TextButton(enabled = prompt.trim().length >= 5, onClick = { vm.generateStoryboardImage(project.id, shot.id, prompt); aiFor = null }) { Text("Generate (≈ $" + cost + ")") }
+        }, dismissButton = { TextButton(onClick = { aiFor = null }) { Text("Cancel") } })
+    }
+}
+
+@Composable
+private fun AnnotationEditor(vm: StudioViewModel, frame: StudioRecord) {
+    val ann = data(frame).optJSONObject("annotations") ?: JSONObject()
+    val values = remember(frame.id, ann.toString()) { mutableStateMapOf<String, String>().apply { FeatureRepository.ANNOTATION_KEYS.forEach { put(it, ann.optString(it)) } } }
+    val labels = mapOf("composition" to "Composition", "movement" to "Movement", "lighting" to "Lighting", "intent" to "Visual intent")
+    FeatureRepository.ANNOTATION_KEYS.chunked(2).forEach { pair ->
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            pair.forEach { k -> OutlinedTextField(values[k].orEmpty(), { values[k] = it }, Modifier.weight(1f), label = { Text(labels.getValue(k)) }, maxLines = 3) }
+        }
+    }
+    val changed = FeatureRepository.ANNOTATION_KEYS.any { values[it].orEmpty() != ann.optString(it) }
+    if (changed) TextButton(onClick = { vm.act { vm.features.setStoryboardAnnotations(frame.id, values.toMap()) } }) { Text("Save frame notes") }
 }
 
 /** #10/#11/#12: element list in metres, versioned; recipes apply as copies; AI setup is previewed first. */
@@ -411,15 +548,34 @@ private fun DiagramPanel(vm: StudioViewModel, project: StudioRecord, scenes: Lis
         }
         diagrams.sortedBy { data(it).optString("name") + data(it).optInt("version") }.forEach { d ->
             val b = data(d); val els = b.optJSONArray("elements") ?: JSONArray()
+            var selected by remember(d.id) { mutableStateOf<String?>(null) }
+            val fork: (String) -> Unit = { to -> if (to != d.id) vm.report("Approved diagram kept; edit saved as a new draft version") }
             OutlinedCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(10.dp)) {
-                    Text(b.optString("name") + " v" + b.optInt("version") + " · " + b.optString("status"), style = MaterialTheme.typography.titleSmall)
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(b.optString("name") + " v" + b.optInt("version") + " · " + b.optString("status") + " · " +
+                        b.optDouble("width", 10.0).toInt() + "×" + b.optDouble("height", 8.0).toInt() + " m", style = MaterialTheme.typography.titleSmall)
+                    DiagramCanvas(b, selected, { selected = it }) { id, x, y -> vm.act { fork(vm.features.moveDiagramElement(d.id, id, x, y)) } }
+                    Text("Tap to select, drag to move (1 m grid).", style = MaterialTheme.typography.labelSmall)
+                    val sel = (0 until els.length()).map { els.getJSONObject(it) }.firstOrNull { it.optString("id") == selected }
+                    if (sel != null) {
+                        val sid = sel.optString("id")
+                        Text("Selected: " + sel.optString("type") + " “" + sel.optString("label") + "” at " + sel.optDouble("x") + " m, " +
+                            sel.optDouble("y") + " m, " + sel.optDouble("rotation", 0.0).toInt() + "°", style = MaterialTheme.typography.bodySmall)
+                        Row(Modifier.horizontalScroll(rememberScrollState())) {
+                            TextButton(onClick = { vm.act { fork(vm.features.rotateDiagramElement(d.id, sid, -15.0)) } }) { Text("⟲ 15°") }
+                            TextButton(onClick = { vm.act { fork(vm.features.rotateDiagramElement(d.id, sid, 15.0)) } }) { Text("⟳ 15°") }
+                            listOf("←" to (-0.5 to 0.0), "→" to (0.5 to 0.0), "↑" to (0.0 to -0.5), "↓" to (0.0 to 0.5)).forEach { (arrow, delta) ->
+                                TextButton(onClick = { vm.act { fork(vm.features.moveDiagramElement(d.id, sid, sel.optDouble("x") + delta.first, sel.optDouble("y") + delta.second)) } }) { Text(arrow) }
+                            }
+                            TextButton(onClick = { vm.act { fork(vm.features.removeDiagramElement(d.id, sid)) }; selected = null }) { Text("Delete element") }
+                        }
+                    }
                     for (i in 0 until els.length()) {
                         val e = els.getJSONObject(i)
-                        Row {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(e.optString("type") + " “" + e.optString("label") + "” at " + e.optDouble("x") + "m, " + e.optDouble("y") + "m",
                                 Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = { vm.act { val to = vm.features.removeDiagramElement(d.id, e.optString("id")); if (to != d.id) vm.report("Approved diagram kept; edit saved as a new draft version") } }) { Text("×") }
+                            TextButton(onClick = { vm.act { fork(vm.features.removeDiagramElement(d.id, e.optString("id"))) } }) { Text("×") }
                         }
                     }
                     Row(Modifier.horizontalScroll(rememberScrollState())) {
@@ -430,7 +586,7 @@ private fun DiagramPanel(vm: StudioViewModel, project: StudioRecord, scenes: Lis
                             val text = (0 until els.length()).joinToString("\n") { i -> val e = els.getJSONObject(i)
                                 "id=" + e.optString("id") + " " + e.optString("type") + " \"" + e.optString("label") + "\" x=" + e.optDouble("x") + " y=" + e.optDouble("y") }
                             vm.aiCreate(project.id, "setup", "", JSONArray().put(JSONObject().put("kind", "diagram").put("id", d.id)
-                                .put("label", b.optString("name")).put("text", text.ifBlank { "(empty diagram)" })), filmSources(project)) { r ->
+                                .put("label", b.optString("name")).put("text", text.ifBlank { "(empty diagram)" })), filmSources(project, vm.memoriesFor(project.id))) { r ->
                                 preview = d to vm.features.previewSetupChanges(b, r.optJSONArray("changes") ?: JSONArray())
                                 "AI setup suggestion ready: preview before accepting. " + r.optString("explanation").take(160)
                             }
@@ -463,6 +619,7 @@ private fun DiagramPanel(vm: StudioViewModel, project: StudioRecord, scenes: Lis
     preview?.let { (d, els) ->
         AlertDialog(onDismissRequest = { preview = null }, title = { Text("Preview AI setup") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                DiagramCanvas(JSONObject(data(d).toString()).put("elements", els), null, {}) { _, _, _ -> }
                 for (i in 0 until els.length()) { val e = els.getJSONObject(i)
                     Text(e.optString("type") + " “" + e.optString("label") + "” " + e.optDouble("x") + "m, " + e.optDouble("y") + "m", style = MaterialTheme.typography.bodySmall) }
             }
@@ -504,7 +661,7 @@ private fun DayPlanner(vm: StudioViewModel, project: StudioRecord, shots: List<S
                         }) { Text("Approve order") }
                         TextButton(enabled = vm.session != null && !vm.aiBusy && shots.isNotEmpty(), onClick = {
                             val text = shots.joinToString("\n") { "id=" + it.id + " " + shotLabel(it) + " setup " + (data(it).optJSONObject("production")?.optString("setup") ?: "") }
-                            vm.aiCreate(project.id, "schedule", "", JSONArray().put(JSONObject().put("kind", "day").put("id", day.id).put("label", day.title).put("text", text)), filmSources(project)) { r ->
+                            vm.aiCreate(project.id, "schedule", "", JSONArray().put(JSONObject().put("kind", "day").put("id", day.id).put("label", day.title).put("text", text)), filmSources(project, vm.memoriesFor(project.id))) { r ->
                                 vm.features.saveScheduleProposal(project.id, day.id, r, "ai:claude-haiku-4-5"); "AI schedule proposal saved as pending — approve it to apply"
                             }
                         }) { Text("AI schedule") }

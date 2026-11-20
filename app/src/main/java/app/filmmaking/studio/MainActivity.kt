@@ -39,6 +39,7 @@ import app.filmmaking.studio.sync.StudioSync
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
@@ -391,6 +392,78 @@ class StudioViewModel(
         notice = "Image attached to the idea (kept on this device)"
     }
 
+    /** Approved Creative DNA the AI may use: identity preferences plus choices scoped to this film. */
+    fun memoriesFor(projectId: String?): List<JSONObject> = CreativeDna.approved(workflowItems.value, projectId)
+
+    fun setContinuityPhoto(resolver: ContentResolver, uri: Uri, continuityId: String, which: String) = act {
+        val bytes = downscaledJpeg(resolver, uri)
+        features.setContinuityPhoto(continuityId, which, "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+        notice = (if (which == "planned") "Planned" else "Actual") + " continuity photo saved (downscaled to 960 px)"
+    }
+
+    /** Paid, opt-in: the dialog already showed the estimate; the frame is stored as a conceptual reference. */
+    fun generateStoryboardImage(projectId: String, shotId: String, prompt: String) {
+        if (aiBusy) return
+        aiBusy = true
+        viewModelScope.launch {
+            try {
+                val t = token() ?: error("Sign in to generate storyboard frames")
+                val uri = creative.storyboardImage(t, shotId, prompt)
+                val bytes = withContext(Dispatchers.Default) { downscaleDataUri(uri) }
+                features.addStoryboard(projectId, shotId, "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP),
+                    "ai", JSONObject(), conceptual = true)
+                lastCost = StudioCreativeClient.STORYBOARD_IMAGE_COST_USD
+                notice = "Conceptual AI frame added as a new version (≈ $" + "%.3f".format(StudioCreativeClient.STORYBOARD_IMAGE_COST_USD) + ")"
+            } catch (e: Exception) { notice = e.message ?: "Image generation failed" }
+            finally { aiBusy = false }
+        }
+    }
+
+    private fun downscaleDataUri(uri: String, max: Int = 960): ByteArray {
+        val raw = android.util.Base64.decode(uri.substringAfter(","), android.util.Base64.DEFAULT)
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size) ?: error("The image could not be read")
+        val scale = max.toFloat() / maxOf(bmp.width, bmp.height)
+        val out = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
+        return java.io.ByteArrayOutputStream().also { out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, it) }.toByteArray()
+    }
+
+    // ---------- Creative DNA ----------
+    var archiveDocs by mutableStateOf<List<JSONObject>>(emptyList())
+        private set
+    var dnaExperiments by mutableStateOf<List<JSONObject>>(emptyList())
+        private set
+
+    fun loadArchiveDocs() = act {
+        token() ?: error("Sign in to use your Creative Archive")
+        val s = cloud.sessions.load() ?: error("Sign in to use your Creative Archive")
+        archiveDocs = archive.analysable(s)
+        notice = archiveDocs.size.toString() + " indexed document(s) available for analysis"
+    }
+
+    fun discoverDna(documentIds: List<String>, provider: String, focus: String) {
+        if (aiBusy) return
+        aiBusy = true
+        viewModelScope.launch {
+            try {
+                val t = token() ?: error("Sign in to analyse your work")
+                val model = if (provider == "anthropic") "claude-haiku-4-5" else "gpt-5-mini"
+                val explicit = workflowItems.value.filter { it.collection == "memories" && it.deletedAt == null }.map { data(it) }
+                    .filter { it.optString("status") == "approved" && it.optString("scope") == "identity" }.map { it.optString("text") }
+                val r = creative.discoverDna(t, documentIds, provider, model, explicit, focus)
+                val (saved, experiments) = features.saveDnaSuggestions(r.optJSONArray("suggestions") ?: JSONArray())
+                dnaExperiments = experiments
+                val cost = r.optJSONObject("usage")?.optDouble("costUsd")
+                lastCost = cost
+                notice = saved.toString() + " suggestion(s) awaiting your approval" +
+                    (if (r.optInt("rejected") > 0) " (" + r.optInt("rejected") + " dropped: unsupported by your documents)" else "") +
+                    (cost?.let { " · $" + "%.4f".format(it) } ?: "")
+            } catch (e: Exception) { notice = e.message ?: "Analysis failed" }
+            finally { aiBusy = false }
+        }
+    }
+
+    fun dismissExperiment(x: JSONObject) { dnaExperiments = dnaExperiments.filter { it !== x } }
+
     fun probeCamera() = act {
         val profile = withContext(Dispatchers.Default) { app.filmmaking.studio.camera.CameraProfileProbe.probe(appContext) }
         features.saveCameraProfile(profile, deviceReported = true)
@@ -444,7 +517,7 @@ class StudioViewModel(
                     .sortedBy { data(it).optString("at") }.map { AiTurn(data(it).optString("from"), data(it).optString("text")) }
                 // The question is saved before the call, so nothing typed is lost if the network drops.
                 features.addMessage(conv, "user", message.trim())
-                val reply = ai.ask(t, conv, provider, model, message.trim(), history, project, archive, mode, role)
+                val reply = ai.ask(t, conv, provider, model, message.trim(), history, project, archive, mode, role, memoriesFor(project?.id))
                 features.addMessage(conv, "assistant", reply.text, reply.citations)
                 lastCost = reply.costUsd
                 notice = "AI response saved in this conversation"
@@ -530,12 +603,18 @@ private fun StudioHome(vm: StudioViewModel) {
         val shot = storyboardShot; storyboardShot = null
         if (uri != null && shot != null) vm.addStoryboardFromImage(context.contentResolver, uri, shot)
     }
+    var continuityTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    val pickContinuity = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val target = continuityTarget; continuityTarget = null
+        if (uri != null && target != null) vm.setContinuityPhoto(context.contentResolver, uri, target.substringAfter(":"), target.substringBefore(":"))
+    }
     var imageIdea by rememberSaveable { mutableStateOf<String?>(null) }
     val pickIdeaImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val idea = imageIdea; imageIdea = null
         if (uri != null && idea != null) vm.attachIdeaImage(context.contentResolver, uri, idea)
     }
     var shootMode by rememberSaveable { mutableStateOf(false) }
+    var dnaOpen by rememberSaveable { mutableStateOf(false) }
     // Hoisted so leaving Shoot Mode (or a shot) returns to the same workspace tab.
     var workspaceSection by rememberSaveable { mutableStateOf("Develop") }
     val pickArchive = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -660,6 +739,7 @@ private fun StudioHome(vm: StudioViewModel) {
                     },
                     onImportFootage = { importProjectId = currentProject.id; pickFootage.launch(arrayOf("video/*", "audio/*", "image/*", "application/octet-stream")) },
                     onPickStoryboard = { id -> storyboardShot = id; pickStoryboard.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onPickContinuityPhoto = { id, which -> continuityTarget = "$which:$id"; pickContinuity.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onShootMode = { shootMode = true },
                     section = workspaceSection,
                     onSection = { workspaceSection = it }
@@ -677,9 +757,16 @@ private fun StudioHome(vm: StudioViewModel) {
                     }, vm.recordingIdeaId == idea.id) { vm.toggleVoiceNote(idea.id) }
                 }
                 tab == "Projects" -> ProjectsScreen(projects, vm::createProject, { projectId = it })
-                tab == "AI" -> AiDirectorScreen(vm, projects, workItems) {
-                    pickArchive.launch(arrayOf("application/pdf", "text/plain", "text/markdown",
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                tab == "AI" -> Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !dnaOpen, onClick = { dnaOpen = false }, label = { Text("AI Director") })
+                        FilterChip(selected = dnaOpen, onClick = { dnaOpen = true }, label = { Text("Creative DNA") })
+                    }
+                    if (dnaOpen) CreativeDnaScreen(vm, projects, workItems)
+                    else AiDirectorScreen(vm, projects, workItems) {
+                        pickArchive.launch(arrayOf("application/pdf", "text/plain", "text/markdown",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                    }
                 }
                 else -> SettingsScreen(vm, workItems.firstOrNull { it.collection == "cameraProfiles" },
                     {

@@ -275,6 +275,7 @@ object ProductionPackage {
                     .put("source", f.optString("source", "upload")).put("conceptual", f.optBoolean("conceptual"))
                     .put("file", if (image.startsWith("data:image/")) "storyboards/" + f.optString("id") +
                         (if (image.startsWith("data:image/png")) ".png" else ".jpg") else JSONObject.NULL)
+                    .put("archiveRef", f.optJSONObject("archiveRef") ?: JSONObject.NULL)
             }))
             .put("audioRecords", arr(d.takes.filter { it.optString("kind") in setOf("audio", "roomTone") }.map { t ->
                 JSONObject().put("takeId", t.optString("id")).put("shotId", t.optString("shotId"))

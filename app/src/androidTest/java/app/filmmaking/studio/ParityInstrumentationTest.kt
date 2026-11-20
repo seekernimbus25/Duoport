@@ -157,6 +157,103 @@ class ParityInstrumentationTest {
         assertEquals(3, preview.length())
     }
 
+    @Test fun dragReorderRewritesOnlyOrderAndKeepsLinks() = runBlocking {
+        val (p, _, sh) = film()
+        val w = ProjectWorkflowRepository(db)
+        val b = listOf("Steam", "Pour", "Sip").map { w.create(p.id, WorkflowKind.BEAT, it, "") }
+        f.linkBeatShots(b[0].id, listOf(sh.id))
+        val before = body("beats", b[0].id)
+        f.reorderBeats(p.id, listOf(b[2].id, b[0].id, b[1].id))
+        assertEquals(listOf(b[2].id, b[0].id, b[1].id), db.dao().listByProject("beats", p.id).sortedBy { JSONObject(it.payload).getDouble("order") }.map { it.id })
+        val after = body("beats", b[0].id)
+        assertEquals(before.getJSONArray("shotIds").toString(), after.getJSONArray("shotIds").toString())
+        assertEquals(b[0].id, body("shots", sh.id).getString("beatId"))
+        // A stale list (a beat added elsewhere) is refused rather than silently dropping a beat.
+        try { f.reorderBeats(p.id, listOf(b[0].id, b[1].id)); fail("stale order accepted") } catch (_: IllegalArgumentException) {}
+    }
+
+    @Test fun sketchArchiveAndAiFramesKeepTheirKindAndAnnotations() = runBlocking {
+        val (p, _, sh) = film()
+        try { f.addStoryboard(p.id, sh.id, null, "drawing", JSONObject(), false, strokes = JSONArray()); fail("empty sketch saved") } catch (_: IllegalArgumentException) {}
+        val strokes = JSONArray().put(JSONObject().put("width", 3).put("points", JSONArray().put(JSONArray().put(0.1).put(0.2)).put(JSONArray().put(0.5).put(0.6))))
+        val sketch = f.addStoryboard(p.id, sh.id, null, "drawing", JSONObject(), false, strokes = strokes)
+        assertEquals(0.6, body("storyboards", sketch.id).getJSONArray("strokes").getJSONObject(0).getJSONArray("points").getJSONArray(1).getDouble(1), 0.0)
+        assertFalse(body("storyboards", sketch.id).has("imageUri"))
+        val ref = f.addStoryboard(p.id, sh.id, null, "archive", JSONObject(), false,
+            archiveRef = JSONObject().put("documentId", "doc-1").put("title", "Notes").put("excerpt", "steam rises"))
+        assertEquals("doc-1", body("storyboards", ref.id).getJSONObject("archiveRef").getString("documentId"))
+        val ai = f.addStoryboard(p.id, sh.id, "data:image/jpeg;base64,AA==", "ai", JSONObject(), conceptual = false)
+        assertTrue("AI frames are always conceptual", body("storyboards", ai.id).getBoolean("conceptual"))
+        f.chooseStoryboard(sketch.id)
+        f.setStoryboardAnnotations(sketch.id, mapOf("lighting" to "window key", "intent" to "stillness"))
+        val ann = body("storyboards", sketch.id).getJSONObject("annotations")
+        assertEquals("window key", ann.getString("lighting")); assertEquals("", ann.getString("composition"))
+        // Export index carries the archive reference and never invents a file for a sketch.
+        val idx = ProductionPackage.build(db.dao().allRecords(), p.id, "2026-11-20T00:00:00Z").getJSONArray("storyboardIndex")
+        val entries = (0 until idx.length()).map { idx.getJSONObject(it) }.associateBy { it.getString("id") }
+        assertTrue(entries.getValue(sketch.id).isNull("file"))
+        assertEquals("doc-1", entries.getValue(ref.id).getJSONObject("archiveRef").getString("documentId"))
+        assertEquals("storyboards/" + ai.id + ".jpg", entries.getValue(ai.id).getString("file"))
+    }
+
+    @Test fun canvasMovesClampToTheSetAndForkApprovedDiagrams() = runBlocking {
+        val (p, sc, _) = film()
+        val d = f.createDiagram(p.id, sc.id, null, "Kitchen")
+        f.addDiagramElement(d.id, "camera", 2.0, 3.0, "A cam")
+        val camId = body("diagrams", d.id).getJSONArray("elements").getJSONObject(0).getString("id")
+        assertEquals(d.id, f.moveDiagramElement(d.id, camId, 40.0, -3.0))
+        val moved = body("diagrams", d.id).getJSONArray("elements").getJSONObject(0)
+        assertEquals(10.0, moved.getDouble("x"), 0.0); assertEquals(0.0, moved.getDouble("y"), 0.0)
+        f.rotateDiagramElement(d.id, camId, -15.0)
+        assertEquals(345.0, body("diagrams", d.id).getJSONArray("elements").getJSONObject(0).getDouble("rotation"), 0.0)
+        f.approveDiagram(d.id)
+        val approved = db.dao().find("diagrams", d.id)!!.payload
+        val fork = f.moveDiagramElement(d.id, camId, 4.0, 4.0)
+        assertNotEquals(d.id, fork)
+        assertEquals(approved, db.dao().find("diagrams", d.id)!!.payload)
+        val forked = body("diagrams", fork).getJSONArray("elements").getJSONObject(0)
+        assertEquals(camId, forked.getString("id")); assertEquals(4.0, forked.getDouble("x"), 0.0)
+        try { f.moveDiagramElement(fork, "missing", 1.0, 1.0); fail("moved a missing element") } catch (_: IllegalArgumentException) {}
+    }
+
+    @Test fun continuityPhotosAreStoredAndRemovable() = runBlocking {
+        val (p, _, sh) = film()
+        val c = ProjectWorkflowRepository(db).create(p.id, WorkflowKind.CONTINUITY, "Cup right", "Cup left", sh.id)
+        f.setContinuityPhoto(c.id, "planned", "data:image/jpeg;base64,AA==")
+        f.setContinuityPhoto(c.id, "actual", "data:image/jpeg;base64,AB==")
+        assertEquals("data:image/jpeg;base64,AA==", body("continuity", c.id).getString("plannedImage"))
+        f.setContinuityPhoto(c.id, "planned", null)
+        assertFalse(body("continuity", c.id).has("plannedImage"))
+        assertTrue(body("continuity", c.id).has("actualImage"))
+        try { f.setContinuityPhoto(c.id, "actual", "file:///sdcard/x.jpg"); fail("non-data image stored") } catch (_: IllegalArgumentException) {}
+    }
+
+    @Test fun creativeDnaUsesOnlyApprovedItemsBackedByEvidence() = runBlocking {
+        val (p, _, _) = film()
+        val other = repo.createProject("Other film")
+        f.addPreference("I prefer long observational takes")
+        val suggestions = JSONArray()
+            .put(JSONObject().put("kind", "inferred").put("category", "Rhythm").put("text", "Short declarative sentences")
+                .put("evidence", JSONArray().put(JSONObject().put("documentId", "d1").put("title", "Essay").put("quote", "It rained. We waited."))))
+            .put(JSONObject().put("kind", "inferred").put("category", "Theme").put("text", "No evidence given").put("evidence", JSONArray()))
+            .put(JSONObject().put("kind", "experiment").put("category", "Form").put("text", "Write one scene with no dialogue"))
+            .put(JSONObject().put("kind", "inferred").put("text", "I prefer long observational takes")
+                .put("evidence", JSONArray().put(JSONObject().put("quote", "x"))))
+        val (saved, experiments) = f.saveDnaSuggestions(suggestions)
+        assertEquals("only evidenced, new inferred items are stored", 1, saved)
+        assertEquals("Write one scene with no dialogue", experiments.single().getString("text"))
+        val all = db.dao().allRecords()
+        val proposed = all.single { it.collection == "memories" && JSONObject(it.payload).getString("status") == "proposed" }
+        assertEquals("Essay", JSONObject(proposed.payload).getJSONArray("evidence").getJSONObject(0).getString("title"))
+        assertEquals(listOf("I prefer long observational takes"), CreativeDna.approved(all, p.id).map { it.getString("text") })
+        f.editMemory(proposed.id, "Short, declarative sentences")
+        f.approveMemory(proposed.id)
+        f.saveExperiment(p.id, "Write one scene with no dialogue", "Form")
+        val now = db.dao().allRecords()
+        assertEquals(3, CreativeDna.approved(now, p.id).size)
+        assertTrue("experiments stay scoped to their film", CreativeDna.approved(now, other.id).none { it.getString("text").startsWith("Experiment:") })
+    }
+
     @Test fun shootingOrderNeverChangesNarrativeOrderAndKeepsHistory() = runBlocking {
         val (p, sc, s1) = film()
         val s2 = repo.addShot(sc.id, "Cup")
