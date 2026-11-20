@@ -115,10 +115,13 @@ class StudioCreativeClient(private val endpoint: ApiEndpoint) {
      * Optional conceptual storyboard frame (server: gpt-image-1, low quality). The caller must have shown
      * [STORYBOARD_IMAGE_COST_USD] and had the creator confirm it; the server refuses a lower confirmation.
      */
-    suspend fun storyboardImage(accessToken: String, shotId: String, prompt: String): String = withContext(Dispatchers.IO) {
+    suspend fun storyboardImage(accessToken: String, shotId: String, prompt: String, orientation: String = "landscape"): String = withContext(Dispatchers.IO) {
         require(prompt.trim().length >= 5) { "Describe the frame first" }
+        require(orientation in setOf("landscape", "portrait", "square"))
+        // Servers that predate `orientation` ignore it and return a landscape frame.
         val r = post(accessToken, "/api/v1/ai/storyboard-image", JSONObject().put("shotId", shotId.take(100))
-            .put("prompt", prompt.trim().take(1500)).put("confirmCostUsd", STORYBOARD_IMAGE_COST_USD))
+            .put("prompt", prompt.trim().take(StoryboardBrief.MAX_CHARS)).put("orientation", orientation)
+            .put("confirmCostUsd", STORYBOARD_IMAGE_COST_USD))
         r.optString("imageDataUri").takeIf { it.startsWith("data:image/") } ?: error("No image returned")
     }
 

@@ -154,7 +154,7 @@ class FeatureRepository(private val db: StudioDatabase) {
      * AI frames are always conceptual references.
      */
     suspend fun addStoryboard(projectId: String, shotId: String, imageUri: String?, source: String, annotations: JSONObject, conceptual: Boolean,
-                              strokes: JSONArray? = null, archiveRef: JSONObject? = null): StudioRecord {
+                              strokes: JSONArray? = null, archiveRef: JSONObject? = null, aiPrompt: String? = null): StudioRecord {
         require(source in setOf("upload", "drawing", "archive", "ai"))
         require(!imageUri.isNullOrBlank() || (strokes != null && strokes.length() > 0) || archiveRef != null) { "The frame is empty" }
         if (source == "drawing") require(strokes != null && strokes.length() > 0) { "Draw something first" }
@@ -166,6 +166,8 @@ class FeatureRepository(private val db: StudioDatabase) {
             .put("conceptual", conceptual || source == "ai").put("annotations", ann)
             .put("chosen", false).put("createdAt", now())
         if (!imageUri.isNullOrBlank()) b.put("imageUri", imageUri)
+        // The exact brief the director approved, so a frame can be regenerated or explained later.
+        if (source == "ai" && !aiPrompt.isNullOrBlank()) b.put("aiPrompt", aiPrompt.take(StoryboardBrief.MAX_CHARS))
         if (strokes != null && strokes.length() > 0) b.put("strokes", strokes)
         if (archiveRef != null) b.put("archiveRef", JSONObject().put("documentId", archiveRef.optString("documentId"))
             .put("title", archiveRef.optString("title").take(200)).put("excerpt", archiveRef.optString("excerpt").take(600)))

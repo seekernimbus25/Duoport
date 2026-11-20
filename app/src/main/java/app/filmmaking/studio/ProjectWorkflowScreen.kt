@@ -104,7 +104,7 @@ fun ProjectWorkflowScreen(
                     item { ShotProposalPanel(vm, of("shotProposals")) }
                 }
                 "Visual" -> {
-                    item { StoryboardPanel(vm, project, shots, of("storyboards"), onPickStoryboard) }
+                    item { StoryboardPanel(vm, project, shots, scenes, of("storyboards"), onPickStoryboard) }
                     item { DiagramPanel(vm, project, scenes, shots, of("diagrams"), allRecords.filter { it.collection == "recipes" && it.deletedAt == null }) }
                 }
                 "Planner" -> {
@@ -432,7 +432,7 @@ private fun ShotProposalPanel(vm: StudioViewModel, proposals: List<StudioRecord>
 
 /** #9: photo / sketch / archive passage / optional paid AI frame; versions kept; one chosen frame per shot. */
 @Composable
-private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: List<StudioRecord>, frames: List<StudioRecord>, pick: (String) -> Unit) {
+private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: List<StudioRecord>, scenes: List<StudioRecord>, frames: List<StudioRecord>, pick: (String) -> Unit) {
     var sketching by remember { mutableStateOf<StudioRecord?>(null) }
     var archiveFor by remember { mutableStateOf<StudioRecord?>(null) }
     var aiFor by remember { mutableStateOf<StudioRecord?>(null) }
@@ -498,18 +498,44 @@ private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: L
         }, confirmButton = {}, dismissButton = { TextButton(onClick = { archiveFor = null }) { Text("Close") } })
     }
     aiFor?.let { shot ->
-        val sb = data(shot); val cam = sb.optJSONObject("camera") ?: JSONObject(); val light = sb.optJSONObject("lighting") ?: JSONObject()
-        var prompt by remember(shot.id) { mutableStateOf(listOf(cam.optString("shotSize"), shot.title + ".", sb.optString("purpose"), light.optString("source"))
-            .filter { it.isNotBlank() }.joinToString(" ")) }
+        val sb = data(shot)
+        val scene = scenes.firstOrNull { it.id == sb.optString("sceneId") }?.let { data(it) }
+        val taste = vm.memoriesFor(project.id).map { it.optString("text") }
+        var idea by remember(shot.id) { mutableStateOf("") }
+        var editing by remember(shot.id) { mutableStateOf(false) }
+        var edited by remember(shot.id) { mutableStateOf("") }
+        val brief = remember(shot.id, idea, sb.toString(), scene?.toString(), taste) {
+            StoryboardBrief.build(idea, sb, scene, data(project), taste)
+        }
+        val prompt = if (editing) edited else brief.text
         val cost = "%.3f".format(StudioCreativeClient.STORYBOARD_IMAGE_COST_USD)
         AlertDialog(onDismissRequest = { aiFor = null }, title = { Text("Generate a conceptual frame?") }, text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(prompt, { prompt = it }, Modifier.fillMaxWidth(), label = { Text("Describe the frame") }, maxLines = 5)
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(idea, { idea = it }, Modifier.fillMaxWidth(), label = { Text("Your idea (a few words is fine)") },
+                    placeholder = { Text(shot.title) }, maxLines = 3)
+                Text("Brief sent to the image model, built from this shot's plan:", style = MaterialTheme.typography.labelMedium)
+                if (editing) {
+                    OutlinedTextField(edited, { edited = it.take(StoryboardBrief.MAX_CHARS) }, Modifier.fillMaxWidth(), maxLines = 12,
+                        label = { Text("Edited brief") })
+                    TextButton(onClick = { editing = false }) { Text("Rebuild from the shot plan") }
+                } else {
+                    OutlinedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            brief.lines.forEach { l -> Text(l.label + " — " + l.text, style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
+                    TextButton(onClick = { edited = brief.text; editing = true }) { Text("Edit the brief") }
+                }
+                Text(prompt.length.toString() + " / " + StoryboardBrief.MAX_CHARS + " characters · " + brief.orientation.label + " frame" +
+                    " · the server adds a rough pencil-and-wash storyboard style.", style = MaterialTheme.typography.labelSmall)
                 Text("One image with OpenAI (gpt-image-1, low quality). Estimated cost: $" + cost + ", counted against your daily AI limit. " +
-                    "AI frames are conceptual references, not technically accurate.", style = MaterialTheme.typography.bodySmall)
+                    "AI frames are conceptual references, not technically accurate. Fill in the shot's camera and lighting plan for a closer frame.",
+                    style = MaterialTheme.typography.bodySmall)
             }
         }, confirmButton = {
-            TextButton(enabled = prompt.trim().length >= 5, onClick = { vm.generateStoryboardImage(project.id, shot.id, prompt); aiFor = null }) { Text("Generate (≈ $" + cost + ")") }
+            TextButton(enabled = prompt.trim().length >= 5, onClick = {
+                vm.generateStoryboardImage(project.id, shot.id, prompt, brief.orientation.wire); aiFor = null
+            }) { Text("Generate (≈ $" + cost + ")") }
         }, dismissButton = { TextButton(onClick = { aiFor = null }) { Text("Cancel") } })
     }
 }

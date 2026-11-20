@@ -506,16 +506,16 @@ class StudioViewModel(
     }
 
     /** Paid, opt-in: the dialog already showed the estimate; the frame is stored as a conceptual reference. */
-    fun generateStoryboardImage(projectId: String, shotId: String, prompt: String) {
+    fun generateStoryboardImage(projectId: String, shotId: String, prompt: String, orientation: String = "landscape") {
         if (aiBusy) return
         aiBusy = true
         viewModelScope.launch {
             try {
                 val t = token() ?: error("Sign in to generate storyboard frames")
-                val uri = creative.storyboardImage(t, shotId, prompt)
+                val uri = creative.storyboardImage(t, shotId, prompt, orientation)
                 val bytes = withContext(Dispatchers.Default) { downscaleDataUri(uri) }
                 features.addStoryboard(projectId, shotId, "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP),
-                    "ai", JSONObject(), conceptual = true)
+                    "ai", JSONObject(), conceptual = true, aiPrompt = prompt.trim())
                 lastCost = StudioCreativeClient.STORYBOARD_IMAGE_COST_USD
                 notice = "Conceptual AI frame added as a new version (≈ $" + "%.3f".format(StudioCreativeClient.STORYBOARD_IMAGE_COST_USD) + ")"
             } catch (e: Exception) { notice = e.message ?: "Image generation failed" }
