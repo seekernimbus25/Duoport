@@ -606,6 +606,24 @@ private fun CoveragePanel(vm: StudioViewModel, all: List<StudioRecord>, project:
         Row(Modifier.horizontalScroll(rememberScrollState())) {
             scenes.forEach { sc -> TextButton(onClick = { pickupScene = sc }) { Text("+ Pickup in scene " + data(sc).optInt("number")) } }
         }
+        OutlinedButton(enabled = vm.session != null && !vm.aiBusy && scenes.isNotEmpty(), onClick = {
+            val text = (cov.missing.map { "MISSING id=" + it.optString("id") + " " + it.optString("code") + " " + it.optString("title") } +
+                cov.missingRoomTone.map { "ROOM TONE " + it.optString("code") }).joinToString("\n").ifBlank { "No gaps recorded" }
+            val targets = JSONArray().put(JSONObject().put("kind", "passage").put("id", project.id).put("label", "Coverage gaps").put("text", text))
+            scenes.forEach { sc -> targets.put(JSONObject().put("kind", "scene").put("id", sc.id).put("label", sc.title).put("text", data(sc).optString("purpose"))) }
+            vm.aiCreate(project.id, "production", "", targets, JSONArray(), JSONObject().put("task", "pickups")) { r ->
+                val items = r.optJSONArray("items") ?: JSONArray()
+                var saved = 0
+                for (i in 0 until items.length()) {
+                    val it = items.getJSONObject(i)
+                    val scene = it.optString("sceneId").takeIf { id -> scenes.any { s -> s.id == id } } ?: continue
+                    vm.features.saveShotProposals(project.id, scene, null, listOf(JSONObject().put("title", it.optString("title"))
+                        .put("purpose", it.optString("detail")).put("pickup", true).put("basis", it.optString("basis"))), "ai:claude-haiku-4-5")
+                    saved++
+                }
+                "$saved pickup proposal(s) waiting in Story → Shot proposals (no video was analysed)"
+            }
+        }) { Text("AI pickup suggestions") }
     }
     omitting?.let { s ->
         var reason by remember { mutableStateOf("") }

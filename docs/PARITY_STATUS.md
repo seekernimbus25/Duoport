@@ -25,10 +25,10 @@ checks the acceptance rule; "Device QA" is what still needs a real phone (none o
 | 18 | Duoport capture | Activity-result contract; cancel/fail create nothing; measured fps/size/codec | existing instrumentation, COMB-05/09 | 4K/codec on real hardware |
 | 19 | Takes extras | Ratings 1–5, audio and room-tone takes, actual settings shown | `roomToneTakeSatisfiesScene…` | — |
 | 20 | Continuity | Corrections keep history; record vs speculative; resolve | `continuityCorrection…` | continuity photos not built |
-| 21 | Coverage & pickups | Dashboard; pickup → shot in same scene; intentional omissions | `roomToneTakeSatisfiesSceneAndPickup…` | AI pickup suggestions (`op: production`) not wired |
+| 21 | Coverage & pickups | Dashboard; pickup → shot in same scene; intentional omissions | `roomToneTakeSatisfiesSceneAndPickup…` | AI pickup suggestions (`op: production`, saved as pending pickup proposals) not live-tested |
 | 22 | Wrap & readiness | 4 levels; filename-only clips and unverified media never "verified" | `packageNeverClaims…`, COMB-13 | — |
 | 23 | Export JSON/MD/CSV/ZIP | Pure builder; CI runs web `validate-package.mjs` | `ProductionAndMediaTest` + `scripts/validate_export.sh` | opening the files in an editor |
-| 24 | Archive upload/search/DNA | **Search only** (API, RLS-scoped) | — | upload, ingest, DNA and the two-account isolation test are **not built** natively |
+| 24 | Archive upload/search/DNA | Upload PDF/DOCX/MD/TXT to private `studio-files/<uid>/archive/…`, `archive_documents` row, ingest; hybrid search | — | live upload/ingest, Creative DNA UI and the two-account isolation test are **not done** natively |
 | 25 | Cloud copy & sync | Room ⇄ Supabase, conflicts, tombstones, WorkManager (docs/CLOUD_SYNC.md) | `SyncTest` (two simulated devices) | live two-device sync with a real account; `external_clip` migration must be applied |
 | 26 | Backup/import | Keeps every id; refuses conflicting records | existing instrumentation | — |
 | 27 | Camera profile | Camera2 probe → `verified: true` only when device-reported | `cameraProfileIsVerifiedOnlyWhenDeviceReported`, COMB-14 | — |
