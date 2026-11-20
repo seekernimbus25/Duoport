@@ -282,6 +282,19 @@ def test_creative_dna_preferences():
     see("PreferStillFrames",timeout=12)
     see("1 explicit preference(s)",contains=True)
 
+def test_sentry_opt_in_event():
+    D.relaunch();click("Settings")
+    row=D.scroll_to(text="Share crash reports",max_swipes=14)
+    assert row,"Crash diagnostics section missing"
+    if D.find(text="Crash reporting is not connected yet",contains=True,timeout=1):
+        raise AssertionError("APK built without STUDIO_SENTRY_DSN")
+    w,h=D.screen_size()
+    D.tap_xy(w-90,row.cy)   # the consent switch sits at the end of the row
+    see("Crash reporting enabled",contains=True,timeout=10)
+    scroll_click("Send safe diagnostic test event")
+    see("Diagnostic test event queued",contains=True,timeout=10)
+    D.sleep(20)  # let the SDK deliver before the emulator shuts down
+
 def main():
     print("Emulator OS",D.ashell("getprop ro.build.version.release"),flush=True)
     print(D.adb("install -r -g "+os.environ["NEW_APK"],timeout=180,check=True))
@@ -311,6 +324,7 @@ def main():
         ("COMB-16","Diagram canvas: drag moves an element in metres",test_diagram_canvas_drag),
         ("COMB-17","Beat board drag reorder persists",test_beat_drag_reorder),
         ("COMB-18","Creative DNA explicit preference persists offline",test_creative_dna_preferences),
+        ("COMB-19","Opt-in Sentry diagnostic test event is sent",test_sentry_opt_in_event),
     ]:case(id,title,fn)
     with open(os.path.join(OUT,"results.json"),"w") as f:json.dump(rows,f,indent=2)
     report=["# Combined Android Emulator Acceptance","","| Test | Status | Result |","|---|---|---|"]

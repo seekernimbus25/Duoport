@@ -21,6 +21,9 @@ jobs:
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
       - name: Build emulator debug APK
+        env:
+          # Public client DSN (never logged); lets COMB-19 send one opt-in diagnostic event.
+          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: Enable KVM
         run: |
