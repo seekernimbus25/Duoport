@@ -26,7 +26,16 @@ def scroll_click(label,contains=False):
         else: D.swipe(w//2,int(h*0.45),w//2,int(h*0.70),700)
         D.sleep(0.5);node=D.find(text=label,contains=contains,timeout=1)
     if node is None or not (h*0.07<=node.cy<=h*0.93):
-        node=D.scroll_to(text=label,contains=contains,max_swipes=8)
+        node=None
+        # Slow quarter-screen steps can't fling past the target; search down, then back up.
+        for up in (False,True):
+            for _ in range(16):
+                n=D.find(text=label,contains=contains,timeout=0,nodes=D.dump())
+                if n is not None and h*0.07<=n.cy<=h*0.93: node=n;break
+                if up: D.swipe(w//2,int(h*0.40),w//2,int(h*0.65),700)
+                else: D.swipe(w//2,int(h*0.65),w//2,int(h*0.40),700)
+                D.sleep(0.4)
+            if node is not None: break
     if node is None:
         raise AssertionError("Cannot reach "+label+": "+repr([n.text for n in D.dump() if n.text][:30]))
     D.tap_xy(node.cx,node.cy)
@@ -306,9 +315,11 @@ def test_google_sign_in_ui():
     D.relaunch();click("Settings")
     btn=D.scroll_to(text="Continue with Google",max_swipes=14)
     assert btn,"Continue with Google button missing"
-    if not btn.enabled:
-        see("Google sign-in isn't set up in this build",contains=True,timeout=5)
+    # The dump reports the label inside a disabled Compose button as enabled, so read the note instead.
+    if D.find(text="set up in this build",contains=True,timeout=2) or \
+            D.scroll_to(text="set up in this build",contains=True,max_swipes=2):
         return
+    btn=D.scroll_to(text="Continue with Google",max_swipes=3) or btn
     D.tap_xy(btn.cx,btn.cy)
     # The CI emulator has no Google account: Credential Manager must end in a plain message.
     outcomes=["No Google account","Google Play services","cancelled","Google sign-in failed","doesn't support","interrupted"]
