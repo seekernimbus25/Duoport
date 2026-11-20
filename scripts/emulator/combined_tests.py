@@ -16,6 +16,10 @@ def see(v,contains=False,timeout=12):
     return x
 def click(v,contains=False,timeout=12):
     n=see(v,contains,timeout);D.tap_xy(n.cx,n.cy)
+def scroll_click(label,contains=False):
+    node=D.scroll_to(text=label,contains=contains,max_swipes=8)
+    if node is None: raise AssertionError("Cannot reach "+label)
+    D.tap_xy(node.cx,node.cy)
 def enter(label,value):
     n=see(label);D.tap_xy(n.cx,n.cy);D.type_text(value)
 def safe():
@@ -51,14 +55,14 @@ def plans():
     see("Scenes and shot list")
     enter("Scene name","OpeningScene");click("Add scene")
     see("OpeningScene",True,20)
-    enter("Shot title","HeroCloseup");click("Add shot")
+    enter("Shot title","HeroCloseup");scroll_click("Add shot")
     see("HeroCloseup",True,20)
-    click("HeroCloseup",True);see("Record this shot in Duoport")
+    scroll_click("HeroCloseup",True);see("Record this shot in Duoport")
 def shot_persist():
     click("Edit camera",True)
     click("Save planned shot offline")
     D.relaunch();click("Projects");click("CinemaIdeaAlpha")
-    see("OpeningScene",True);click("HeroCloseup",True)
+    see("OpeningScene",True);scroll_click("HeroCloseup",True)
     see("Record this shot in Duoport")
 def cancel():
     click("Record this shot in Duoport")
@@ -81,15 +85,51 @@ def workflow():
     enter("Title","TreatmentOne");enter("Premise","Lightandmemory")
     click("Save offline");see("TreatmentOne",timeout=20)
     click("Approve");see("approved",True)
-    click("Wrap");see("Production wrap")
+    tab=see("Shoot")
+    w,h=D.screen_size()
+    D.swipe(min(w-110,tab.cx+160),tab.cy,max(110,w//4),tab.cy,420)
+    click("Wrap")
+    see("Production wrap")
     see("Export production metadata JSON")
 def settings():
     click("AI");see("Sign in under Settings",True)
     click("Settings");see("Your Studio account")
     see("Test connection");see("Export offline backup JSON")
+def test_real_recording():
+    # Positive camera handoff, real emulator MediaStore save and take import.
+    D.relaunch()
+    click("Projects");click("CinemaIdeaAlpha")
+    scroll_click("HeroCloseup",True)
+    click("Record this shot in Duoport")
+    click("Open Duoport",timeout=15)
+    assert D.wait_camera(timeout=30),"Studio capture did not open Duoport camera"
+    newfiles=D.record(seconds=3,timeout=210)
+    assert newfiles,"The emulator camera produced no saved video"
+    D.close_results()
+    D.ashell("input keyevent 4");D.sleep(2)
+    if D.find(rid="record_button",timeout=1):
+        D.ashell("input keyevent 4");D.sleep(2)
+    see("Recorded takes:",contains=True,timeout=20)
+    assert not D.find(text="Recorded takes: 0",timeout=2),"Recording not imported into Studio"
+
+def test_backend_health_and_backup():
+    click("Settings")
+    click("Test connection")
+    see("Server: ready",contains=True,timeout=20)
+    click("Export offline backup JSON")
+    D.sleep(2)
+    assert "com.google.android.documentsui" in D.current_package() or D.find(text="SAVE",contains=True,timeout=1), "Backup picker did not open"
+    D.ashell("input keyevent 4");D.sleep(1)
+
 def main():
     print("Emulator OS",D.ashell("getprop ro.build.version.release"),flush=True)
     print(D.adb("install -r -g "+os.environ["NEW_APK"],timeout=180,check=True))
+    # Disable on-screen IMEs so scripted inputs do not cover save buttons.
+    for ime in D.ashell("ime list -s -a").splitlines():
+        ime=ime.strip()
+        if ime and "/" in ime:
+            D.ashell("ime disable "+ime)
+    D.ashell("settings put secure show_ime_with_hard_keyboard 0")
     D.crash_log_clear()
     for id,title,fn in [
         ("COMB-01","Single-package Studio launcher",first),
@@ -98,8 +138,10 @@ def main():
         ("COMB-04","Planned shot editor persists",shot_persist),
         ("COMB-05","Internal capture cancel creates no take",cancel),
         ("COMB-06","Embedded Duoport camera opens",camera),
+        ("COMB-09","Emulator-recorded media returns to Studio",test_real_recording),
         ("COMB-07","Treatment approval and production wrap",workflow),
         ("COMB-08","Unauthenticated AI gated and settings available",settings),
+        ("COMB-10","AWS health and Android backup document picker",test_backend_health_and_backup),
     ]:case(id,title,fn)
     with open(os.path.join(OUT,"results.json"),"w") as f:json.dump(rows,f,indent=2)
     report=["# Combined Android Emulator Acceptance","","| Test | Status | Result |","|---|---|---|"]
