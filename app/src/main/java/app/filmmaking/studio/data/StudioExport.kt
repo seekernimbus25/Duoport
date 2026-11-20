@@ -79,6 +79,7 @@ class StudioExport(private val db: StudioDatabase) {
             scenes.indexOfFirst { scene -> scene.optString("id") == it.optString("sceneId") }
         }.thenBy { it.optDouble("storyOrder") })
         val takes = inProject("takes")
+        val externalClips = inProject(ExternalCameraNaming.COLLECTION)
         val media = inProject("media")
         val days = inProject("shootDays")
         val setups = inProject("setups")
@@ -145,6 +146,7 @@ class StudioExport(private val db: StudioDatabase) {
         }
         if (continuity.any { !it.optBoolean("resolved") }) prodReasons += "Unresolved continuity observations"
         val mediaReasons = mutableListOf<String>()
+        if (externalClips.isNotEmpty()) mediaReasons += "External camera clips are only filename references; footage must be linked and verified"
         if (media.isEmpty()) mediaReasons += "No actual media"
         if (relink.any { it.optString("verification") != "verified" }) mediaReasons += "Some media are not checksum-verified"
         val pre = preReasons.isEmpty()
@@ -162,7 +164,9 @@ class StudioExport(private val db: StudioDatabase) {
             .put("plannedVsActual", JSONObject()
                 .put("planned", shots.size).put("completed", shots.count { it.optString("status") == "complete" })
                 .put("recorded", takes.size))
-            .put("mediaInventory", arr(media)).put("bestTakes", arr(takes.filter { it.optBoolean("preferred") }))
+            .put("mediaInventory", arr(media))
+            .put("externalCameraReferences", arr(externalClips))
+            .put("bestTakes", arr(takes.filter { it.optBoolean("preferred") }))
             .put("omissions", arr(omissions))
             .put("unresolved", JSONArray(prodReasons))
             .put("readyForEdit", prod)
@@ -190,6 +194,7 @@ class StudioExport(private val db: StudioDatabase) {
             .put("shootOrder", shootOrder)
             .put("shootDays", arr(days)).put("setups", arr(setups))
             .put("continuity", arr(continuity)).put("omissions", arr(omissions))
+            .put("externalCameraReferences", arr(externalClips))
             .put("storyboardIndex", arr(storyboardIndex))
             .put("readiness", readiness)
             .put("contents", JSONObject().put("footageIncluded", false))

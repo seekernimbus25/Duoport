@@ -116,6 +116,27 @@ def test_real_recording():
     see("Recorded takes:",contains=True,timeout=20)
     assert not D.find(text="Recorded takes: 0",timeout=2),"Recording not imported into Studio"
 
+def test_external_camera_filenames():
+    # Real UI: log first filename, infer prefix + padded next number, persist offline.
+    D.relaunch()
+    click("Projects");click("CinemaIdeaAlpha")
+    scroll_click("HeroCloseup",True)
+    entry=D.scroll_to(text="Camera filename (first entry)",max_swipes=10)
+    assert entry,"External camera filename field not visible"
+    D.tap_xy(entry.cx,entry.cy)
+    D.type_text("DJI_0045.MP4")
+    scroll_click("Log external camera take")
+    see("DJI_0045.MP4",timeout=20)
+    assert D.scroll_to(text="File number only (suffix)",max_swipes=10), "Next-number field missing"
+    see("Filename: DJI_0046.MP4",timeout=10)
+    scroll_click("Log external camera take")
+    see("DJI_0046.MP4",timeout=20)
+    D.relaunch()
+    click("Projects");click("CinemaIdeaAlpha")
+    scroll_click("HeroCloseup",True)
+    assert D.scroll_to(text="DJI_0045.MP4",max_swipes=10),"First filename not saved"
+    assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Second filename not saved"
+
 def test_backend_health_and_backup():
     click("Settings")
     click("Test connection")
@@ -146,6 +167,7 @@ def main():
         ("COMB-07","Treatment approval and production wrap",workflow),
         ("COMB-08","Unauthenticated AI gated and settings available",settings),
         ("COMB-10","AWS health and Android backup document picker",test_backend_health_and_backup),
+        ("COMB-11","DJI filenames auto-increment and persist offline",test_external_camera_filenames),
     ]:case(id,title,fn)
     with open(os.path.join(OUT,"results.json"),"w") as f:json.dump(rows,f,indent=2)
     report=["# Combined Android Emulator Acceptance","","| Test | Status | Result |","|---|---|---|"]

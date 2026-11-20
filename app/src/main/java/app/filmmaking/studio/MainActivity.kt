@@ -50,7 +50,8 @@ class StudioViewModel(
     private val workflow: ProjectWorkflowRepository,
     private val exporter: StudioExport,
     private val creative: StudioCreativeClient,
-    private val verifier: MediaVerification
+    private val verifier: MediaVerification,
+    private val externalCamera: ExternalCameraLog
 ) : ViewModel() {
     val ideas = repo.ideas().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val projects = repo.projects().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -114,6 +115,14 @@ class StudioViewModel(
     fun preferTake(takeId: String) = act {
         repo.preferTake(takeId)
         notice = "Preferred take updated"
+    }
+    fun logExternalCameraFilename(shotId: String, filename: String) = act {
+        externalCamera.add(shotId, filename)
+        notice = "External camera filename saved. Actual footage has not been imported."
+    }
+    fun removeExternalCameraReference(referenceId: String) = act {
+        externalCamera.remove(referenceId)
+        notice = "External camera reference removed; no footage was deleted."
     }
     fun createWorkflow(projectId: String, kind: WorkflowKind, title: String, detail: String, shotId: String?) = act {
         workflow.create(projectId, kind, title, detail, shotId)
@@ -254,11 +263,12 @@ class MainActivity : ComponentActivity() {
         val exporter = StudioExport(StudioDatabase.get(this))
         val creative = StudioCreativeClient(endpoint)
         val verifier = MediaVerification(this, StudioDatabase.get(this))
+        val externalCamera = ExternalCameraLog(StudioDatabase.get(this))
         setContent {
             val vm: StudioViewModel = viewModel(factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    StudioViewModel(repo, endpoint, auth, ai, importer, workflow, exporter, creative, verifier) as T
+                    StudioViewModel(repo, endpoint, auth, ai, importer, workflow, exporter, creative, verifier, externalCamera) as T
             })
             MaterialTheme { StudioHome(vm) }
         }
@@ -353,10 +363,16 @@ private fun StudioHome(vm: StudioViewModel) {
                 currentProject != null && currentShot != null -> ShotScreen(
                     currentShot,
                     takes.filter { data(it).optString("shotId") == currentShot.id },
+                    workItems.filter {
+                        it.collection == ExternalCameraNaming.COLLECTION &&
+                            data(it).optString("projectId") == currentProject.id
+                    },
                     vm::changeShot,
                     vm::saveShotPlan,
                     vm::rateTake,
-                    vm::preferTake
+                    vm::preferTake,
+                    { filename -> vm.logExternalCameraFilename(currentShot.id, filename) },
+                    vm::removeExternalCameraReference
                 ) {
                     val p = data(currentShot)
                     val reqId = UUID.randomUUID().toString()
@@ -548,10 +564,13 @@ private fun ProjectScreen(
 private fun ShotScreen(
     shot: StudioRecord,
     takes: List<StudioRecord>,
+    externalProjectFiles: List<StudioRecord>,
     changeStatus: (String, String) -> Unit,
     savePlan: (String, String, String, String, String, String, String, String, String, String, String) -> Unit,
     rateTake: (String, String) -> Unit,
     preferTake: (String) -> Unit,
+    addExternalFile: (String) -> Unit,
+    removeExternalFile: (String) -> Unit,
     onShoot: () -> Unit
 ) {
     val plan = data(shot)
@@ -571,6 +590,19 @@ private fun ShotScreen(
     var lightNotes by rememberSaveable(shot.id) { mutableStateOf(light.optString("source")) }
     var soundNotes by rememberSaveable(shot.id) { mutableStateOf(sound.optString("ambient")) }
     var editNotes by rememberSaveable(shot.id) { mutableStateOf(editorial.optString("editorNotes")) }
+
+    val sequence = ExternalCameraNaming.nextFrom(externalProjectFiles)
+    val externalForShot = externalProjectFiles.filter {
+        data(it).optString("shotId") == shot.id
+    }.sortedBy { it.updatedAt }
+    var enterWholeName by rememberSaveable(shot.id) { mutableStateOf(sequence == null) }
+    var filenameInput by rememberSaveable(shot.id) { mutableStateOf("") }
+    var numberInput by rememberSaveable(shot.id) { mutableStateOf("") }
+    val nextName = sequence?.let { parsed ->
+        runCatching {
+            parsed.filenameFor(numberInput.ifBlank { parsed.nextSuffix.orEmpty() })
+        }.getOrNull()
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -628,6 +660,86 @@ private fun ShotScreen(
         }
         Text("Wait for Duoport's export to finish before returning. Actual footage is marked reported, never checksum-verified until checked.",
             style = MaterialTheme.typography.bodySmall)
+        HorizontalDivider()
+        Text("External camera takes", style = MaterialTheme.typography.titleMedium)
+        Text("Filming on DJI, Sony or another camera? Log the actual file name printed by " +
+            "that camera. The app remembers the naming pattern across scenes and shots. " +
+            "These are references only — footage remains on the camera/card until imported.",
+            style = MaterialTheme.typography.bodySmall)
+        if (!enterWholeName && sequence != null) {
+            Text(
+                "Detected pattern: " + sequence.prefix + "[number]" + sequence.extension,
+                style = MaterialTheme.typography.labelMedium
+            )
+            OutlinedTextField(
+                value = numberInput,
+                onValueChange = { numberInput = it.filter(Char::isDigit).take(12) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("File number only (suffix)") },
+                placeholder = { Text(sequence.nextSuffix ?: "0001") },
+                singleLine = true
+            )
+            if (nextName != null) Text(
+                "Filename: " + nextName, style = MaterialTheme.typography.bodyMedium
+            )
+            Button(
+                enabled = nextName != null,
+                onClick = {
+                    if (nextName != null) {
+                        addExternalFile(nextName)
+                        numberInput = ""
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Log external camera take") }
+            TextButton(onClick = { enterWholeName = true; filenameInput = "" }) {
+                Text("Different camera or naming pattern")
+            }
+        } else {
+            OutlinedTextField(
+                value = filenameInput,
+                onValueChange = { filenameInput = it.take(160) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Camera filename (first entry)") },
+                placeholder = { Text("DJI_0045.MP4") },
+                singleLine = true
+            )
+            Button(
+                enabled = filenameInput.trim().isNotBlank(),
+                onClick = {
+                    addExternalFile(filenameInput)
+                    filenameInput = ""
+                    enterWholeName = false
+                    numberInput = ""
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Log external camera take") }
+            if (sequence != null) TextButton(onClick = { enterWholeName = false }) {
+                Text("Use detected camera sequence")
+            }
+        }
+        Text(
+            "External references on this shot: " + externalForShot.size,
+            style = MaterialTheme.typography.titleSmall
+        )
+        externalForShot.forEach { reference ->
+            OutlinedCard(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(reference.title, style = MaterialTheme.typography.titleSmall)
+                        Text("Reference only · footage not yet imported",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = { removeExternalFile(reference.id) }) {
+                        Text("Remove")
+                    }
+                }
+            }
+        }
         HorizontalDivider()
         Text("Recorded takes: " + takes.size, style = MaterialTheme.typography.titleMedium)
         if (takes.isEmpty()) Text("No takes have been imported yet")

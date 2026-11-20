@@ -148,6 +148,52 @@ class UnifiedStudioInstrumentationTest {
         }
     }
 
+    @Test fun externalCameraNamingRecognizesDJISuffixAndPreservesPadding() {
+        val dji = requireNotNull(ExternalCameraNaming.detect("DJI_20261120_0045.MP4"))
+        assertEquals("DJI_20261120_", dji.prefix)
+        assertEquals(".MP4", dji.extension)
+        assertEquals(4, dji.width)
+        assertEquals("DJI_20261120_0046.MP4", dji.nextFilename)
+        assertEquals("DJI_20261120_0052.MP4", dji.filenameFor("52"))
+        assertEquals("C0002.MOV", ExternalCameraNaming.detect("C0001.MOV")?.nextFilename)
+        assertNull(ExternalCameraNaming.detect("scene_alpha.mov"))
+        try {
+            ExternalCameraNaming.checkedFilename("../../danger.MP4")
+            fail("Full paths must not be accepted as filenames")
+        } catch (_: IllegalArgumentException) { }
+    }
+
+    @Test fun externalCameraTakeLogSurvivesScenesAndNeverPretendsFootageExists() = runBlocking {
+        val film = repo.createProject("DJI film")
+        val sceneA = repo.addScene(film.id, "Intro")
+        val sceneB = repo.addScene(film.id, "Closing")
+        val shotA = repo.addShot(sceneA.id, "Wide")
+        val shotB = repo.addShot(sceneB.id, "Insert")
+        val logger = ExternalCameraLog(db)
+        val one = logger.add(shotA.id, "DJI_0045.MP4")
+        val records = db.dao().listByProject(ExternalCameraNaming.COLLECTION, film.id)
+        assertEquals(1, records.size)
+        assertEquals("DJI_0046.MP4", ExternalCameraNaming.nextFrom(records)?.nextFilename)
+        val two = logger.add(shotB.id, "DJI_0046.MP4")
+        assertEquals(shotB.id, JSONObject(two.payload).getString("shotId"))
+        assertEquals(2, db.dao().listByProject(ExternalCameraNaming.COLLECTION, film.id).size)
+        try {
+            logger.add(shotB.id, "dji_0046.mp4")
+            fail("Duplicate camera filenames must be rejected across project")
+        } catch (_: IllegalArgumentException) { }
+        assertTrue(db.dao().listByProject("takes", film.id).isEmpty())
+        assertTrue(db.dao().listByProject("media", film.id).isEmpty())
+        val handoff = JSONObject(StudioExport(db).production(film.id))
+        assertEquals(2, handoff.getJSONArray("externalCameraReferences").length())
+        assertEquals(0, handoff.getJSONArray("takes").length())
+        assertFalse(handoff.getJSONObject("readiness")
+            .getJSONObject("actualMediaVerified").getBoolean("ok"))
+        logger.remove(one.id)
+        val remaining = db.dao().listByProject(ExternalCameraNaming.COLLECTION, film.id)
+        assertEquals(1, remaining.size)
+        assertEquals("DJI_0047.MP4", ExternalCameraNaming.nextFrom(remaining)?.nextFilename)
+    }
+
     @Test fun samePackageCaptureIntentIncludesShotContext() {
         val shot = ShotContext(
             projectId="project",projectName="Film",sceneId="scene",shotId="shot",

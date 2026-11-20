@@ -282,6 +282,7 @@ private fun WrapSummary(
 ) {
     val takeRows = all.filter { it.collection == "takes" }
     val mediaRows = all.filter { it.collection == "media" }
+    val externalRows = all.filter { it.collection == "externalClips" }
     val unverified = mediaRows.count { JSONObject(it.payload).optString("verification") != "verified" }
     val completed = shots.count { JSONObject(it.payload).optString("status") == "complete" }
     val continuity = all.filter { it.collection == "continuity" }
@@ -301,6 +302,12 @@ private fun WrapSummary(
         Text(completed.toString() + " of " + shots.size + " planned shots marked complete")
         Text(takeRows.size.toString() + " actual recorded takes")
         Text(mediaRows.size.toString() + " media records")
+        Text(externalRows.size.toString() + " external camera filenames logged (not imported footage)")
+        if (externalRows.isNotEmpty()) Text(
+            "These references will be included in the production metadata export, " +
+            "but must be linked to actual camera files before editorial handoff.",
+            style = MaterialTheme.typography.bodySmall
+        )
         Text(unverified.toString() + " media files not checksum-verified")
         Text(pendingContinuity.toString() + " continuity observations still open")
         HorizontalDivider()
