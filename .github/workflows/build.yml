@@ -21,6 +21,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Verify Sentry client configuration is supplied
+        env:
+          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
+        run: |
+          if [ -z "$STUDIO_SENTRY_DSN" ]; then
+            echo "::warning::STUDIO_SENTRY_DSN is absent. This APK will build, but crash reporting will remain disabled."
+          else
+            echo "::notice::Sentry DSN supplied for Android release build (value not logged)."
+          fi
+
       - name: Build release APK
         env:
           STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
