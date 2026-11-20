@@ -48,6 +48,7 @@ class StudioCaptureActivity : AppCompatActivity() {
             setResult(Activity.RESULT_CANCELED); finish(); return
         }
         request = parsed
+        StudioDiagnostics.breadcrumb("camera", "planned_shot_handoff")
         if (state != null) {
             listId = state.getString("listId")
             previousId = state.getString("previousId")
@@ -137,6 +138,7 @@ class StudioCaptureActivity : AppCompatActivity() {
             )
         }
         if (records.isEmpty()) { fail("export-failed", "No readable saved media found"); return }
+        StudioDiagnostics.breadcrumb("camera", "media_export_ready")
 
         val result = CameraResult(
             requestId = req.requestId, status = ResultStatus.CAPTURED,

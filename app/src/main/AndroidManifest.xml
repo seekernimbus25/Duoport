@@ -16,12 +16,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:name=".StudioApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="Filmmaking Studio"
         android:supportsRtl="true"
         android:theme="@style/Theme.DualFrame">
+
+        <!-- Respect opt-in crash reporting; StudioApplication initializes Sentry only
+             when a DSN and per-device consent are present. -->
+        <meta-data android:name="io.sentry.auto-init" android:value="false" />
 
         <!-- Android 16 ignores portrait-only screens on tablets and foldables for apps targeting
              it; until the screens have wide layouts, keep them portrait there (letterboxed). -->

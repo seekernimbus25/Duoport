@@ -1,6 +1,7 @@
 package app.filmmaking.studio
 
 import android.content.Context
+import com.dualframe.camera.StudioDiagnostics
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -135,6 +136,16 @@ class UnifiedStudioInstrumentationTest {
             fail("Empty capture was accepted")
         } catch (_: IllegalArgumentException) { }
         assertTrue(db.dao().listByProject("takes",project.id).isEmpty())
+    }
+
+    @Test fun diagnosticsOptInCannotSendWhenDisabled() {
+        StudioDiagnostics.setConsent(context, false)
+        assertFalse(StudioDiagnostics.isEnabled(context))
+        assertFalse(StudioDiagnostics.sendTestEvent())
+        // In CI, the Sentry DSN is deliberately absent: no telemetry leaves emulator tests.
+        if (!StudioDiagnostics.isConfigured()) {
+            assertFalse(StudioDiagnostics.initialize(context))
+        }
     }
 
     @Test fun samePackageCaptureIntentIncludesShotContext() {

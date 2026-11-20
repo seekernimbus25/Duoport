@@ -9,6 +9,12 @@ plugins {
 // CI sets GITHUB_RUN_NUMBER, so every published APK has a higher versionCode
 // and installs over the previous one.
 val buildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+// Public client-side Sentry DSN; provided at build time by GitHub Actions secret.
+// Never put tokens, media, scripts, user emails or model API keys here.
+val studioSentryDsn = System.getenv("STUDIO_SENTRY_DSN").orEmpty().trim()
+require(studioSentryDsn.isEmpty() ||
+    (studioSentryDsn.startsWith("https://") && !studioSentryDsn.contains('"') &&
+        !studioSentryDsn.contains('\\'))) { "STUDIO_SENTRY_DSN must be a valid HTTPS DSN" }
 
 android {
     namespace = "com.dualframe.camera"
@@ -21,6 +27,7 @@ android {
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "SENTRY_DSN", "\"$studioSentryDsn\"")
     }
 
     signingConfigs {
@@ -87,11 +94,15 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 }
 
 dependencies {
     implementation(project(":studio-contracts"))
+    // Sentry is inert unless STUDIO_SENTRY_DSN and in-app consent are set.
+    // The NDK component covers native camera / codec crashes, not only Kotlin exceptions.
+    implementation("io.sentry:sentry-android:8.63.0")
+    implementation("io.sentry:sentry-android-ndk:8.63.0")
     implementation(platform("androidx.compose:compose-bom:2025.06.01"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.ui:ui")

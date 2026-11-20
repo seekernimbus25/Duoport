@@ -22,6 +22,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build release APK
+        env:
+          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
         run: ./gradlew assembleRelease --stacktrace
 
       - name: Rename APK
@@ -78,6 +80,7 @@ jobs:
       - name: Build Play bundle
         id: play
         env:
+          STUDIO_SENTRY_DSN: ${{ secrets.STUDIO_SENTRY_DSN }}
           UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
           UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
           UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}

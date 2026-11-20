@@ -10,6 +10,7 @@ import kotlinx.coroutines.withContext
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import com.dualframe.camera.MainActivity as DuoportMainActivity
+import com.dualframe.camera.StudioDiagnostics
 import androidx.activity.compose.rememberLauncherForActivityResult
 import app.filmmaking.studio.camera.DuoportCaptureContract
 import app.filmmaking.studio.camera.StudioCaptureImporter
@@ -332,7 +333,10 @@ private fun StudioHome(vm: StudioViewModel) {
             listOf("Home", "Ideas", "Projects", "AI", "Settings").forEach { item ->
                 NavigationBarItem(
                     selected = tab == item,
-                    onClick = { tab = item; projectId = null; shotId = null; workspaceOpen = false },
+                    onClick = {
+                        StudioDiagnostics.breadcrumb("studio", "tab_" + item.lowercase())
+                        tab = item; projectId = null; shotId = null; workspaceOpen = false
+                    },
                     icon = { Text(when (item) {
                         "Home" -> "⌂"; "Ideas" -> "✦"; "Projects" -> "▣"; "AI" -> "✧"; else -> "⚙"
                     }) },
@@ -719,6 +723,8 @@ private fun AiScreen(vm: StudioViewModel, projects: List<StudioRecord>) {
 
 @Composable
 private fun SettingsScreen(vm: StudioViewModel, onBackup: () -> Unit, onRestore: () -> Unit) {
+    val crashContext = LocalContext.current
+    var crashConsent by remember { mutableStateOf(StudioDiagnostics.isEnabled(crashContext)) }
     var url by rememberSaveable { mutableStateOf(vm.apiUrl) }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
@@ -751,6 +757,34 @@ private fun SettingsScreen(vm: StudioViewModel, onBackup: () -> Unit, onRestore:
             Text("Access token is kept only in memory; reopening the app requires signing in again.",
                 style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { vm.signOut() }) { Text("Sign out") }
+        }
+        HorizontalDivider()
+        Text("Crash diagnostics", style = MaterialTheme.typography.titleLarge)
+        Text("Share anonymous crash reports and ANR diagnostics with the Studio development team. " +
+            "Reports may contain technical stack traces and app/device details; no scripts, " +
+            "AI prompts, camera frames or account identifiers are deliberately attached.",
+            style = MaterialTheme.typography.bodySmall)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Share crash reports", modifier = Modifier.weight(1f))
+            Switch(
+                checked = crashConsent && StudioDiagnostics.isConfigured(),
+                enabled = StudioDiagnostics.isConfigured(),
+                onCheckedChange = { on ->
+                    val enabled = StudioDiagnostics.setConsent(crashContext, on)
+                    crashConsent = on && enabled
+                    vm.report(if (crashConsent) "Crash reporting enabled" else "Crash reporting disabled")
+                }
+            )
+        }
+        if (!StudioDiagnostics.isConfigured()) {
+            Text("Crash reporting is not connected yet. The developer must configure " +
+                "STUDIO_SENTRY_DSN for this APK build.",
+                style = MaterialTheme.typography.bodySmall)
+        } else if (crashConsent) {
+            OutlinedButton(onClick = {
+                val queued = StudioDiagnostics.sendTestEvent()
+                vm.report(if (queued) "Diagnostic test event queued for Sentry" else "Crash reports are disabled")
+            }) { Text("Send safe diagnostic test event") }
         }
         HorizontalDivider()
         Text("Offline local storage", style = MaterialTheme.typography.titleMedium)
