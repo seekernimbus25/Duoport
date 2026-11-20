@@ -218,4 +218,27 @@ class SyncTest {
         val again = b.sync(cloud)
         assertEquals(0, again.sent + again.pulled.size)
     }
+
+    @Test fun webShapedRowsConvergeWithoutEditingImmutableVersions() {
+        val cloud = FakeCloud(); val phone = Device("phone")
+        fun seed(table: String, id: String, payload: JSONObject, columns: JSONObject) {
+            cloud.tables.getOrPut(table) { linkedMapOf() }[id] = FakeCloud.Row(1, null, payload, columns, "web")
+        }
+        seed("projects", "p1", project(), JSONObject().put("name", "Tea Film"))
+        seed("artifacts", "a1", JSONObject().put("id", "a1").put("projectId", "p1").put("kind", "voiceover")
+            .put("title", "VO").put("draft", "x").put("approvedVersionId", "v1"), JSONObject().put("project_id", "p1"))
+        // Web version payloads carry no artifactId: only the artifact_id column links them.
+        seed("artifact_versions", "v1", JSONObject().put("id", "v1").put("status", "approved").put("author", "user")
+            .put("text", "Final VO").put("note", "").put("createdAt", "2026-11-19T10:00:00Z"), JSONObject().put("artifact_id", "a1"))
+        seed("ai_conversations", "c1", JSONObject().put("id", "c1").put("model", "Claude"), JSONObject())
+        seed("ai_messages", "m1", JSONObject().put("id", "m1").put("from", "user").put("text", "Hi").put("at", "2026"),
+            JSONObject().put("conversation_id", "c1"))
+        phone.sync(cloud)
+        assertEquals("Final VO", phone.get("artifacts", "a1")!!.getJSONArray("versions").getJSONObject(0).getString("text"))
+        assertEquals("c1", phone.get("aiMessages", "m1")!!.getString("conversationId"))
+        phone.sync(cloud); phone.sync(cloud)
+        assertEquals("approved version never re-sent", 1L, cloud.tables.getValue("artifact_versions").getValue("v1").version)
+        val quiet = phone.sync(cloud)
+        assertEquals(0, quiet.sent + quiet.pulled.size + quiet.conflicts.size)
+    }
 }

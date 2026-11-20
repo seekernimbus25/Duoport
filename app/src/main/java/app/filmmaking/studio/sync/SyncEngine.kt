@@ -98,6 +98,9 @@ object LocalMerge {
         for (row in pulled.filter { it.table != "artifact_versions" }) {
             val collection = CloudMapping.collectionFor(row) ?: continue
             val payload = JSONObject(row.payload.toString())
+            // Web messages keep their conversation only in a column; the native UI groups by payload.
+            if (row.table == "ai_messages" && payload.optString("conversationId").isBlank())
+                row.columns.optString("conversation_id").takeIf { it.isNotBlank() }?.let { payload.put("conversationId", it) }
             if (row.table == "artifacts") {
                 val old = current("artifacts", row.id)?.let { JSONObject(it.payload) }
                 payload.put("versions", old?.optJSONArray("versions") ?: JSONArray())

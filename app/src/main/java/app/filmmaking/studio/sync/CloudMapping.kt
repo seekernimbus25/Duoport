@@ -86,7 +86,9 @@ object CloudMapping {
                     for (i in 0 until versions.length()) {
                         val v = versions.optJSONObject(i) ?: continue
                         val vid = v.optString("id").takeIf { it.isNotBlank() } ?: continue
-                        val version = JSONObject(v.toString()).put("artifactId", r.id)
+                        // Payload is sent exactly as stored: approved versions are immutable in the cloud,
+                        // so adding fields here would look like an edit. The link is the artifact_id column.
+                        val version = JSONObject(v.toString())
                         out += CloudRow("artifact_versions", vid, JSONObject()
                             .put("artifact_id", r.id).put("status", v.optString("status", "draft"))
                             .put("author", v.optString("author", "user")).put("text", v.optString("text"))
