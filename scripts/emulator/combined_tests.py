@@ -96,9 +96,15 @@ def first():
 def idea():
     click("Capture a thought",True)
     enter("Your idea","CinemaIdeaAlpha")
-    if "mInputShown=true" in D.ashell("dumpsys input_method"):
-        D.ashell("input keyevent 4");D.sleep(0.8)   # Back closes only the keyboard; the sheet stays open
-    scroll_click("Save to Inbox")
+    # Save sits below the keyboard. Back would close the sheet too, so scroll the sheet in its
+    # upper part (above the keyboard) until the button shows, then tap it.
+    w,h=D.screen_size();btn=None
+    for _ in range(8):
+        btn=D.find(text="Save to Inbox",timeout=0,nodes=D.dump())
+        if btn is not None and h*0.07<=btn.cy<=h*0.93: break
+        D.swipe(w//2,int(h*0.45),w//2,int(h*0.22),700);D.sleep(0.4)
+    assert btn is not None,"Cannot reach Save to Inbox: "+repr([n.text for n in D.dump() if n.text][:30])
+    D.tap_xy(btn.cx,btn.cy)
     see("CinemaIdeaAlpha",timeout=18)
     D.relaunch();click("Ideas");see("CinemaIdeaAlpha")
 def plans():

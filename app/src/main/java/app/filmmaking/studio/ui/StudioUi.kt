@@ -255,7 +255,8 @@ fun FutureTag() = Text("FUTURE", Modifier.drawBehind {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StudioSheet(title: String, onClose: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    ModalBottomSheet(onDismissRequest = onClose, containerColor = StudioColors.Popover, contentColor = StudioColors.Foreground,
+    // Opens fully: a half-height sheet leaves only a sliver above the keyboard for forms.
+    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = StudioColors.Popover, contentColor = StudioColors.Foreground,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), scrimColor = Color(0xB3110F0D),
         dragHandle = { Box(Modifier.padding(top = 12.dp).size(40.dp, 4.dp).clip(CircleShape).background(StudioColors.MutedForeground.copy(alpha = 0.4f))) }) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
