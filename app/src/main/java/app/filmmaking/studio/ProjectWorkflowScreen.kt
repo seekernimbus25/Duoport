@@ -78,7 +78,8 @@ fun ProjectWorkflowScreen(
     onPickReference: () -> Unit,
     onShootMode: () -> Unit,
     section: String,
-    onSection: (String) -> Unit
+    onSection: (String) -> Unit,
+    showTabs: Boolean = true
 ) {
     var creating by remember { mutableStateOf<WorkflowKind?>(null) }
     var editing by remember { mutableStateOf<StudioRecord?>(null) }
@@ -92,7 +93,7 @@ fun ProjectWorkflowScreen(
     val signedIn = vm.session != null
 
     Column(Modifier.fillMaxSize()) {
-        ScrollableTabRow(selectedTabIndex = sections.indexOf(section).coerceAtLeast(0), edgePadding = 8.dp) {
+        if (showTabs) ScrollableTabRow(selectedTabIndex = sections.indexOf(section).coerceAtLeast(0), edgePadding = 8.dp) {
             sections.forEach { tab -> Tab(selected = section == tab, onClick = { onSection(tab) }, text = { Text(tab) }) }
         }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp),

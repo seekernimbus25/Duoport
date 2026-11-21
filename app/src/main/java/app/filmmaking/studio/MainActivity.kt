@@ -6,6 +6,9 @@ import android.content.ContentResolver
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.ui.platform.LocalContext
+import androidx.activity.compose.BackHandler
+import androidx.activity.enableEdgeToEdge
+import app.filmmaking.studio.ui.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.content.ActivityNotFoundException
@@ -215,11 +218,21 @@ class StudioViewModel(
         }
     }
     fun report(message: String) { notice = message }
-    fun captureIdea(text: String) = act {
-        if (text.isNotBlank()) { repo.captureIdea(text.trim()); notice = "Idea saved on this device" }
+    fun captureIdea(text: String) = captureIdea(text, "text", "", emptyList(), "")
+    fun captureIdea(text: String, kind: String, title: String, tags: List<String>, source: String, then: (String) -> Unit = {}) = act {
+        if (text.isNotBlank() || title.isNotBlank()) {
+            val idea = repo.captureIdea(text.trim().ifBlank { title.trim() }, kind, title, tags, source)
+            notice = "Idea saved to Inbox on this device"; then(idea.id)
+        }
     }
-    fun convertIdea(id: String) = act { repo.convertIdea(id); notice = "Project created" }
-    fun createProject(title: String) = act { if (title.isNotBlank()) repo.createProject(title.trim()) }
+    fun updateProject(id: String, vararg changes: Pair<String, Any>) = act { features.updateProject(id, changes.toMap()) }
+    fun addDecision(projectId: String, text: String) = act { features.addDecision(projectId, text) }
+    fun touchProject(id: String) = act { features.touchProject(id) }
+    fun clearNotice() { notice = "" }
+    fun convertIdea(id: String, then: (String) -> Unit = {}) = act { val p = repo.convertIdea(id); notice = "Project created"; then(p.id) }
+    fun setIdeaStatus(id: String, status: String) = act { features.setIdeaStatus(id, status) }
+    fun createProject(title: String) = createProject(title) {}
+    fun createProject(title: String, then: (String) -> Unit) = act { if (title.isNotBlank()) then(repo.createProject(title.trim()).id) }
     fun addScene(projectId: String, title: String) = act {
         if (title.isNotBlank()) repo.addScene(projectId, title.trim())
     }
@@ -402,7 +415,7 @@ class StudioViewModel(
         aiBusy = true
         viewModelScope.launch {
             try {
-                val t = token() ?: error("Sign in under Settings to use AI")
+                val t = token() ?: error("Sign in under Library → Account & data to use AI")
                 val result = creative.create(t, projectId, op, instructions, targets, sources, count, extra)
                 notice = accept(result)
             } catch (e: Exception) { notice = e.message ?: "AI request failed" }
@@ -711,6 +724,7 @@ class StudioViewModel(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val repo = StudioRepository(StudioDatabase.get(this))
         val endpoint = ApiEndpoint(this)
         val auth = StudioAuthClient()
@@ -731,7 +745,7 @@ class MainActivity : ComponentActivity() {
                     StudioViewModel(repo, endpoint, auth, ai, importer, workflow, exporter, creative, verifier, externalCamera,
                         features, mediaImport, cloud, applicationContext) as T
             })
-            MaterialTheme { StudioHome(vm) }
+            StudioTheme { StudioHome(vm) }
         }
     }
 }
@@ -797,9 +811,10 @@ private fun StudioHome(vm: StudioViewModel) {
         if (uri != null) vm.referenceFromPhone(context.contentResolver, uri)
     }
     var shootMode by rememberSaveable { mutableStateOf(false) }
-    var dnaOpen by rememberSaveable { mutableStateOf(false) }
+    var libraryTab by rememberSaveable { mutableStateOf("Creative DNA") }
+    var ideaId by rememberSaveable { mutableStateOf<String?>(null) }
     // Hoisted so leaving Shoot Mode (or a shot) returns to the same workspace tab.
-    var workspaceSection by rememberSaveable { mutableStateOf("Develop") }
+    var workspaceSection by rememberSaveable { mutableStateOf("Overview") }
     val pickArchive = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.uploadToArchive(uri, null)
     }
@@ -812,7 +827,6 @@ private fun StudioHome(vm: StudioViewModel) {
     var tab by rememberSaveable { mutableStateOf("Home") }
     var projectId by rememberSaveable { mutableStateOf<String?>(null) }
     var shotId by rememberSaveable { mutableStateOf<String?>(null) }
-    var workspaceOpen by rememberSaveable { mutableStateOf(false) }
     var pendingRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingShotId by rememberSaveable { mutableStateOf<String?>(null) }
     val launcher = rememberLauncherForActivityResult(DuoportCaptureContract()) { result ->
@@ -853,224 +867,138 @@ private fun StudioHome(vm: StudioViewModel) {
     }
     val currentProject = projects.find { it.id == projectId }
     val currentShot = shots.find { it.id == shotId }
-    val title = currentShot?.title ?: currentProject?.title ?: "Filmmaking Studio"
+    val currentIdea = ideas.find { it.id == ideaId }
+    var capturing by rememberSaveable { mutableStateOf(false) }
+    var creatingProject by rememberSaveable { mutableStateOf(false) }
+    fun goTab(item: String) {
+        StudioDiagnostics.breadcrumb("studio", "tab_" + item.lowercase())
+        tab = item; projectId = null; shotId = null; ideaId = null; shootMode = false; workspaceSection = "Overview"
+    }
+    fun openProject(id: String, section: String = "Overview") {
+        tab = "Projects"; ideaId = null; shotId = null; shootMode = false; projectId = id; workspaceSection = section
+        vm.touchProject(id)
+    }
+    fun openIdea(id: String) { tab = "Ideas"; projectId = null; shotId = null; shootMode = false; ideaId = id }
+    val canGoBack = shootMode || shotId != null || projectId != null || ideaId != null || tab != "Home"
+    BackHandler(enabled = canGoBack) {
+        when {
+            shootMode -> shootMode = false
+            shotId != null -> shotId = null
+            projectId != null -> projectId = null
+            ideaId != null -> ideaId = null
+            else -> goTab("Home")
+        }
+    }
+    val atRoot = currentProject == null && currentShot == null && currentIdea == null
+    val navItems = remember {
+        listOf(NavItem("Home", "Home", Lucide.House), NavItem("Ideas", "Ideas", Lucide.Lightbulb), NavItem("Projects", "Projects", Lucide.Clapperboard),
+            NavItem("AI", "AI Studio", Lucide.Sparkles), NavItem("Library", "Library", Lucide.Library))
+    }
 
     Scaffold(
-        topBar = { TopAppBar(
-            title = { Text(title) },
-            navigationIcon = {
-                if (currentProject != null || currentShot != null) {
-                    TextButton(onClick = {
-                        if (shootMode) shootMode = false
-                        else if (shotId != null) shotId = null
-                        else if (workspaceOpen) workspaceOpen = false
-                        else projectId = null
-                    }) { Text("Back") }
-                }
+        containerColor = StudioColors.Background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        bottomBar = {
+            Column {
+                if (vm.notice.isNotBlank()) NoticeBar(vm.notice, vm::clearNotice)
+                if (!shootMode) StudioBottomNav(navItems, tab) { goTab(it) }
+                else Spacer(Modifier.navigationBarsPadding())
             }
-        ) },
-        bottomBar = { NavigationBar {
-            listOf("Home", "Ideas", "Projects", "AI", "Settings").forEach { item ->
-                NavigationBarItem(
-                    selected = tab == item,
-                    onClick = {
-                        StudioDiagnostics.breadcrumb("studio", "tab_" + item.lowercase())
-                        tab = item; projectId = null; shotId = null; workspaceOpen = false; shootMode = false; workspaceSection = "Develop"
-                    },
-                    icon = { Text(when (item) {
-                        "Home" -> "⌂"; "Ideas" -> "✦"; "Projects" -> "▣"; "AI" -> "✧"; else -> "⚙"
-                    }) },
-                    label = { Text(item) }
-                )
-            }
-        } }
+        },
+        floatingActionButton = { if (atRoot && tab != "AI" && !shootMode) AssistantFab({ goTab("AI") }) }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            if (vm.notice.isNotBlank()) Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
-                Text(vm.notice, Modifier.fillMaxWidth().padding(10.dp), style = MaterialTheme.typography.bodySmall)
-            }
+        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
             when {
-                currentProject != null && currentShot != null -> ShotScreen(
-                    currentShot,
-                    takes.filter { data(it).optString("shotId") == currentShot.id },
-                    workItems.filter {
-                        it.collection == ExternalCameraNaming.COLLECTION &&
-                            data(it).optString("projectId") == currentProject.id
-                    },
-                    vm::changeShot,
-                    vm::saveShotPlan,
-                    vm::rateTake,
-                    vm::preferTake,
-                    { filename -> vm.logExternalCameraFilename(currentShot.id, filename) },
-                    vm::removeExternalCameraReference,
-                    vm
-                ) { recordShot(currentProject, currentShot) }
-                currentProject != null && shootMode -> ShootModeScreen(
-                    vm, currentProject, shots.filter { data(it).optString("projectId") == currentProject.id }, workItems,
-                    { s -> recordShot(currentProject, s) }, { shootMode = false }
-                )
-                currentProject != null && workspaceOpen -> ProjectWorkflowScreen(
-                    vm, currentProject,
-                    scenes.filter { data(it).optString("projectId") == currentProject.id }.sortedBy { data(it).optInt("order") },
-                    shots.filter { data(it).optString("projectId") == currentProject.id },
-                    workItems,
-                    onExport = { format ->
-                        vm.exportFile(currentProject.id, format) { bytes, mime, name ->
-                            pendingFile = bytes
-                            when (mime) { "application/json" -> saveJson.launch(name); "text/markdown" -> saveMd.launch(name); else -> saveZip.launch(name) }
-                        }
-                    },
-                    onImportFootage = { importProjectId = currentProject.id; pickFootage.launch(arrayOf("video/*", "audio/*", "image/*", "application/octet-stream")) },
-                    onPickStoryboard = { id -> storyboardShot = id; pickStoryboard.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    onPickContinuityPhoto = { id, which -> continuityTarget = "$which:$id"; pickContinuity.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    onPickReference = { pickReference.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    onShootMode = { shootMode = true },
-                    section = workspaceSection,
-                    onSection = { workspaceSection = it }
-                )
-                currentProject != null -> ProjectScreen(
-                    currentProject, scenes.filter { data(it).optString("projectId") == currentProject.id },
-                    shots.filter { data(it).optString("projectId") == currentProject.id },
-                    { vm.addScene(currentProject.id, it) }, vm::addShot, { shotId = it }, { workspaceOpen = true }
-                )
-                tab == "Home" -> HomeScreen(ideas.size, projects.size, shots.size, { tab = it }, { context.startActivity(Intent(context, DuoportMainActivity::class.java)) })
-                tab == "Ideas" -> IdeasScreen(ideas, vm::captureIdea, vm::convertIdea) { idea ->
-                    IdeaExtras(vm, idea, {
-                        imageIdea = idea.id
-                        pickIdeaImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    }, vm.recordingIdeaId == idea.id) { vm.toggleVoiceNote(idea.id) }
+                currentProject != null && currentShot != null -> Column(Modifier.fillMaxSize()) {
+                    val sp = data(currentShot)
+                    StudioTopBar(currentShot.title, sp.optString("code") + " · " + sp.optString("status"), { shotId = null })
+                    ShotScreen(
+                        currentShot,
+                        takes.filter { data(it).optString("shotId") == currentShot.id },
+                        workItems.filter {
+                            it.collection == ExternalCameraNaming.COLLECTION &&
+                                data(it).optString("projectId") == currentProject.id
+                        },
+                        vm::changeShot,
+                        vm::saveShotPlan,
+                        vm::rateTake,
+                        vm::preferTake,
+                        { filename -> vm.logExternalCameraFilename(currentShot.id, filename) },
+                        vm::removeExternalCameraReference,
+                        vm
+                    ) { recordShot(currentProject, currentShot) }
                 }
-                tab == "Projects" -> ProjectsScreen(projects, vm::createProject, { projectId = it })
-                tab == "AI" -> Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(selected = !dnaOpen, onClick = { dnaOpen = false }, label = { Text("AI Director") })
-                        FilterChip(selected = dnaOpen, onClick = { dnaOpen = true }, label = { Text("Creative DNA") })
+                currentProject != null && shootMode -> Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                    ShootModeScreen(
+                        vm, currentProject, shots.filter { data(it).optString("projectId") == currentProject.id }, workItems,
+                        { s -> recordShot(currentProject, s) }, { shootMode = false }
+                    )
+                }
+                currentProject != null -> Column(Modifier.fillMaxSize()) {
+                    val pd = data(currentProject)
+                    val projectScenes = scenes.filter { data(it).optString("projectId") == currentProject.id }.sortedBy { data(it).optInt("order") }
+                    val projectShots = shots.filter { data(it).optString("projectId") == currentProject.id }
+                    StudioTopBar(currentProject.title, pd.optString("status") + " · " + pd.optString("format"), { projectId = null })
+                    StudioTabs(PROJECT_TABS, workspaceSection) { workspaceSection = it }
+                    when (workspaceSection) {
+                        "Overview" -> ProjectOverview(vm, currentProject, filmProgress(currentProject.id, shots, takes, workItems)) { workspaceSection = it }
+                        "Shots" -> ShotsTab(projectScenes, projectShots, takes, { vm.addScene(currentProject.id, it) }, vm::addShot) { shotId = it }
+                        else -> ProjectWorkflowScreen(
+                            vm, currentProject, projectScenes, projectShots, workItems,
+                            onExport = { format ->
+                                vm.exportFile(currentProject.id, format) { bytes, mime, name ->
+                                    pendingFile = bytes
+                                    when (mime) { "application/json" -> saveJson.launch(name); "text/markdown" -> saveMd.launch(name); else -> saveZip.launch(name) }
+                                }
+                            },
+                            onImportFootage = { importProjectId = currentProject.id; pickFootage.launch(arrayOf("video/*", "audio/*", "image/*", "application/octet-stream")) },
+                            onPickStoryboard = { id -> storyboardShot = id; pickStoryboard.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            onPickContinuityPhoto = { id, which -> continuityTarget = "$which:$id"; pickContinuity.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            onPickReference = { pickReference.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            onShootMode = { shootMode = true },
+                            section = workspaceSection,
+                            onSection = { workspaceSection = it },
+                            showTabs = false
+                        )
                     }
-                    if (dnaOpen) CreativeDnaScreen(vm, projects, workItems)
-                    else AiDirectorScreen(vm, projects, workItems) {
+                }
+                currentIdea != null -> IdeaDetailScreen(vm, currentIdea, { ideaId = null }, { openProject(it) }, {
+                    imageIdea = currentIdea.id
+                    pickIdeaImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }, vm.recordingIdeaId == currentIdea.id) { vm.toggleVoiceNote(currentIdea.id) }
+                tab == "Home" -> HomeScreen(ideas, projects, shots, takes, workItems, { capturing = true }, { id, section -> openProject(id, section) },
+                    { openIdea(it) }, { goTab(it) }, vm::toggleChecklist) { context.startActivity(Intent(context, DuoportMainActivity::class.java)) }
+                tab == "Ideas" -> IdeasScreen(ideas, { capturing = true }) { openIdea(it) }
+                tab == "Projects" -> ProjectsScreen(projects, shots, takes, workItems, { creatingProject = true }) { openProject(it) }
+                tab == "AI" -> Column(Modifier.fillMaxSize()) {
+                    StudioTopBar("AI Studio", "Creative partner")
+                    AiDirectorScreen(vm, projects, workItems) {
                         pickArchive.launch(arrayOf("application/pdf", "text/plain", "text/markdown",
                             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
                     }
                 }
-                else -> SettingsScreen(vm, workItems.firstOrNull { it.collection == "cameraProfiles" },
-                    {
-                        vm.backup { body ->
-                            pendingExport = body
-                            createJson.launch("studio-backup.json")
-                        }
-                    },
-                    { openBackup.launch(arrayOf("application/json", "text/plain")) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HomeScreen(ideas: Int, projects: Int, shots: Int, navigate: (String) -> Unit, openCamera: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text("From thought to shot", style = MaterialTheme.typography.headlineMedium)
-        Text("Your creative pre-production workspace. Ideas and shot plans are stored offline.")
-        Text(ideas.toString() + " ideas · " + projects + " films · " + shots + " planned shots")
-        Button(onClick = { navigate("Ideas") }) { Text("Capture an idea") }
-        OutlinedButton(onClick = { navigate("Projects") }) { Text("Plan a film") }
-        OutlinedButton(onClick = { navigate("AI") }) { Text("Open AI Director") }
-        Button(onClick = openCamera, modifier = Modifier.fillMaxWidth()) { Text("Open Duoport camera") }
-        Text("Duoport recording is included in this APK. Film planned shots or open the camera directly.",
-            style = MaterialTheme.typography.bodySmall)
-    }
-}
-
-@Composable
-private fun IdeasScreen(ideas: List<StudioRecord>, capture: (String) -> Unit, convert: (String) -> Unit,
-                        extras: @Composable (StudioRecord) -> Unit = {}) {
-    var entry by rememberSaveable { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(value = entry, onValueChange = { entry = it }, modifier = Modifier.fillMaxWidth(),
-            label = { Text("Capture an idea, in your own words") }, minLines = 3)
-        Button(enabled = entry.isNotBlank(), onClick = { capture(entry); entry = "" }) { Text("Save offline") }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(ideas, key = { it.id }) { item ->
-                Card {
-                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                        Text(item.title, style = MaterialTheme.typography.titleMedium)
-                        Text(data(item).optString("original"), style = MaterialTheme.typography.bodyMedium)
-                        if (data(item).optString("status") == "Converted") Text("Converted to film")
-                        else TextButton(onClick = { convert(item.id) }) { Text("Develop as film") }
-                        extras(item)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProjectsScreen(projects: List<StudioRecord>, create: (String) -> Unit, open: (String) -> Unit) {
-    var name by rememberSaveable { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(value = name, onValueChange = { name = it }, modifier = Modifier.fillMaxWidth(),
-            label = { Text("New film project name") })
-        Button(enabled = name.isNotBlank(), onClick = { create(name); name = "" }) { Text("Create film") }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(projects, key = { it.id }) { project ->
-                OutlinedCard(onClick = { open(project.id) }, modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp)) {
-                        Text(project.title, style = MaterialTheme.typography.titleMedium)
-                        Text(data(project).optString("status"), style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProjectScreen(
-    project: StudioRecord,
-    scenes: List<StudioRecord>,
-    shots: List<StudioRecord>,
-    addScene: (String) -> Unit,
-    addShot: (String, String) -> Unit,
-    openShot: (String) -> Unit,
-    openWorkspace: () -> Unit
-) {
-    var sceneName by rememberSaveable(project.id) { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Scenes and shot list", style = MaterialTheme.typography.titleMedium)
-        Button(onClick = openWorkspace) { Text("Open Develop · Story · Visual · Planner · Shoot · Wrap") }
-        Text(scenes.size.toString() + " scenes · " + shots.size + " shots")
-        OutlinedTextField(sceneName, { sceneName = it }, Modifier.fillMaxWidth(), label = { Text("Scene name") })
-        Button(enabled = sceneName.isNotBlank(), onClick = { addScene(sceneName); sceneName = "" }) { Text("Add scene") }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(scenes.sortedBy { data(it).optInt("order") }, key = { it.id }) { scene ->
-                var shotName by rememberSaveable(scene.id) { mutableStateOf("") }
-                Card {
-                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Scene " + data(scene).optInt("number") + " · " + scene.title,
-                            style = MaterialTheme.typography.titleMedium)
-                        shots.filter { data(it).optString("sceneId") == scene.id }.forEach { shot ->
-                            OutlinedCard(onClick = { openShot(shot.id) }, modifier = Modifier.fillMaxWidth()) {
-                                Text(data(shot).optString("code") + " — " + shot.title +
-                                    " (" + data(shot).optString("status") + ")",
-                                    Modifier.padding(12.dp))
+                else -> Column(Modifier.fillMaxSize()) {
+                    StudioTopBar("Library", "Creative DNA & data")
+                    StudioTabs(LIBRARY_TABS, libraryTab) { libraryTab = it }
+                    if (libraryTab == LIBRARY_TABS[0]) CreativeDnaScreen(vm, projects, workItems)
+                    else SettingsScreen(vm, workItems.firstOrNull { it.collection == "cameraProfiles" },
+                        {
+                            vm.backup { body ->
+                                pendingExport = body
+                                createJson.launch("studio-backup.json")
                             }
-                        }
-                        OutlinedTextField(shotName, { shotName = it }, Modifier.fillMaxWidth(),
-                            label = { Text("Shot title") })
-                        TextButton(enabled = shotName.isNotBlank(), onClick = {
-                            addShot(scene.id, shotName)
-                            shotName = ""
-                        }) { Text("Add shot") }
-                    }
+                        },
+                        { openBackup.launch(arrayOf("application/json", "text/plain")) }
+                    )
                 }
             }
         }
     }
+    if (capturing) CaptureSheet(vm, { capturing = false }) { id -> capturing = false; openIdea(id) }
+    if (creatingProject) NewProjectSheet(vm, { creatingProject = false }) { id -> creatingProject = false; openProject(id) }
 }
+
+private val LIBRARY_TABS = listOf("Creative DNA", "Account & data")
 
 @Composable
 private fun ShotScreen(

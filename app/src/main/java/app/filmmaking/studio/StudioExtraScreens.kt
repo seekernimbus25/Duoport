@@ -205,7 +205,7 @@ fun AiDirectorScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: Lis
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("AI Director", style = MaterialTheme.typography.titleLarge)
         if (vm.session == null) {
-            Text("Sign in under Settings using your existing Studio Supabase account.")
+            Text("Sign in under Library → Account & data using your existing Studio Supabase account.")
             Text("Model API keys are securely stored on AWS, not in this APK.", style = MaterialTheme.typography.bodySmall)
             return@Column
         }
@@ -305,7 +305,7 @@ fun CreativeDnaScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: Li
             Text("Discover patterns in your work", style = MaterialTheme.typography.titleMedium)
             Text("The AI reads selected archive documents and suggests possible patterns, each backed by quotes. " +
                 "Nothing becomes part of your Creative DNA until you approve it.", style = MaterialTheme.typography.bodySmall)
-            if (vm.session == null) Text("Sign in under Settings to analyse your archive.", style = MaterialTheme.typography.bodySmall)
+            if (vm.session == null) Text("Sign in under Library → Account & data to analyse your archive.", style = MaterialTheme.typography.bodySmall)
             else OutlinedButton(enabled = !vm.aiBusy, onClick = { vm.loadArchiveDocs() }) { Text(if (vm.archiveDocs.isEmpty()) "Load my indexed documents" else "Refresh documents") }
         }
         items(vm.archiveDocs, key = { "doc:" + it.optString("id") }) { d ->

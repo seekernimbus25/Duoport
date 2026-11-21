@@ -49,6 +49,27 @@ def scroll_back_to(label,contains=False,max_swipes=10):
     return D.find(text=label,contains=contains,timeout=1)
 def enter(label,value):
     n=see(label);D.tap_xy(n.cx,n.cy);D.type_text(value)
+TABS=["Overview","Develop","Story","Visual","Shots","Planner","Shoot","Wrap"]
+def project_tab(name):
+    """Taps a project workspace tab; the tab row scrolls sideways, so swipe it towards hidden tabs."""
+    want=TABS.index(name)
+    for _ in range(5):
+        nodes=D.dump()
+        n=D.find(text=name,nodes=nodes)
+        w,h=D.screen_size()
+        if n and 0<n.cx<w: D.tap_xy(n.cx,n.cy);D.sleep(1);return
+        shown=[(TABS.index(t),D.find(text=t,nodes=nodes)) for t in TABS]
+        shown=[(i,m) for i,m in shown if m]
+        assert shown,"Project tabs not on screen"
+        y=shown[0][1].cy
+        if want>max(i for i,_ in shown): D.swipe(int(w*0.8),y,int(w*0.25),y,420)
+        else: D.swipe(int(w*0.25),y,int(w*0.8),y,420)
+    raise AssertionError("Cannot reach project tab "+name)
+def open_project():
+    click("Projects");click("CinemaIdeaAlpha");see("Overview")
+def account():
+    """Settings now live under Library → Account & data."""
+    D.relaunch();click("Library");click("Account & data")
 def safe():
     crash=D.crashes()
     assert not crash,"Fatal exception "+crash[-1500:]
@@ -69,32 +90,36 @@ def first():
     D.ashell(f"pm grant {PKG} android.permission.CAMERA")
     D.ashell(f"pm grant {PKG} android.permission.RECORD_AUDIO")
     D.launch()
-    see("From thought to shot",timeout=35);see("Open Duoport camera")
+    see("Good day, director.",timeout=35);see("Capture a thought",True)
+    assert D.scroll_to(text="Open Duoport camera",max_swipes=10),"Duoport camera entry missing on Home"
+    D.relaunch()
 def idea():
-    click("Capture an idea")
-    enter("Capture an idea, in your own words","CinemaIdeaAlpha")
-    click("Save offline")
+    click("Capture a thought",True)
+    enter("Your idea","CinemaIdeaAlpha")
+    click("Save to Inbox")
     see("CinemaIdeaAlpha",timeout=18)
     D.relaunch();click("Ideas");see("CinemaIdeaAlpha")
 def plans():
-    click("Develop as film")
-    click("Projects");click("CinemaIdeaAlpha")
+    click("CinemaIdeaAlpha");scroll_click("Develop as film")
+    see("Overview",timeout=15)
+    open_project();project_tab("Shots")
     see("Scenes and shot list")
     enter("Scene name","OpeningScene");click("Add scene")
     see("OpeningScene",True,20)
     enter("Shot title","HeroCloseup");scroll_click("Add shot")
     see("HeroCloseup",True,20)
-    scroll_click("HeroCloseup",True);see("Record this shot in Duoport")
+    scroll_click("HeroCloseup",True)
+    assert D.scroll_to(text="Record this shot in Duoport",max_swipes=8),"Shot screen did not open"
 def shot_persist():
     click("Edit camera",True)
     # The editor is long: the Save action is below the initial viewport.
     scroll_click("Save planned shot offline")
-    D.relaunch();click("Projects");click("CinemaIdeaAlpha")
+    D.relaunch();open_project();project_tab("Shots")
     see("OpeningScene",True);scroll_click("HeroCloseup",True)
     assert D.scroll_to(text="Record this shot in Duoport",max_swipes=10),"Shot was not persisted after relaunch"
 def cancel():
     # Start independently, so an earlier editor failure cannot mask this test.
-    D.relaunch();click("Projects");click("CinemaIdeaAlpha")
+    D.relaunch();open_project();project_tab("Shots")
     scroll_click("HeroCloseup",True)
     scroll_click("Record this shot in Duoport")
     see("Film a Studio shot",timeout=16)
@@ -102,29 +127,25 @@ def cancel():
     see("Camera cancelled",True,timeout=16)
     assert D.scroll_to(text="Recorded takes: 0",max_swipes=8),"Cancelled recording incorrectly created a take"
 def camera():
-    click("Home");click("Open Duoport camera")
+    click("Home");scroll_click("Open Duoport camera")
     for _ in range(3):
         n=D.find(text="While using the app",contains=True,timeout=1)
         if n:D.tap_xy(n.cx,n.cy)
     assert D.find(rid="record_button",timeout=30),"Embedded Duoport camera did not open"
     D.ashell("input keyevent 4");D.sleep(1)
 def workflow():
-    click("Projects");click("CinemaIdeaAlpha")
-    click("Open Develop",True)
+    open_project();project_tab("Develop")
     see("+ Treatment")
     click("+ Treatment");see("Add Treatment")
     enter("Title","TreatmentOne");enter("Premise","Lightandmemory")
     click("Save offline");see("TreatmentOne",timeout=20)
     click("Approve");see("approved",True)
-    tab=see("Shoot")
-    w,h=D.screen_size()
-    D.swipe(min(w-110,tab.cx+160),tab.cy,max(110,w//4),tab.cy,420)
-    click("Wrap")
+    project_tab("Wrap")
     see("Production wrap")
     see("Export production metadata JSON")
 def settings():
-    click("AI");see("Sign in under Settings",True)
-    click("Settings");see("Your Studio account")
+    click("AI Studio");see("Sign in under Library",True)
+    click("Library");click("Account & data");see("Your Studio account")
     see("Test connection")
     # Crash-diagnostics settings push storage actions below the fold.
     assert D.scroll_to(text="Export offline backup JSON",max_swipes=10),"Backup action not reachable"
@@ -132,7 +153,7 @@ def settings():
 def test_real_recording():
     # Positive camera handoff, real emulator MediaStore save and take import.
     D.relaunch()
-    click("Projects");click("CinemaIdeaAlpha")
+    open_project();project_tab("Shots")
     scroll_click("HeroCloseup",True)
     click("Record this shot in Duoport")
     click("Open Duoport",timeout=15)
@@ -153,7 +174,7 @@ def test_real_recording():
 def test_external_camera_filenames():
     # Real UI: log first filename, infer prefix + padded next number, persist offline.
     D.relaunch()
-    click("Projects");click("CinemaIdeaAlpha")
+    open_project();project_tab("Shots")
     scroll_click("HeroCloseup",True)
     entry=D.scroll_to(text="Camera filename (first entry)",max_swipes=10)
     assert entry,"External camera filename field not visible"
@@ -169,14 +190,14 @@ def test_external_camera_filenames():
     see("External camera filename saved",contains=True,timeout=20)
     assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Logged DJI_0046.MP4 card not shown"
     D.relaunch()
-    click("Projects");click("CinemaIdeaAlpha")
+    open_project();project_tab("Shots")
     scroll_click("HeroCloseup",True)
     assert D.scroll_to(text="DJI_0045.MP4",max_swipes=10),"First filename not saved"
     assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Second filename not saved"
 
 def test_backend_health_and_backup():
-    # Fresh start: Settings keeps its scroll position from the previous case otherwise.
-    D.relaunch();click("Settings")
+    # Fresh start: Account & data keeps its scroll position from the previous case otherwise.
+    account()
     click("Test connection")
     see("Server: ready",contains=True,timeout=20)
     scroll_click("Export offline backup JSON")
@@ -185,13 +206,7 @@ def test_backend_health_and_backup():
     D.ashell("input keyevent 4");D.sleep(1)
 
 def open_workspace(tab_name):
-    D.relaunch();click("Projects");click("CinemaIdeaAlpha")
-    click("Open Develop",True)
-    tab=see("Shoot")
-    if tab_name=="Wrap":
-        w,h=D.screen_size()
-        D.swipe(min(w-110,tab.cx+160),tab.cy,max(110,w//4),tab.cy,420)
-    click(tab_name)
+    D.relaunch();open_project();project_tab(tab_name)
 
 def test_shoot_mode():
     open_workspace("Shoot")
@@ -218,7 +233,7 @@ def test_wrap_readiness_exports():
     D.ashell("input keyevent 4");D.sleep(1)
 
 def test_sync_gating_and_camera_profile():
-    D.relaunch();click("Settings")
+    account()
     assert D.scroll_to(text="Cloud sync",max_swipes=10),"Cloud sync section missing"
     see("Sign in to copy",contains=True)
     scroll_click("Read this phone's camera capabilities")
@@ -287,18 +302,18 @@ def test_beat_drag_reorder():
     see("1. BeatTwo",timeout=12)
 
 def test_creative_dna_preferences():
-    D.relaunch();click("AI");click("Creative DNA")
+    D.relaunch();click("Library");click("Creative DNA")
     see("Explicit preferences",timeout=12)
-    see("Sign in under Settings to analyse your archive.")
+    see("to analyse your archive",contains=True)
     enter("e.g. I prefer long, observational takes","PreferStillFrames")
     click("Add preference")
     see("PreferStillFrames",timeout=12)
-    D.relaunch();click("AI");click("Creative DNA")
+    D.relaunch();click("Library");click("Creative DNA")
     see("PreferStillFrames",timeout=12)
     see("1 explicit preference(s)",contains=True)
 
 def test_sentry_opt_in_event():
-    D.relaunch();click("Settings")
+    account()
     row=D.scroll_to(text="Share crash reports",max_swipes=14)
     assert row,"Crash diagnostics section missing"
     if D.find(text="Crash reporting is not connected yet",contains=True,timeout=1):
@@ -329,7 +344,7 @@ def test_reference_board_inputs():
 
 def test_google_sign_in_ui():
     """Continue with Google exists; never crashes; without a client ID it says so plainly."""
-    D.relaunch();click("Settings")
+    account()
     btn=D.scroll_to(text="Continue with Google",max_swipes=14)
     assert btn,"Continue with Google button missing"
     # The dump reports the label inside a disabled Compose button as enabled, so read the note instead.
@@ -352,7 +367,7 @@ def test_google_sign_in_ui():
         time.sleep(2)
     else:
         raise AssertionError("Google sign-in gave no message. Focus: "+" ".join(focus.split())[:200]+" | screen: "+" / ".join(seen))
-    assert "studio" in D.ashell("dumpsys activity activities | grep -m1 ResumedActivity").lower() or D.find(text="Settings",timeout=3),"app left the foreground"
+    assert "studio" in D.ashell("dumpsys activity activities | grep -m1 ResumedActivity").lower() or D.find(text="Account & data",timeout=3),"app left the foreground"
 
 def main():
     print("Emulator OS",D.ashell("getprop ro.build.version.release"),flush=True)

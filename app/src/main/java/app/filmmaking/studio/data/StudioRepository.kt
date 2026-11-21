@@ -21,15 +21,22 @@ class StudioRepository(private val database: StudioDatabase) {
     private fun record(collection: String, key: String, title: String, json: JSONObject) =
         StudioRecord(collection = collection, id = key, title = title, payload = json.toString())
 
-    suspend fun captureIdea(text: String): StudioRecord {
+    suspend fun captureIdea(text: String, kind: String = "text", title: String = "", tags: List<String> = emptyList(), source: String = ""): StudioRecord {
         val key = uuid()
         val stamp = now()
-        val data = JSONObject().put("id", key).put("title", text.take(64))
-            .put("kind", "text").put("original", text).put("expansions", JSONArray())
-            .put("tags", JSONArray()).put("sources", JSONArray()).put("attachments", JSONArray())
+        val name = title.trim().ifBlank { text.trim().take(64) }
+        val data = JSONObject().put("id", key).put("title", name)
+            .put("kind", if (kind in IDEA_KINDS) kind else "text").put("original", text).put("expansions", JSONArray())
+            .put("tags", JSONArray(tags.map { it.trim() }.filter { it.isNotEmpty() }.take(20)))
+            .put("sources", JSONArray(listOfNotNull(source.trim().takeIf { it.isNotEmpty() }?.let { src ->
+                // Same shape as attachToIdea's sources so every reader can treat entries alike.
+                val link = src.startsWith("https://") || src.startsWith("http://")
+                JSONObject().put("id", uuid()).put("kind", if (link) "link" else "note")
+                    .put("uri", if (link) src.take(2000) else "").put("label", src.take(200)).put("addedAt", stamp)
+            }))).put("attachments", JSONArray())
             .put("connectedIdeaIds", JSONArray()).put("status", "Inbox")
             .put("createdAt", stamp).put("updatedAt", stamp)
-        return record("ideas", key, text.take(64), data).also { dao.upsert(it) }
+        return record("ideas", key, name, data).also { dao.upsert(it) }
     }
 
     suspend fun createProject(name: String, ideaId: String? = null, concept: String = ""): StudioRecord {
@@ -169,3 +176,6 @@ class StudioRepository(private val database: StudioDatabase) {
         }
     }
 }
+
+/** The web app's idea kinds (src/domain/types.ts IdeaKind). */
+val IDEA_KINDS = listOf("text", "voice", "image", "link", "quote", "question", "observation", "sound")

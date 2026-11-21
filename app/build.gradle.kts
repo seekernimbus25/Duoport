@@ -104,6 +104,17 @@ android {
     }
 
     buildFeatures { compose = true; buildConfig = true }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            // Screenshot tests are opt-in; pass -Dstudio.screenshots=true (and robolectric.* overrides) through to the test JVM.
+            all { test ->
+                System.getProperties().forEach { (k, v) ->
+                    if (k.toString() == "studio.screenshots" || k.toString().startsWith("robolectric.")) test.systemProperty(k.toString(), v)
+                }
+            }
+        }
+    }
 }
 
 kotlin {
@@ -133,6 +144,11 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    // Phone screenshots of the Studio screens on the JVM (no device): run with -Dstudio.screenshots=true.
+    testImplementation("org.robolectric:robolectric:4.18.1")
+    testImplementation(platform("androidx.compose:compose-bom:2025.06.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     ksp("androidx.room:room-compiler:2.7.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
     androidTestImplementation("androidx.test:runner:1.6.2")

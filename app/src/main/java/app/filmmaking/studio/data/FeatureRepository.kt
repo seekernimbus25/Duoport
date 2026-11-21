@@ -455,6 +455,44 @@ class FeatureRepository(private val db: StudioDatabase) {
             "Omitted " + s.optString("code"))
     }
 
+    // ---------- Project overview (web projects.$id.index): concept, format, status and the decision log ----------
+    /** Allowed overview fields only; ids, dates and links are never overwritten from the form. */
+    suspend fun updateProject(id: String, changes: Map<String, Any>) {
+        val allowed = setOf("name", "logline", "concept", "format", "narrativeApproach", "targetDurationSec", "aspectRatio",
+            "altFormats", "mood", "goals", "notes", "status")
+        val r = get("projects", id)
+        val body = JSONObject(r.payload)
+        changes.forEach { (k, v) ->
+            require(k in allowed) { "Unknown project field $k" }
+            body.put(k, if (v is List<*>) JSONArray(v.map { it.toString() }) else v)
+        }
+        val name = body.optString("name").ifBlank { r.title }
+        save(r, body, name.take(140))
+    }
+
+    suspend fun addDecision(projectId: String, text: String) {
+        val t = text.trim(); require(t.isNotEmpty()) { "Write the decision first" }
+        val r = get("projects", projectId)
+        val body = JSONObject(r.payload)
+        val list = body.optJSONArray("decisions") ?: JSONArray()
+        list.put(JSONObject().put("id", uid()).put("at", now()).put("text", t.take(500)))
+        save(r, body.put("decisions", list))
+    }
+
+    /** Moves an idea between Inbox / Exploring / Ready. "Converted" is only set by converting it to a film. */
+    suspend fun setIdeaStatus(id: String, status: String) {
+        require(status in listOf("Inbox", "Exploring", "Ready")) { "Unknown idea status" }
+        val r = get("ideas", id); val b = JSONObject(r.payload)
+        require(b.optString("status") != "Converted") { "This idea is already a film" }
+        save(r, b.put("status", status))
+    }
+
+    /** Marks a project as opened now, for Home's "Next action" film. */
+    suspend fun touchProject(id: String) {
+        val r = dao.find("projects", id)?.takeIf { it.deletedAt == null } ?: return
+        dao.upsert(r.copy(payload = JSONObject(r.payload).put("lastOpenedAt", now()).toString()))
+    }
+
     suspend fun removeRecord(collection: String, id: String) { get(collection, id); dao.tombstone(collection, id) }
 
     // ---------- #24 Creative DNA: nothing inferred is used until the creator approves it ----------
