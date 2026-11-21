@@ -11,6 +11,9 @@ graphite surfaces, warm ivory text, a muted amber accent.
   bottom navigation, assistant button).
 - `ui/Lucide.kt`: the Lucide icons the app uses, as Compose `ImageVector`s.
 - `StudioMainScreens.kt`: Home, Idea Vault, Projects, project Overview and the Shots tab.
+- `StudioShotScreen.kt`: one shot (framing strip, status, plan editor, external camera log, takes).
+- `StudioExtraScreens.kt`: Shoot Mode, AI Studio, Creative DNA, cloud sync and camera profile sections.
+- `ProjectWorkflowScreen.kt`: the Develop, Story, Visual, Planner, Shoot and Wrap panels.
 
 ## Fonts
 
@@ -30,7 +33,7 @@ icon, convert its nodes to a path in the same style as the existing entries (24�
 
 ## Screenshots
 
-Robolectric renders the main screens at 390×844 dp with sample content, to compare against the web app:
+Robolectric renders the main and inner screens at 390×844 dp with sample content, to compare against the web app:
 
 ```bash
 ./gradlew :app:testDebugUnitTest --tests '*StudioScreenshots*' -Dstudio.screenshots=true
@@ -38,7 +41,7 @@ Robolectric renders the main screens at 390×844 dp with sample content, to comp
 
 The PNGs land in `app/build/screenshots/`. The test is skipped unless `studio.screenshots=true` is set.
 
-## Not yet restyled
+## Still on stock Material
 
-The shot editor, Account & data, AI Studio, Creative DNA, the workflow panels (Develop, Story, Visual, Planner, Shoot,
-Wrap) and Shoot Mode use the new colours and fonts but still have their earlier layouts.
+Dialogs (`AlertDialog`), dropdown menus, checkboxes and the progress spinner use Material 3 components with the Studio
+colour scheme rather than custom versions. `StudioDialog` covers simple confirm dialogs.

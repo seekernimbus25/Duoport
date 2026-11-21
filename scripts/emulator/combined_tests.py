@@ -146,7 +146,7 @@ def workflow():
 def settings():
     click("AI Studio");see("Sign in under Library",True)
     click("Library");click("Account & data");see("Your Studio account")
-    see("Test connection")
+    assert D.scroll_to(text="Test connection",max_swipes=6),"AI backend section not reachable"
     # Crash-diagnostics settings push storage actions below the fold.
     assert D.scroll_to(text="Export offline backup JSON",max_swipes=10),"Backup action not reachable"
     assert D.scroll_to(text="Import backup",contains=True,max_swipes=4),"Restore action not reachable"
@@ -198,7 +198,7 @@ def test_external_camera_filenames():
 def test_backend_health_and_backup():
     # Fresh start: Account & data keeps its scroll position from the previous case otherwise.
     account()
-    click("Test connection")
+    scroll_click("Test connection")
     see("Server: ready",contains=True,timeout=20)
     scroll_click("Export offline backup JSON")
     D.sleep(2)
@@ -304,10 +304,10 @@ def test_beat_drag_reorder():
 def test_creative_dna_preferences():
     D.relaunch();click("Library");click("Creative DNA")
     see("Explicit preferences",timeout=12)
-    see("to analyse your archive",contains=True)
-    enter("e.g. I prefer long, observational takes","PreferStillFrames")
-    click("Add preference")
+    enter("Your preference","PreferStillFrames")
+    scroll_click("Add preference")
     see("PreferStillFrames",timeout=12)
+    assert D.scroll_to(text="to analyse your archive",contains=True,max_swipes=6),"Archive analysis note missing"
     D.relaunch();click("Library");click("Creative DNA")
     see("PreferStillFrames",timeout=12)
     see("1 explicit preference(s)",contains=True)

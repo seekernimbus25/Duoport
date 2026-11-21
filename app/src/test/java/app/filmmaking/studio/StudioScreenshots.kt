@@ -111,4 +111,103 @@ class StudioScreenshots {
             ShotsTab(scenes, shots, takes, {}, { _, _ -> }, {})
         }
     }
+
+    // Inner screens. The view model runs on Robolectric's in-memory database; nothing is signed in.
+    private fun vm(): StudioViewModel {
+        val c = compose.activity
+        val db = app.filmmaking.studio.data.StudioDatabase.get(c)
+        val endpoint = app.filmmaking.studio.data.ApiEndpoint(c)
+        return StudioViewModel(app.filmmaking.studio.data.StudioRepository(db), endpoint, app.filmmaking.studio.data.StudioAuthClient(),
+            app.filmmaking.studio.data.StudioAiClient(endpoint), app.filmmaking.studio.camera.StudioCaptureImporter(c, db),
+            app.filmmaking.studio.data.ProjectWorkflowRepository(db), app.filmmaking.studio.data.StudioExport(db),
+            app.filmmaking.studio.data.StudioCreativeClient(endpoint), app.filmmaking.studio.data.MediaVerification(c, db),
+            app.filmmaking.studio.data.ExternalCameraLog(db), app.filmmaking.studio.data.FeatureRepository(db),
+            app.filmmaking.studio.data.ExternalMediaImport(c, db), app.filmmaking.studio.sync.StudioSync(c), c.applicationContext)
+    }
+    private val memories = listOf(
+        rec("memories", "m1", "Long takes", JSONObject().put("text", "I prefer long, observational takes that let a moment breathe.")
+            .put("status", "approved").put("scope", "identity").put("source", "user").put("category", "camera")),
+        rec("memories", "m2", "Natural light", JSONObject().put("text", "Leans on window light and practical sources rather than set lighting.")
+            .put("status", "proposed").put("scope", "identity").put("category", "lighting")
+            .put("evidence", JSONArray().put(JSONObject().put("quote", "the dust in window light").put("title", "Notebook 2025")))),
+    )
+    private val workflowItems = listOf(
+        rec("treatments", "tr1", "Waiting as a ritual", JSONObject().put("projectId", "p-tea").put("premise", "A single cup, steeped in real time.").put("status", "approved")),
+        rec("treatments", "tr2", "The noisy kitchen", JSONObject().put("projectId", "p-tea").put("premise", "The world keeps moving while the tea doesn't.").put("status", "draft")),
+    )
+
+    @Test fun shotEditor() {
+        val v = vm()
+        shot("shot-editor", null) {
+            Column {
+                StudioTopBar("Kettle on the hob", "1-1 · The kettle", {})
+                ShotScreen(shots[0], takes, emptyList(), { _, _ -> }, { _, _, _, _, _, _, _, _, _, _, _ -> }, { _, _ -> }, {}, {}, {}, v) {}
+            }
+        }
+    }
+
+    @Test fun account() {
+        val v = vm()
+        shot("account", "Library") {
+            Column {
+                StudioTopBar("Library")
+                StudioTabs(listOf("Creative DNA", "Account & data"), "Account & data") {}
+                SettingsScreen(v, null, {}, {})
+            }
+        }
+    }
+
+    @Test fun aiStudio() {
+        val v = vm()
+        shot("ai-studio", "AI") { Column { StudioTopBar("AI Studio"); AiDirectorScreen(v, projects, projects, {}) } }
+    }
+
+    @Test fun creativeDna() {
+        val v = vm()
+        shot("creative-dna", "Library") {
+            Column {
+                StudioTopBar("Library")
+                StudioTabs(listOf("Creative DNA", "Account & data"), "Creative DNA") {}
+                CreativeDnaScreen(v, projects, memories)
+            }
+        }
+    }
+
+    @Test fun shootMode() {
+        val v = vm()
+        shot("shoot-mode", null) { ShootModeScreen(v, tea, shots, shots + takes, {}, {}) }
+    }
+
+    @Test fun workflowDevelop() {
+        val v = vm()
+        shot("workflow-develop", null) {
+            Column {
+                StudioTopBar("The Tea Film", "Pre-production · Short Film", {})
+                StudioTabs(PROJECT_TABS, "Develop") {}
+                ProjectWorkflowScreen(v, tea, scenes, shots, workflowItems + shots, {}, {}, {}, { _, _ -> }, {}, {}, "Develop", {}, showTabs = false)
+            }
+        }
+    }
+
+    @Test fun workflowVisual() {
+        val v = vm()
+        shot("workflow-visual", null) {
+            Column {
+                StudioTopBar("The Tea Film", "Pre-production · Short Film", {})
+                StudioTabs(PROJECT_TABS, "Visual") {}
+                ProjectWorkflowScreen(v, tea, scenes, shots, shots, {}, {}, {}, { _, _ -> }, {}, {}, "Visual", {}, showTabs = false)
+            }
+        }
+    }
+
+    @Test fun workflowPlanner() {
+        val v = vm()
+        shot("workflow-planner", null) {
+            Column {
+                StudioTopBar("The Tea Film", "Pre-production · Short Film", {})
+                StudioTabs(PROJECT_TABS, "Planner") {}
+                ProjectWorkflowScreen(v, tea, scenes, shots, shots + items, {}, {}, {}, { _, _ -> }, {}, {}, "Planner", {}, showTabs = false)
+            }
+        }
+    }
 }

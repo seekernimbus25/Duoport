@@ -11,8 +11,10 @@ import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import app.filmmaking.studio.ui.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +81,7 @@ fun FrameView(frame: JSONObject, modifier: Modifier = Modifier) {
         if (image != null) Image(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         if (strokes.isNotEmpty()) Canvas(Modifier.fillMaxSize()) { drawStrokes(strokes, ink) }
         frame.optJSONObject("archiveRef")?.takeIf { image == null }?.let { r ->
-            Text("“" + r.optString("excerpt").take(160) + "…”\n— " + r.optString("title"), Modifier.padding(6.dp), style = MaterialTheme.typography.bodySmall)
+            Text("“" + r.optString("excerpt").take(160) + "…”\n— " + r.optString("title"), Modifier.padding(6.dp), style = MaterialTheme.typography.bodySmall, color = StudioColors.MutedForeground)
         }
         if (frame.optBoolean("conceptual")) Text("Conceptual AI reference — not technically accurate",
             Modifier.align(Alignment.TopStart).padding(4.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)).padding(horizontal = 4.dp),
@@ -110,14 +112,14 @@ fun SketchPad(baseImage: String?, onSave: (JSONArray) -> Unit, onCancel: () -> U
                 drawStrokes((strokes + listOf(current)).map { it to 3f }, ink)
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = strokes.isNotEmpty(), onClick = {
+        Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StudioButton("Save sketch", {
                 onSave(JSONArray().also { out -> strokes.forEach { s ->
                     out.put(JSONObject().put("width", 3).put("points", JSONArray().also { p -> s.forEach { o -> p.put(JSONArray().put(o.x.toDouble()).put(o.y.toDouble())) } }))
                 } })
-            }) { Text("Save sketch") }
-            OutlinedButton(enabled = strokes.isNotEmpty(), onClick = { strokes.removeAt(strokes.lastIndex) }) { Text("Undo") }
-            TextButton(onClick = onCancel) { Text("Cancel") }
+            }, enabled = strokes.isNotEmpty())
+            StudioButton("Undo", { strokes.removeAt(strokes.lastIndex) }, variant = BtnVariant.Outline, enabled = strokes.isNotEmpty())
+            StudioButton("Cancel", onCancel, variant = BtnVariant.Ghost)
         }
     }
 }

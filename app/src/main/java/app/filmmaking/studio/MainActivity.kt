@@ -31,6 +31,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -1001,315 +1003,93 @@ private fun StudioHome(vm: StudioViewModel) {
 private val LIBRARY_TABS = listOf("Creative DNA", "Account & data")
 
 @Composable
-private fun ShotScreen(
-    shot: StudioRecord,
-    takes: List<StudioRecord>,
-    externalProjectFiles: List<StudioRecord>,
-    changeStatus: (String, String) -> Unit,
-    savePlan: (String, String, String, String, String, String, String, String, String, String, String) -> Unit,
-    rateTake: (String, String) -> Unit,
-    preferTake: (String) -> Unit,
-    addExternalFile: (String) -> Unit,
-    removeExternalFile: (String) -> Unit,
-    vm: StudioViewModel,
-    onShoot: () -> Unit
-) {
-    val plan = data(shot)
-    val camera = plan.optJSONObject("camera") ?: JSONObject()
-    val light = plan.optJSONObject("lighting") ?: JSONObject()
-    val sound = plan.optJSONObject("sound") ?: JSONObject()
-    val editorial = plan.optJSONObject("editorial") ?: JSONObject()
-
-    var editing by rememberSaveable(shot.id) { mutableStateOf(false) }
-    var name by rememberSaveable(shot.id) { mutableStateOf(shot.title) }
-    var description by rememberSaveable(shot.id) { mutableStateOf(plan.optString("description")) }
-    var voiceover by rememberSaveable(shot.id) { mutableStateOf(plan.optString("scriptPassage")) }
-    var shotSize by rememberSaveable(shot.id) { mutableStateOf(camera.optString("shotSize")) }
-    var angle by rememberSaveable(shot.id) { mutableStateOf(camera.optString("angle")) }
-    var lens by rememberSaveable(shot.id) { mutableStateOf(camera.optString("lens")) }
-    var fps by rememberSaveable(shot.id) { mutableStateOf(camera.optString("frameRate")) }
-    var lightNotes by rememberSaveable(shot.id) { mutableStateOf(light.optString("source")) }
-    var soundNotes by rememberSaveable(shot.id) { mutableStateOf(sound.optString("ambient")) }
-    var editNotes by rememberSaveable(shot.id) { mutableStateOf(editorial.optString("editorNotes")) }
-
-    val sequence = ExternalCameraNaming.nextFrom(externalProjectFiles)
-    val externalForShot = externalProjectFiles.filter {
-        data(it).optString("shotId") == shot.id
-    }.sortedBy { it.updatedAt }
-    var enterWholeName by rememberSaveable(shot.id) { mutableStateOf(sequence == null) }
-    var filenameInput by rememberSaveable(shot.id) { mutableStateOf("") }
-    var numberInput by rememberSaveable(shot.id) { mutableStateOf("") }
-    val nextName = sequence?.let { parsed ->
-        runCatching {
-            parsed.filenameFor(numberInput.ifBlank { parsed.nextSuffix.orEmpty() })
-        }.getOrNull()
-    }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(plan.optString("code"), style = MaterialTheme.typography.headlineSmall)
-        Text(shot.title, style = MaterialTheme.typography.titleMedium)
-        Text("Planned status: " + plan.optString("status"))
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("planned", "ready", "in progress", "skipped").forEach { status ->
-                FilterChip(
-                    selected = plan.optString("status") == status,
-                    onClick = { changeStatus(shot.id, status) },
-                    label = { Text(status) }
-                )
-            }
-        }
-        OutlinedButton(onClick = { editing = !editing }) {
-            Text(if (editing) "Close shot editor" else "Edit camera · lighting · sound · script")
-        }
-        if (editing) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                @Composable
-                fun field(label: String, value: String, change: (String) -> Unit, lines: Int = 1) {
-                    OutlinedTextField(
-                        value = value, onValueChange = change, modifier = Modifier.fillMaxWidth(),
-                        label = { Text(label) }, minLines = lines
-                    )
-                }
-                field("Shot title", name, { name = it })
-                field("Action / composition", description, { description = it }, 3)
-                field("Voiceover / teleprompter", voiceover, { voiceover = it }, 3)
-                field("Shot size", shotSize, { shotSize = it })
-                field("Camera angle", angle, { angle = it })
-                field("Lens", lens, { lens = it })
-                field("Frame rate", fps, { fps = it })
-                field("Lighting notes", lightNotes, { lightNotes = it }, 2)
-                field("Sound notes", soundNotes, { soundNotes = it }, 2)
-                field("Editor instructions", editNotes, { editNotes = it }, 2)
-                Button(
-                    enabled = name.isNotBlank(),
-                    onClick = {
-                        savePlan(shot.id, name, description, voiceover, shotSize, angle, lens, fps,
-                            lightNotes, soundNotes, editNotes)
-                        editing = false
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Save planned shot offline") }
-            }
-        } else {
-            Text("Camera plan: " + camera.optString("shotSize", "MS") +
-                " · " + camera.optString("angle") +
-                " · " + camera.optString("frameRate") + " fps")
-        }
-        Button(onClick = onShoot, modifier = Modifier.fillMaxWidth()) {
-            Text("Record this shot in Duoport")
-        }
-        Text("Wait for Duoport's export to finish before returning. Actual footage is marked reported, never checksum-verified until checked.",
-            style = MaterialTheme.typography.bodySmall)
-        HorizontalDivider()
-        Text("External camera takes", style = MaterialTheme.typography.titleMedium)
-        Text("Filming on DJI, Sony or another camera? Log the actual file name printed by " +
-            "that camera. The app remembers the naming pattern across scenes and shots. " +
-            "These are references only — footage remains on the camera/card until imported.",
-            style = MaterialTheme.typography.bodySmall)
-        if (!enterWholeName && sequence != null) {
-            Text(
-                "Detected pattern: " + sequence.prefix + "[number]" + sequence.extension,
-                style = MaterialTheme.typography.labelMedium
-            )
-            OutlinedTextField(
-                value = numberInput,
-                onValueChange = { numberInput = it.filter(Char::isDigit).take(12) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("File number only (suffix)") },
-                placeholder = { Text(sequence.nextSuffix ?: "0001") },
-                singleLine = true
-            )
-            if (nextName != null) Text(
-                "Filename: " + nextName, style = MaterialTheme.typography.bodyMedium
-            )
-            Button(
-                enabled = nextName != null,
-                onClick = {
-                    if (nextName != null) {
-                        addExternalFile(nextName)
-                        numberInput = ""
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Log external camera take") }
-            TextButton(onClick = { enterWholeName = true; filenameInput = "" }) {
-                Text("Different camera or naming pattern")
-            }
-        } else {
-            OutlinedTextField(
-                value = filenameInput,
-                onValueChange = { filenameInput = it.take(160) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Camera filename (first entry)") },
-                placeholder = { Text("DJI_0045.MP4") },
-                singleLine = true
-            )
-            Button(
-                enabled = filenameInput.trim().isNotBlank(),
-                onClick = {
-                    addExternalFile(filenameInput)
-                    filenameInput = ""
-                    enterWholeName = false
-                    numberInput = ""
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Log external camera take") }
-            if (sequence != null) TextButton(onClick = { enterWholeName = false }) {
-                Text("Use detected camera sequence")
-            }
-        }
-        Text(
-            "External references on this shot: " + externalForShot.size,
-            style = MaterialTheme.typography.titleSmall
-        )
-        externalForShot.forEach { reference ->
-            OutlinedCard(Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(12.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(reference.title, style = MaterialTheme.typography.titleSmall)
-                        Text("Reference only · footage not yet imported",
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                    TextButton(onClick = { removeExternalFile(reference.id) }) {
-                        Text("Remove")
-                    }
-                }
-            }
-        }
-        HorizontalDivider()
-        Text("Recorded takes: " + takes.size, style = MaterialTheme.typography.titleMedium)
-        if (takes.isEmpty()) Text("No takes have been imported yet")
-        takes.sortedBy { data(it).optInt("number") }.forEach { take ->
-            val t = data(take)
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Text("Take " + t.optInt("number") + if (t.optBoolean("preferred")) " · Preferred" else "",
-                        style = MaterialTheme.typography.titleMedium)
-                    Text(t.optString("capturedAt"), style = MaterialTheme.typography.bodySmall)
-                    Row(Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("review", "usable", "unusable").forEach { quality ->
-                            FilterChip(
-                                selected = t.optString("quality") == quality,
-                                onClick = { rateTake(take.id, quality) },
-                                label = { Text(quality) }
-                            )
-                        }
-                    }
-                    if (!t.optBoolean("preferred"))
-                        TextButton(onClick = { preferTake(take.id) }) { Text("Choose as preferred take") }
-                    t.optJSONObject("settings")?.takeIf { it.length() > 0 }?.let { st ->
-                        Text("Actual: " + listOf("frameRate", "resolution", "codec", "lens").mapNotNull { k -> st.optString(k).takeIf { it.isNotBlank() } }
-                            .joinToString(" · ") + " (" + st.optString("source") + ")", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-        }
-        HorizontalDivider()
-        TakeExtras(vm, shot, takes.sortedBy { data(it).optInt("number") })
-    }
-}
-
-@Composable
-private fun SettingsScreen(vm: StudioViewModel, cameraProfile: StudioRecord?, onBackup: () -> Unit, onRestore: () -> Unit) {
+internal fun SettingsScreen(vm: StudioViewModel, cameraProfile: StudioRecord?, onBackup: () -> Unit, onRestore: () -> Unit) {
     val crashContext = LocalContext.current
     var crashConsent by remember { mutableStateOf(StudioDiagnostics.isEnabled(crashContext)) }
     var url by rememberSaveable { mutableStateOf(vm.apiUrl) }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("AI backend", style = MaterialTheme.typography.titleLarge)
-        OutlinedTextField(value = url, onValueChange = { url = it }, modifier = Modifier.fillMaxWidth(),
-            label = { Text("AWS Lambda HTTPS Function URL") }, singleLine = true)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { vm.saveUrl(url) }) { Text("Save URL") }
-            OutlinedButton(onClick = { vm.checkHealth() }) { Text("Test connection") }
-        }
-        if (vm.apiStatus.isNotBlank()) Text(vm.apiStatus)
-        HorizontalDivider()
-        Text("Your Studio account", style = MaterialTheme.typography.titleLarge)
-        val session = vm.session
-        if (vm.restoring) Text("Restoring your session…", style = MaterialTheme.typography.bodySmall)
-        if (session == null) {
-            Text("Sign in to copy your films to the cloud and use AI. Your work on this phone stays here either way.",
-                style = MaterialTheme.typography.bodySmall)
-            val activity = androidx.compose.ui.platform.LocalContext.current
-            val scope = rememberCoroutineScope()
-            val clientId = vm.googleWebClientId
-            Button(enabled = !vm.signingIn && clientId != null, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                onClick = { scope.launch { vm.signInWithGoogle { GoogleCredentials.request(activity, clientId!!) } } }) {
-                Text(if (vm.signingIn) "Signing in…" else "Continue with Google")
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(28.dp)) {
+        StudioSection("Your Studio account", "Sign in to copy your films to the cloud and use AI. Your work on this phone stays here either way.") {
+            val session = vm.session
+            StudioCard {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (vm.restoring) MutedText("Restoring your session…", small = true)
+                    if (session == null) {
+                        val activity = LocalContext.current
+                        val scope = rememberCoroutineScope()
+                        val clientId = vm.googleWebClientId
+                        StudioButton(if (vm.signingIn) "Signing in…" else "Continue with Google",
+                            { scope.launch { vm.signInWithGoogle { GoogleCredentials.request(activity, clientId!!) } } },
+                            Modifier.fillMaxWidth(), enabled = !vm.signingIn && clientId != null, icon = Lucide.User)
+                        if (clientId == null) MutedText("Google sign-in isn't set up in this build. Use email and password below.", small = true)
+                        Eyebrow("Or use your email and password", Modifier.padding(top = 4.dp))
+                        StudioField("Email", email, { email = it })
+                        StudioField("Password", password, { password = it }, password = true)
+                        StudioButton(if (vm.signingIn) "Signing in…" else "Sign in with email", { vm.signIn(email, password); password = "" },
+                            Modifier.fillMaxWidth(), variant = BtnVariant.Outline, enabled = !vm.signingIn && email.isNotBlank() && password.isNotBlank())
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Lucide.CircleCheck, null, Modifier.size(18.dp), tint = StudioColors.Success)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Signed in as " + session.email + if (session.provider == "google") " (Google)" else "",
+                                style = MaterialTheme.typography.titleSmall)
+                        }
+                        MutedText("You stay signed in on this device; the session renews itself and is never included in backups. " +
+                            "Signing out keeps all your work on this phone.", small = true)
+                        StudioButton("Sign out", { vm.signOut() }, variant = BtnVariant.Outline, icon = Lucide.LogOut)
+                    }
+                }
             }
-            if (clientId == null) Text("Google sign-in isn't set up in this build. Use email and password below.",
-                style = MaterialTheme.typography.bodySmall)
-            Text("Or use your email and password", style = MaterialTheme.typography.labelLarge)
-            OutlinedTextField(value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(),
-                label = { Text("Email") }, singleLine = true)
-            OutlinedTextField(value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(),
-                label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(),
-                singleLine = true)
-            OutlinedButton(enabled = !vm.signingIn && email.isNotBlank() && password.isNotBlank(),
-                onClick = { vm.signIn(email, password); password = "" }) {
-                Text(if (vm.signingIn) "Signing in…" else "Sign in with email")
+            vm.pendingLink?.let { items ->
+                StudioDialog("Link this phone's work to your account?",
+                    "This phone has " + items + " item(s) (films, scenes, shots, takes and logged camera clips) that aren't " +
+                        "linked to any account. Linking copies them to " + (session?.email ?: "your account") + " in the cloud; " +
+                        "they also stay on this phone. Nothing is deleted either way.",
+                    "Link and sync", { vm.confirmLink() }, "Not now", { vm.declineLink() })
             }
-        } else {
-            Text("Signed in as " + session.email + if (session.provider == "google") " (Google)" else "")
-            Text("You stay signed in on this device; the session renews itself and is never included in backups. " +
-                "Signing out keeps all your work on this phone.", style = MaterialTheme.typography.bodySmall)
-            OutlinedButton(onClick = { vm.signOut() }) { Text("Sign out") }
         }
-        vm.pendingLink?.let { items ->
-            AlertDialog(onDismissRequest = { vm.declineLink() },
-                title = { Text("Link this phone's work to your account?") },
-                text = { Text("This phone has " + items + " item(s) (films, scenes, shots, takes and logged camera clips) that aren't " +
-                    "linked to any account. Linking copies them to " + (session?.email ?: "your account") + " in the cloud; " +
-                    "they also stay on this phone. Nothing is deleted either way.") },
-                confirmButton = { TextButton(onClick = { vm.confirmLink() }) { Text("Link and sync") } },
-                dismissButton = { TextButton(onClick = { vm.declineLink() }) { Text("Not now") } })
-        }
-        HorizontalDivider()
         CloudSyncSection(vm)
-        HorizontalDivider()
+        StudioSection("AI backend", "The HTTPS address of your Studio server. Model keys stay on the server, never in this app.") {
+            StudioCard {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    StudioField("AWS Lambda HTTPS Function URL", url, { url = it })
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StudioButton("Save URL", { vm.saveUrl(url) }, Modifier.weight(1f), icon = Lucide.Save)
+                        StudioButton("Test connection", { vm.checkHealth() }, Modifier.weight(1f), variant = BtnVariant.Outline, icon = Lucide.Server)
+                    }
+                    if (vm.apiStatus.isNotBlank()) Text(vm.apiStatus, style = MonoStyle.copy(fontSize = 13.sp), color = StudioColors.SecondaryForeground)
+                }
+            }
+        }
         CameraProfileSection(vm, cameraProfile)
-        HorizontalDivider()
-        Text("Crash diagnostics", style = MaterialTheme.typography.titleLarge)
-        Text("Share anonymous crash reports and ANR diagnostics with the Studio development team. " +
+        StudioSection("Crash diagnostics", "Share anonymous crash reports and ANR diagnostics with the Studio development team. " +
             "Reports may contain technical stack traces and app/device details; no scripts, " +
-            "AI prompts, camera frames or account identifiers are deliberately attached.",
-            style = MaterialTheme.typography.bodySmall)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Share crash reports", modifier = Modifier.weight(1f))
-            Switch(
-                checked = crashConsent && StudioDiagnostics.isConfigured(),
-                enabled = StudioDiagnostics.isConfigured(),
-                onCheckedChange = { on ->
+            "AI prompts, camera frames or account identifiers are deliberately attached.") {
+            StudioCard {
+                StudioSwitchRow("Share crash reports", crashConsent && StudioDiagnostics.isConfigured(), { on ->
                     val enabled = StudioDiagnostics.setConsent(crashContext, on)
                     crashConsent = on && enabled
                     vm.report(if (crashConsent) "Crash reporting enabled" else "Crash reporting disabled")
+                }, enabled = StudioDiagnostics.isConfigured())
+                if (!StudioDiagnostics.isConfigured()) {
+                    MutedText("Crash reporting is not connected yet. The developer must configure " +
+                        "STUDIO_SENTRY_DSN for this APK build.", small = true)
+                } else if (crashConsent) {
+                    Spacer(Modifier.height(8.dp))
+                    StudioButton("Send safe diagnostic test event", {
+                        val queued = StudioDiagnostics.sendTestEvent()
+                        vm.report(if (queued) "Diagnostic test event queued for Sentry" else "Crash reports are disabled")
+                    }, Modifier.fillMaxWidth(), variant = BtnVariant.Outline, icon = Lucide.Shield)
                 }
-            )
+            }
         }
-        if (!StudioDiagnostics.isConfigured()) {
-            Text("Crash reporting is not connected yet. The developer must configure " +
-                "STUDIO_SENTRY_DSN for this APK build.",
-                style = MaterialTheme.typography.bodySmall)
-        } else if (crashConsent) {
-            OutlinedButton(onClick = {
-                val queued = StudioDiagnostics.sendTestEvent()
-                vm.report(if (queued) "Diagnostic test event queued for Sentry" else "Crash reports are disabled")
-            }) { Text("Send safe diagnostic test event") }
+        StudioSection("Offline local storage", "Everything is saved on this device first. Cloud sync (when signed in) copies it to " +
+            "your Studio account; footage itself never leaves the phone.") {
+            StudioButton("Export offline backup JSON", onBackup, Modifier.fillMaxWidth(), icon = Lucide.Download)
+            StudioButton("Import backup (refuses conflicting records)", onRestore, Modifier.fillMaxWidth(), variant = BtnVariant.Outline, icon = Lucide.Upload)
         }
-        HorizontalDivider()
-        Text("Offline local storage", style = MaterialTheme.typography.titleMedium)
-        Button(onClick = onBackup) { Text("Export offline backup JSON") }
-        OutlinedButton(onClick = onRestore) { Text("Import backup (refuses conflicting records)") }
-        Text("Everything is saved on this device first. Cloud sync (when signed in) copies it to your Studio account; footage itself never leaves the phone.",
-            style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(12.dp))
     }
 }

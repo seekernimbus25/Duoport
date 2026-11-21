@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -21,6 +22,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
@@ -151,14 +154,19 @@ fun StudioButton(
 fun StudioField(
     label: String, value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier,
     placeholder: String? = null, minLines: Int = 1, singleLine: Boolean = minLines == 1, hint: String? = null,
-    numeric: Boolean = false,
+    numeric: Boolean = false, password: Boolean = false,
 ) {
     // Tapping the label focuses the field, like an HTML <label for>.
     val focus = remember { FocusRequester() }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.clickable(interactionSource = null, indication = null) { focus.requestFocus() }) { Eyebrow(label) }
         OutlinedTextField(value, onValueChange, Modifier.fillMaxWidth().focusRequester(focus), singleLine = singleLine, minLines = minLines,
-            keyboardOptions = if (numeric) KeyboardOptions(keyboardType = KeyboardType.Number) else KeyboardOptions.Default,
+            keyboardOptions = when {
+                numeric -> KeyboardOptions(keyboardType = KeyboardType.Number)
+                password -> KeyboardOptions(keyboardType = KeyboardType.Password)
+                else -> KeyboardOptions.Default
+            },
+            visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
             placeholder = placeholder?.let { { Text(it, color = StudioColors.MutedForeground.copy(alpha = 0.7f)) } },
             textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = if (minLines > 1) 24.sp else 20.sp),
             shape = RoundedCornerShape(12.dp),
@@ -337,3 +345,47 @@ fun StudioSearch(value: String, onValueChange: (String) -> Unit, placeholder: St
             cursorColor = StudioColors.Primary, focusedTextColor = StudioColors.Foreground, unfocusedTextColor = StudioColors.Foreground,
         ))
 }
+
+/** Secondary explanatory text (web `text-sm text-muted-foreground`). */
+@Composable
+fun MutedText(text: String, modifier: Modifier = Modifier, small: Boolean = false) =
+    Text(text, modifier, style = if (small) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium, color = StudioColors.MutedForeground)
+
+/** A page section: Fraunces heading with optional muted intro, then content spaced like the web `space-y-3`. */
+@Composable
+fun StudioSection(title: String, intro: String? = null, action: String? = null, onAction: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        SectionTitle(title, action, onAction)
+        if (intro != null) MutedText(intro, Modifier.padding(bottom = 12.dp).offset(y = (-6).dp), small = true)
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    }
+}
+
+/** Label + amber switch row inside a card (web toggle rows). The whole row is one 48dp target. */
+@Composable
+fun StudioSwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit, enabled: Boolean = true, body: String? = null) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(label, style = MaterialTheme.typography.titleSmall)
+            if (body != null) MutedText(body, small = true)
+        }
+        Switch(checked, null, enabled = enabled, colors = SwitchDefaults.colors(
+            checkedThumbColor = StudioColors.PrimaryForeground, checkedTrackColor = StudioColors.Primary,
+            uncheckedThumbColor = StudioColors.MutedForeground, uncheckedTrackColor = StudioColors.Surface,
+            uncheckedBorderColor = StudioColors.Input))
+    }
+}
+
+/** Dialog in the popover colour with the web's button pair. */
+@Composable
+fun StudioDialog(title: String, body: String, confirm: String, onConfirm: () -> Unit, dismiss: String, onDismiss: () -> Unit) =
+    AlertDialog(onDismissRequest = onDismiss, containerColor = StudioColors.Popover, shape = RoundedCornerShape(24.dp),
+        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+        text = { Text(body, style = MaterialTheme.typography.bodyMedium, color = StudioColors.SecondaryForeground) },
+        confirmButton = { StudioButton(confirm, onConfirm) },
+        dismissButton = { StudioButton(dismiss, onDismiss, variant = BtnVariant.Ghost) })
+
+/** Hairline between page sections. */
+@Composable
+fun StudioDivider() = HorizontalDivider(color = StudioColors.Border)
