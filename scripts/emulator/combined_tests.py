@@ -96,7 +96,9 @@ def first():
 def idea():
     click("Capture a thought",True)
     enter("Your idea","CinemaIdeaAlpha")
-    click("Save to Inbox")
+    if "mInputShown=true" in D.ashell("dumpsys input_method"):
+        D.ashell("input keyevent 4");D.sleep(0.8)   # Back closes only the keyboard; the sheet stays open
+    scroll_click("Save to Inbox")
     see("CinemaIdeaAlpha",timeout=18)
     D.relaunch();click("Ideas");see("CinemaIdeaAlpha")
 def plans():
@@ -319,7 +321,12 @@ def test_sentry_opt_in_event():
     if D.find(text="Crash reporting is not connected yet",contains=True,timeout=1):
         raise AssertionError("APK built without STUDIO_SENTRY_DSN")
     w,h=D.screen_size()
-    D.tap_xy(w-90,row.cy)   # the consent switch sits at the end of the row
+    # The section sits just above the bottom nav, where the floating AI button is; bring it to
+    # mid-screen and tap the label (the whole row is the switch).
+    if row.cy>h*0.6:
+        D.swipe(w//2,int(h*0.75),w//2,int(h*0.45),900);D.sleep(0.6)
+        row=see("Share crash reports")
+    D.tap_xy(row.cx,row.cy)
     see("Crash reporting enabled",contains=True,timeout=10)
     scroll_click("Send safe diagnostic test event")
     see("Diagnostic test event queued",contains=True,timeout=10)
