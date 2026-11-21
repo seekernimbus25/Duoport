@@ -158,8 +158,8 @@ def settings():
     click("Library");click("Account & data");see("Your Studio account")
     assert reach("Test connection"),"AI backend section not reachable"
     # Crash-diagnostics settings push storage actions below the fold.
-    assert D.scroll_to(text="Export offline backup JSON",max_swipes=10),"Backup action not reachable"
-    assert D.scroll_to(text="Import backup",contains=True,max_swipes=4),"Restore action not reachable"
+    assert reach("Export offline backup JSON"),"Backup action not reachable"
+    assert reach("Import backup",True),"Restore action not reachable"
 def test_real_recording():
     # Positive camera handoff, real emulator MediaStore save and take import.
     D.relaunch()
