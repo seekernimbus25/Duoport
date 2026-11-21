@@ -16,7 +16,8 @@ def see(v,contains=False,timeout=12):
     return x
 def click(v,contains=False,timeout=12):
     n=see(v,contains,timeout);D.tap_xy(n.cx,n.cy)
-def scroll_click(label,contains=False):
+def reach(label,contains=False):
+    """Brings a node on screen with slow steps (a fast swipe flings past it), searching down then up."""
     node=D.find(text=label,contains=contains,timeout=2)
     w,h=D.screen_size()
     # Just off screen: nudge gently towards it (a full swipe can fling past a nearby target).
@@ -25,17 +26,18 @@ def scroll_click(label,contains=False):
         if node.cy>h*0.93: D.swipe(w//2,int(h*0.70),w//2,int(h*0.45),700)
         else: D.swipe(w//2,int(h*0.45),w//2,int(h*0.70),700)
         D.sleep(0.5);node=D.find(text=label,contains=contains,timeout=1)
-    if node is None or not (h*0.07<=node.cy<=h*0.93):
-        node=None
-        # Slow quarter-screen steps can't fling past the target; search down, then back up.
-        for up in (False,True):
-            for _ in range(16):
-                n=D.find(text=label,contains=contains,timeout=0,nodes=D.dump())
-                if n is not None and h*0.07<=n.cy<=h*0.93: node=n;break
-                if up: D.swipe(w//2,int(h*0.40),w//2,int(h*0.65),700)
-                else: D.swipe(w//2,int(h*0.65),w//2,int(h*0.40),700)
-                D.sleep(0.4)
-            if node is not None: break
+    if node is not None and h*0.07<=node.cy<=h*0.93: return node
+    # Slow quarter-screen steps can't fling past the target; search down, then back up.
+    for up in (False,True):
+        for _ in range(16):
+            n=D.find(text=label,contains=contains,timeout=0,nodes=D.dump())
+            if n is not None and h*0.07<=n.cy<=h*0.93: return n
+            if up: D.swipe(w//2,int(h*0.40),w//2,int(h*0.65),700)
+            else: D.swipe(w//2,int(h*0.65),w//2,int(h*0.40),700)
+            D.sleep(0.4)
+    return None
+def scroll_click(label,contains=False):
+    node=reach(label,contains)
     if node is None:
         raise AssertionError("Cannot reach "+label+": "+repr([n.text for n in D.dump() if n.text][:30]))
     D.tap_xy(node.cx,node.cy)
@@ -133,7 +135,7 @@ def cancel():
     see("Film a Studio shot",timeout=16)
     click("Cancel")
     see("Camera cancelled",True,timeout=16)
-    assert D.scroll_to(text="Recorded takes: 0",max_swipes=8),"Cancelled recording incorrectly created a take"
+    assert reach("Recorded takes: 0"),"Cancelled recording incorrectly created a take"
 def camera():
     click("Home");scroll_click("Open Duoport camera")
     for _ in range(3):
@@ -154,7 +156,7 @@ def workflow():
 def settings():
     click("AI Studio");see("Sign in under Library",True)
     click("Library");click("Account & data");see("Your Studio account")
-    assert D.scroll_to(text="Test connection",max_swipes=6),"AI backend section not reachable"
+    assert reach("Test connection"),"AI backend section not reachable"
     # Crash-diagnostics settings push storage actions below the fold.
     assert D.scroll_to(text="Export offline backup JSON",max_swipes=10),"Backup action not reachable"
     assert D.scroll_to(text="Import backup",contains=True,max_swipes=4),"Restore action not reachable"
@@ -174,10 +176,10 @@ def test_real_recording():
         D.ashell("input keyevent 4");D.sleep(2)
     see("imported",contains=True,timeout=25)
     # The takes list sits below the external-camera section: scroll, then assert real data.
-    count=D.scroll_to(text="Recorded takes:",contains=True,max_swipes=12)
+    count=reach("Recorded takes:",True)
     assert count,"Recorded takes section not reachable"
     assert count.text.strip()!="Recorded takes: 0","Recording not imported into Studio: "+count.text
-    assert D.scroll_to(text="Take 1",contains=True,max_swipes=6),"Take 1 card not shown"
+    assert reach("Take 1",True),"Take 1 card not shown"
 
 def test_external_camera_filenames():
     # Real UI: log first filename, infer prefix + padded next number, persist offline.
@@ -190,18 +192,18 @@ def test_external_camera_filenames():
     D.type_text("DJI_0045.MP4")
     scroll_click("Log external camera take")
     see("External camera filename saved",contains=True,timeout=20)
-    assert D.scroll_to(text="DJI_0045.MP4",max_swipes=10),"Logged DJI_0045.MP4 card not shown"
+    assert reach("DJI_0045.MP4"),"Logged DJI_0045.MP4 card not shown"
     # The number field sits ABOVE the logged cards we just scrolled to.
     assert scroll_back_to("File number only (suffix)"), "Next-number field missing"
     see("Filename: DJI_0046.MP4",timeout=10)
     scroll_click("Log external camera take")
     see("External camera filename saved",contains=True,timeout=20)
-    assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Logged DJI_0046.MP4 card not shown"
+    assert reach("DJI_0046.MP4"),"Logged DJI_0046.MP4 card not shown"
     D.relaunch()
     open_project();project_tab("Shots")
     scroll_click("HeroCloseup",True)
-    assert D.scroll_to(text="DJI_0045.MP4",max_swipes=10),"First filename not saved"
-    assert D.scroll_to(text="DJI_0046.MP4",max_swipes=10),"Second filename not saved"
+    assert reach("DJI_0045.MP4"),"First filename not saved"
+    assert reach("DJI_0046.MP4"),"Second filename not saved"
 
 def test_backend_health_and_backup():
     # Fresh start: Account & data keeps its scroll position from the previous case otherwise.
@@ -299,7 +301,7 @@ def test_beat_drag_reorder():
         see("Add Visual beat")
         enter("Title",name)
         click("Save offline")
-        see(name,timeout=15)
+        see(name,True,timeout=15)
     D.relaunch();open_workspace("Story")
     first=see("1. BeatOne");second=see("2. BeatTwo")
     handle=by_desc("Drag BeatOne")
