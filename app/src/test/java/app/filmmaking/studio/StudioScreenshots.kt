@@ -88,10 +88,23 @@ class StudioScreenshots {
             }
         }
         compose.waitForIdle()
-        // captureToImage() waits for a hardware frame Robolectric never produces; draw the window in software instead.
+        // captureToImage() waits for a hardware frame Robolectric never produces; draw the windows in software instead.
+        // Every window is drawn, in order, so dialogs and menus (their own windows) land on top of the screen.
         val view = compose.activity.window.decorView
         val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
-        view.draw(android.graphics.Canvas(bmp))
+        val canvas = android.graphics.Canvas(bmp)
+        val wmg = Class.forName("android.view.WindowManagerGlobal")
+        val global = wmg.getMethod("getInstance").invoke(null)
+        @Suppress("UNCHECKED_CAST")
+        val roots = wmg.getDeclaredField("mViews").apply { isAccessible = true }.get(global) as List<android.view.View>
+        (roots.ifEmpty { listOf(view) }).forEach { root ->
+            val at = IntArray(2).also(root::getLocationOnScreen)
+            val lp = root.layoutParams as? android.view.WindowManager.LayoutParams
+            // A dialog's scrim is a window flag, not a view.
+            if (root !== view && lp != null && lp.flags and android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND != 0)
+                canvas.drawColor(android.graphics.Color.argb((lp.dimAmount * 255).toInt(), 0, 0, 0))
+            canvas.save(); canvas.translate(at[0].toFloat(), at[1].toFloat()); root.draw(canvas); canvas.restore()
+        }
         val dir = File("build/screenshots").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
@@ -198,6 +211,29 @@ class StudioScreenshots {
                 ProjectWorkflowScreen(v, tea, scenes, shots, shots, {}, {}, {}, { _, _ -> }, {}, {}, "Visual", {}, showTabs = false)
             }
         }
+    }
+
+    /** A menu open under its button, the current choice marked. */
+    @Test fun menu() = shot("menu", null) {
+        Column(Modifier.padding(16.dp)) {
+            Box { StudioButton("Inspires: 1-1 Kettle on the hob", {}, variant = BtnVariant.Outline)
+                StudioMenu(true, {}) {
+                    StudioMenuItem("The whole film (no shot)", {})
+                    shots.take(3).forEachIndexed { i, s -> StudioMenuItem(s.title, {}, selected = i == 0) }
+                } }
+        }
+    }
+
+    /** The shared dialog with check rows and the spinner. */
+    @Test fun dialog() = shot("dialog", null) {
+        StudioAlertDialog({}, "Shots for The kettle", text = {
+            Column {
+                shots.take(3).forEachIndexed { i, s -> StudioCheckRow(s.title, i != 1, {}, body = if (i == 2) "Now in Setup A" else null) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StudioSpinner(); MutedText("Getting the image…", small = true)
+                }
+            }
+        }, confirmButton = { StudioButton("Save links", {}) }, dismissButton = { StudioButton("Cancel", {}, variant = BtnVariant.Ghost) })
     }
 
     @Test fun workflowPlanner() {

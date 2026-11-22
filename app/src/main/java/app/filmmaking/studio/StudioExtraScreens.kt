@@ -272,16 +272,16 @@ fun AiDirectorScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: Lis
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.weight(1f)) {
                     StudioButton("Film: " + (project?.title ?: "General"), { showProjects = true }, Modifier.fillMaxWidth(), variant = BtnVariant.Outline, icon = Lucide.Clapperboard)
-                    DropdownMenu(showProjects, { showProjects = false }) {
-                        DropdownMenuItem({ Text("General conversation") }, { projectId = null; showProjects = false; vm.clearChat() })
-                        projects.forEach { p -> DropdownMenuItem({ Text(p.title) }, { projectId = p.id; showProjects = false; vm.clearChat() }) }
+                    StudioMenu(showProjects, { showProjects = false }) {
+                        StudioMenuItem("General conversation", onClick = { projectId = null; showProjects = false; vm.clearChat() }, selected = projectId == null)
+                        projects.forEach { p -> StudioMenuItem(p.title, onClick = { projectId = p.id; showProjects = false; vm.clearChat() }, selected = p.id == projectId) }
                     }
                 }
                 Box {
                     StudioButton("History (" + conversations.size + ")", { showConversations = true }, variant = BtnVariant.Outline, icon = Lucide.History)
-                    DropdownMenu(showConversations, { showConversations = false }) {
-                        DropdownMenuItem({ Text("New conversation") }, { vm.clearChat(); showConversations = false })
-                        conversations.forEach { c -> DropdownMenuItem({ Text(c.title.take(40)) }, { vm.conversationId = c.id; showConversations = false }) }
+                    StudioMenu(showConversations, { showConversations = false }) {
+                        StudioMenuItem("New conversation", onClick = { vm.clearChat(); showConversations = false })
+                        conversations.forEach { c -> StudioMenuItem(c.title.take(40), onClick = { vm.conversationId = c.id; showConversations = false }, selected = c.id == vm.conversationId) }
                     }
                 }
             }
@@ -452,8 +452,8 @@ fun CreativeDnaScreen(vm: StudioViewModel, projects: List<StudioRecord>, all: Li
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box {
                         StudioButton("Try in a film…", { choose = true }, variant = BtnVariant.Outline, enabled = projects.isNotEmpty())
-                        DropdownMenu(choose, { choose = false }) {
-                            projects.forEach { p -> DropdownMenuItem({ Text(p.title) }, {
+                        StudioMenu(choose, { choose = false }) {
+                            projects.forEach { p -> StudioMenuItem(p.title, onClick = {
                                 choose = false
                                 vm.act { vm.features.saveExperiment(p.id, x.optString("text"), x.optString("category")); vm.dismissExperiment(x)
                                     vm.report("Saved as an experiment for " + p.title) }

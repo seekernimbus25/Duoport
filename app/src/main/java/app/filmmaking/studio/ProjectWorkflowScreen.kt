@@ -155,9 +155,9 @@ fun ProjectWorkflowScreen(
 
     val kind = creating
     if (kind != null) {
-        AlertDialog(
+        StudioAlertDialog(
             onDismissRequest = { creating = null; editing = null },
-            title = { Text((if (editing == null) "Add " else "Edit ") + kind.label) },
+            title = (if (editing == null) "Add " else "Edit ") + kind.label,
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     StudioField(if (kind == WorkflowKind.CONTINUITY) "Planned condition" else "Title", newTitle, { newTitle = it }, Modifier.fillMaxWidth())
@@ -165,8 +165,8 @@ fun ProjectWorkflowScreen(
                     if (kind == WorkflowKind.CONTINUITY && editing == null) {
                         Box {
                             StudioButton("Shot: " + (shots.find { it.id == shotId }?.let(::shotLabel) ?: "Select shot"), { shotDropdown = true }, variant = BtnVariant.Outline)
-                            DropdownMenu(expanded = shotDropdown, onDismissRequest = { shotDropdown = false }) {
-                                shots.forEach { s -> DropdownMenuItem(text = { Text(shotLabel(s)) }, onClick = { shotId = s.id; shotDropdown = false }) }
+                            StudioMenu(shotDropdown, { shotDropdown = false }) {
+                                shots.forEach { s -> StudioMenuItem(shotLabel(s), onClick = { shotId = s.id; shotDropdown = false }, selected = s.id == shotId) }
                             }
                         }
                     }
@@ -182,7 +182,7 @@ fun ProjectWorkflowScreen(
                     if (item == null) vm.createWorkflow(project.id, kind, newTitle.trim(), newDetail, shotId)
                     else vm.updateWorkflow(item.collection, item.id, newTitle.trim(), newDetail)
                     creating = null; editing = null
-                }, variant = BtnVariant.Ghost, enabled = newTitle.isNotBlank() && (kind != WorkflowKind.CONTINUITY || editing != null || shotId != null))
+                }, enabled = newTitle.isNotBlank() && (kind != WorkflowKind.CONTINUITY || editing != null || shotId != null))
             },
             dismissButton = { StudioButton("Cancel", { creating = null; editing = null }, variant = BtnVariant.Ghost) }
         )
@@ -298,9 +298,9 @@ private fun ReferenceDetails(vm: StudioViewModel, item: StudioRecord, json: JSON
     var open by remember { mutableStateOf(false) }
     Box {
         StudioButton("Inspires: " + (shots.find { it.id == attached }?.let(::shotLabel) ?: "the whole film"), { open = true }, variant = BtnVariant.Outline)
-        DropdownMenu(open, { open = false }) {
-            DropdownMenuItem(text = { Text("The whole film (no shot)") }, onClick = { open = false; vm.attachReference(item.id, null) })
-            shots.forEach { s -> DropdownMenuItem(text = { Text(shotLabel(s)) }, onClick = { open = false; vm.attachReference(item.id, s.id) }) }
+        StudioMenu(open, { open = false }) {
+            StudioMenuItem("The whole film (no shot)", onClick = { open = false; vm.attachReference(item.id, null) }, selected = attached == null)
+            shots.forEach { s -> StudioMenuItem(shotLabel(s), onClick = { open = false; vm.attachReference(item.id, s.id) }, selected = s.id == attached) }
         }
     }
 }
@@ -325,11 +325,11 @@ private fun ReferenceBoardPanel(vm: StudioViewModel, project: StudioRecord, shot
                 StudioButton("From this phone", pickFromPhone, variant = BtnVariant.Outline, enabled = !vm.referenceBusy)
             }
             if (vm.referenceBusy) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("Getting the image…", style = MaterialTheme.typography.bodySmall, color = StudioColors.MutedForeground)
+                StudioSpinner(); Text("Getting the image…", style = MaterialTheme.typography.bodySmall, color = StudioColors.MutedForeground)
             }
         }
     }
-    if (linkOpen) AlertDialog(onDismissRequest = { linkOpen = false }, title = { Text("Image from a link") }, text = {
+    if (linkOpen) StudioAlertDialog(onDismissRequest = { linkOpen = false }, title = "Image from a link", text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             StudioField("Link to an image or a web page", link, { link = it }, Modifier.fillMaxWidth())
             Text("The phone downloads the picture and keeps a copy on the board, so it still shows if the site changes. " +
@@ -337,7 +337,7 @@ private fun ReferenceBoardPanel(vm: StudioViewModel, project: StudioRecord, shot
                 style = MaterialTheme.typography.bodySmall, color = StudioColors.MutedForeground)
         }
     }, confirmButton = {
-        StudioButton("Fetch image", { linkOpen = false; vm.referenceFromLink(link) }, variant = BtnVariant.Ghost, enabled = link.isNotBlank())
+        StudioButton("Fetch image", { linkOpen = false; vm.referenceFromLink(link) }, enabled = link.isNotBlank())
     }, dismissButton = { StudioButton("Cancel", { linkOpen = false }, variant = BtnVariant.Ghost) })
 
     val draft = vm.referenceDraft ?: return
@@ -345,7 +345,7 @@ private fun ReferenceBoardPanel(vm: StudioViewModel, project: StudioRecord, shot
     var notes by remember(draft) { mutableStateOf("") }
     var shotId by remember(draft) { mutableStateOf<String?>(null) }
     var shotMenu by remember { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = vm::discardReference, title = { Text("Add to the reference board") }, text = {
+    StudioAlertDialog(onDismissRequest = vm::discardReference, title = "Add to the reference board", text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             rememberDataImage(draft.image)?.let { androidx.compose.foundation.Image(it, "Reference preview", Modifier.fillMaxWidth().heightIn(max = 320.dp),
                 contentScale = androidx.compose.ui.layout.ContentScale.Fit) }
@@ -355,14 +355,14 @@ private fun ReferenceBoardPanel(vm: StudioViewModel, project: StudioRecord, shot
             StudioField("What you like about it (optional)", notes, { notes = it }, Modifier.fillMaxWidth(), minLines = 2)
             Box {
                 StudioButton("Inspires: " + (shots.find { it.id == shotId }?.let(::shotLabel) ?: "the whole film"), { shotMenu = true }, variant = BtnVariant.Outline)
-                DropdownMenu(shotMenu, { shotMenu = false }) {
-                    DropdownMenuItem(text = { Text("The whole film (no shot)") }, onClick = { shotMenu = false; shotId = null })
-                    shots.forEach { s -> DropdownMenuItem(text = { Text(shotLabel(s)) }, onClick = { shotMenu = false; shotId = s.id }) }
+                StudioMenu(shotMenu, { shotMenu = false }) {
+                    StudioMenuItem("The whole film (no shot)", onClick = { shotMenu = false; shotId = null }, selected = shotId == null)
+                    shots.forEach { s -> StudioMenuItem(shotLabel(s), onClick = { shotMenu = false; shotId = s.id }, selected = s.id == shotId) }
                 }
             }
         }
     }, confirmButton = {
-        StudioButton("Save to board", { vm.saveReference(project.id, title, notes, shotId) }, variant = BtnVariant.Ghost)
+        StudioButton("Save to board", { vm.saveReference(project.id, title, notes, shotId) })
     }, dismissButton = { StudioButton("Discard", vm::discardReference, variant = BtnVariant.Ghost) })
 }
 
@@ -377,7 +377,7 @@ private fun CritiqueDialog(vm: StudioViewModel, artifact: StudioRecord, close: (
             result = r; "Critique ready: review before saving"
         }
     }
-    AlertDialog(onDismissRequest = close, title = { Text("Script critique") }, text = {
+    StudioAlertDialog(onDismissRequest = close, title = "Script critique", text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val r = result
             if (r == null) Text(if (vm.aiBusy) "Asking the script doctor…" else "No critique yet")
@@ -396,7 +396,7 @@ private fun CritiqueDialog(vm: StudioViewModel, artifact: StudioRecord, close: (
         StudioButton("Save revision as new draft", {
             vm.act { vm.features.addDraftVersion(artifact.id, revised, "AI critique revision", "assistant"); vm.report("Saved as a new DRAFT version; the approved text is unchanged") }
             close()
-        }, variant = BtnVariant.Ghost, enabled = revised.isNotBlank())
+        }, enabled = revised.isNotBlank())
     }, dismissButton = { StudioButton("Close", close, variant = BtnVariant.Ghost) })
 }
 
@@ -477,13 +477,13 @@ private fun BeatBoard(vm: StudioViewModel, project: StudioRecord, beats: List<St
     }
     linking?.let { beat ->
         var chosen by remember(beat.id) { mutableStateOf(data(beat).optJSONArray("shotIds").ids().toSet()) }
-        AlertDialog(onDismissRequest = { linking = null }, title = { Text("Shots for " + beat.title) }, text = {
+        StudioAlertDialog(onDismissRequest = { linking = null }, title = "Shots for " + beat.title, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 shots.forEach { s ->
-                    Row { Checkbox(checked = s.id in chosen, onCheckedChange = { on -> chosen = if (on) chosen + s.id else chosen - s.id }); Text(shotLabel(s)) }
+                    StudioCheckRow(shotLabel(s), s.id in chosen, { on -> chosen = if (on) chosen + s.id else chosen - s.id })
                 }
             }
-        }, confirmButton = { StudioButton("Save links", { vm.act { vm.features.linkBeatShots(beat.id, chosen.toList()) }; linking = null }, variant = BtnVariant.Ghost) },
+        }, confirmButton = { StudioButton("Save links", { vm.act { vm.features.linkBeatShots(beat.id, chosen.toList()) }; linking = null }) },
             dismissButton = { StudioButton("Cancel", { linking = null }, variant = BtnVariant.Ghost) })
     }
 }
@@ -554,7 +554,7 @@ private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: L
     }
     sketching?.let { shot ->
         val base = frames.firstOrNull { data(it).optString("shotId") == shot.id && data(it).optBoolean("chosen") }?.let { data(it).optString("imageUri").ifBlank { null } }
-        AlertDialog(onDismissRequest = { sketching = null }, title = { Text("Sketch " + data(shot).optString("code")) }, text = {
+        StudioAlertDialog(onDismissRequest = { sketching = null }, title = "Sketch " + data(shot).optString("code"), text = {
             SketchPad(base, onSave = { strokes ->
                 vm.act { vm.features.addStoryboard(project.id, shot.id, base, "drawing", JSONObject(), false, strokes = strokes); vm.report("Sketch saved as a new storyboard version") }
                 sketching = null
@@ -563,7 +563,7 @@ private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: L
     }
     archiveFor?.let { shot ->
         var q by remember(shot.id) { mutableStateOf("") }
-        AlertDialog(onDismissRequest = { archiveFor = null }, title = { Text("Reference from your archive") }, text = {
+        StudioAlertDialog(onDismissRequest = { archiveFor = null }, title = "Reference from your archive", text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 StudioField("e.g. steam, window light", q, { q = it }, Modifier.fillMaxWidth())
                 StudioButton("Search", { vm.searchArchive(q) }, enabled = q.isNotBlank() && !vm.aiBusy)
@@ -591,7 +591,7 @@ private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: L
         }
         val prompt = if (editing) edited else brief.text
         val cost = "%.3f".format(StudioCreativeClient.STORYBOARD_IMAGE_COST_USD)
-        AlertDialog(onDismissRequest = { aiFor = null }, title = { Text("Generate a conceptual frame?") }, text = {
+        StudioAlertDialog(onDismissRequest = { aiFor = null }, title = "Generate a conceptual frame?", text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 StudioField("Your idea (a few words is fine)", idea, { idea = it }, Modifier.fillMaxWidth(), placeholder = shot.title, singleLine = false)
                 Text("Brief sent to the image model, built from this shot's plan:", style = MaterialTheme.typography.labelMedium)
@@ -615,7 +615,7 @@ private fun StoryboardPanel(vm: StudioViewModel, project: StudioRecord, shots: L
         }, confirmButton = {
             StudioButton("Generate (≈ $" + cost + ")", {
                 vm.generateStoryboardImage(project.id, shot.id, prompt, brief.orientation.wire); aiFor = null
-            }, variant = BtnVariant.Ghost, enabled = prompt.trim().length >= 5)
+            }, enabled = prompt.trim().length >= 5)
         }, dismissButton = { StudioButton("Cancel", { aiFor = null }, variant = BtnVariant.Ghost) })
     }
 }
@@ -707,10 +707,10 @@ private fun DiagramPanel(vm: StudioViewModel, project: StudioRecord, scenes: Lis
         var type by remember { mutableStateOf("camera") }
         var x by remember { mutableStateOf("5") }; var y by remember { mutableStateOf("4") }; var label by remember { mutableStateOf("") }
         var open by remember { mutableStateOf(false) }
-        AlertDialog(onDismissRequest = { adding = null }, title = { Text("Add element") }, text = {
+        StudioAlertDialog(onDismissRequest = { adding = null }, title = "Add element", text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box { StudioButton("Type: $type", { open = true }, variant = BtnVariant.Outline)
-                    DropdownMenu(open, { open = false }) { FeatureRepository.DIAGRAM_TYPES.forEach { t -> DropdownMenuItem({ Text(t) }, { type = t; open = false }) } } }
+                    StudioMenu(open, { open = false }) { FeatureRepository.DIAGRAM_TYPES.forEach { t -> StudioMenuItem(t, onClick = { type = t; open = false }, selected = t == type) } } }
                 StudioField("x (metres from left)", x, { x = it })
                 StudioField("y (metres from top)", y, { y = it })
                 StudioField("Label", label, { label = it })
@@ -720,17 +720,17 @@ private fun DiagramPanel(vm: StudioViewModel, project: StudioRecord, scenes: Lis
                 vm.act { val to = vm.features.addDiagramElement(d.id, type, x.toDouble(), y.toDouble(), label)
                     if (to != d.id) vm.report("Approved diagram kept; edit saved as a new draft version") }
                 adding = null
-            }, variant = BtnVariant.Ghost, enabled = x.toDoubleOrNull() != null && y.toDoubleOrNull() != null)
+            }, enabled = x.toDoubleOrNull() != null && y.toDoubleOrNull() != null)
         }, dismissButton = { StudioButton("Cancel", { adding = null }, variant = BtnVariant.Ghost) })
     }
     preview?.let { (d, els) ->
-        AlertDialog(onDismissRequest = { preview = null }, title = { Text("Preview AI setup") }, text = {
+        StudioAlertDialog(onDismissRequest = { preview = null }, title = "Preview AI setup", text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 DiagramCanvas(JSONObject(data(d).toString()).put("elements", els), null, {}) { _, _, _ -> }
                 for (i in 0 until els.length()) { val e = els.getJSONObject(i)
                     Text(e.optString("type") + " “" + e.optString("label") + "” " + e.optDouble("x") + "m, " + e.optDouble("y") + "m", style = MaterialTheme.typography.bodySmall, color = StudioColors.MutedForeground) }
             }
-        }, confirmButton = { StudioButton("Accept changes", { vm.act { vm.features.acceptSetupChanges(d.id, els) }; preview = null }, variant = BtnVariant.Ghost) },
+        }, confirmButton = { StudioButton("Accept changes", { vm.act { vm.features.acceptSetupChanges(d.id, els) }; preview = null }) },
             dismissButton = { StudioButton("Discard", { preview = null }, variant = BtnVariant.Ghost) })
     }
 }
@@ -760,8 +760,8 @@ private fun DayPlanner(vm: StudioViewModel, project: StudioRecord, shots: List<S
                     }
                     Row(Modifier.horizontalScroll(rememberScrollState())) {
                         Box { StudioButton("+ Shot", { addOpen = true }, variant = BtnVariant.Ghost)
-                            DropdownMenu(addOpen, { addOpen = false }) {
-                                shots.filter { it.id !in draft }.forEach { s -> DropdownMenuItem({ Text(shotLabel(s)) }, { draft = draft + s.id; addOpen = false }) }
+                            StudioMenu(addOpen, { addOpen = false }) {
+                                shots.filter { it.id !in draft }.forEach { s -> StudioMenuItem(shotLabel(s), onClick = { draft = draft + s.id; addOpen = false }) }
                             } }
                         StudioButton("Approve order", {
                             vm.act { vm.features.approveDayOrder(day.id, draft, "Edited by hand"); vm.report("Shooting order approved; narrative order unchanged") }
@@ -815,15 +815,15 @@ private fun SetupPanel(vm: StudioViewModel, shots: List<StudioRecord>, setups: L
     }
     editing?.let { st ->
         val ids = data(st).optJSONArray("shotIds").ids()
-        AlertDialog(onDismissRequest = { editing = null }, title = { Text("Shots in " + st.title) }, text = {
+        StudioAlertDialog(onDismissRequest = { editing = null }, title = "Shots in " + st.title, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 shots.forEach { s ->
                     val other = setups.firstOrNull { it.id != st.id && s.id in data(it).optJSONArray("shotIds").ids() }
-                    Row { Checkbox(checked = s.id in ids, onCheckedChange = { on -> vm.act { vm.features.assignShotToSetup(st.id, s.id, on) } })
-                        Text(shotLabel(s) + (other?.let { " (now in " + it.title + ")" } ?: "")) }
+                    StudioCheckRow(shotLabel(s), s.id in ids, { on -> vm.act { vm.features.assignShotToSetup(st.id, s.id, on) } },
+                        body = other?.let { "Now in " + it.title })
                 }
             }
-        }, confirmButton = { StudioButton("Done", { editing = null }, variant = BtnVariant.Ghost) })
+        }, confirmButton = { StudioButton("Done", { editing = null }) })
     }
 }
 
@@ -890,16 +890,16 @@ private fun CoveragePanel(vm: StudioViewModel, all: List<StudioRecord>, project:
     }
     omitting?.let { s ->
         var reason by remember { mutableStateOf("") }
-        AlertDialog(onDismissRequest = { omitting = null }, title = { Text("Omit " + s.optString("code")) }, text = {
+        StudioAlertDialog(onDismissRequest = { omitting = null }, title = "Omit " + s.optString("code"), text = {
             StudioField("Why is it intentionally omitted?", reason, { reason = it })
-        }, confirmButton = { StudioButton("Omit", { vm.act { vm.features.omitShot(s.optString("id"), reason) }; omitting = null }, variant = BtnVariant.Ghost, enabled = reason.isNotBlank()) },
+        }, confirmButton = { StudioButton("Omit", { vm.act { vm.features.omitShot(s.optString("id"), reason) }; omitting = null }, enabled = reason.isNotBlank()) },
             dismissButton = { StudioButton("Cancel", { omitting = null }, variant = BtnVariant.Ghost) })
     }
     pickupScene?.let { sc ->
         var title by remember { mutableStateOf("") }; var why by remember { mutableStateOf("") }
-        AlertDialog(onDismissRequest = { pickupScene = null }, title = { Text("Pickup shot") }, text = {
+        StudioAlertDialog(onDismissRequest = { pickupScene = null }, title = "Pickup shot", text = {
             Column { StudioField("Shot title", title, { title = it }); StudioField("Why it is needed", why, { why = it }) }
-        }, confirmButton = { StudioButton("Add to scene", { vm.act { vm.features.addPickup(sc.id, title, why) }; pickupScene = null }, variant = BtnVariant.Ghost, enabled = title.isNotBlank()) },
+        }, confirmButton = { StudioButton("Add to scene", { vm.act { vm.features.addPickup(sc.id, title, why) }; pickupScene = null }, enabled = title.isNotBlank()) },
             dismissButton = { StudioButton("Cancel", { pickupScene = null }, variant = BtnVariant.Ghost) })
     }
 }

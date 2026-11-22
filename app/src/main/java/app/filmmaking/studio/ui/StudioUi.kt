@@ -192,9 +192,59 @@ fun StudioSelect(label: String, value: String, options: List<String>, onChange: 
                 Text(display(value).ifBlank { "—" }, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp))
                 Icon(Lucide.ChevronDown, null, Modifier.size(18.dp), tint = StudioColors.MutedForeground)
             }
-            DropdownMenu(open, { open = false }) {
-                options.forEach { o -> DropdownMenuItem(text = { Text(display(o)) }, onClick = { open = false; onChange(o) }) }
+            StudioMenu(open, { open = false }) {
+                options.forEach { o -> StudioMenuItem(display(o), selected = o == value, onClick = { open = false; onChange(o) }) }
             }
+        }
+    }
+}
+
+private val MenuShape = RoundedCornerShape(14.dp)
+
+/** Popover menu (web `DropdownMenuContent`): popover colour, hairline border, rounded corners, soft shadow. */
+@Composable
+fun StudioMenu(expanded: Boolean, onDismissRequest: () -> Unit, content: @Composable ColumnScope.() -> Unit) =
+    DropdownMenu(expanded, onDismissRequest, Modifier.heightIn(max = 360.dp), shape = MenuShape, containerColor = StudioColors.Popover,
+        tonalElevation = 0.dp, shadowElevation = 12.dp, border = BorderStroke(1.dp, StudioColors.Border), content = content)
+
+/** One 48dp menu row; the current choice is gold with a check. */
+@Composable
+fun StudioMenuItem(text: String, onClick: () -> Unit, selected: Boolean = false) =
+    DropdownMenuItem(
+        text = { Text(text, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        onClick = onClick, modifier = Modifier.heightIn(min = 48.dp),
+        trailingIcon = if (selected) ({ Icon(Lucide.Check, "Selected", Modifier.size(16.dp), tint = StudioColors.Primary) }) else null,
+        colors = MenuDefaults.itemColors(textColor = if (selected) StudioColors.Primary else StudioColors.Foreground),
+        contentPadding = PaddingValues(horizontal = 16.dp))
+
+/** Small amber spinner (web `Loader2 animate-spin`). */
+@Composable
+fun StudioSpinner(size: Dp = 18.dp) =
+    CircularProgressIndicator(Modifier.size(size), color = StudioColors.Primary, trackColor = StudioColors.Muted,
+        strokeWidth = 2.dp, strokeCap = androidx.compose.ui.graphics.StrokeCap.Round)
+
+/** Square check in the field style: hairline when off, amber fill with a dark tick when on. */
+@Composable
+fun StudioCheckMark(checked: Boolean, enabled: Boolean = true) {
+    val shape = RoundedCornerShape(6.dp)
+    val alpha = if (enabled) 1f else 0.4f
+    Box(Modifier.size(20.dp).clip(shape)
+        .background(if (checked) StudioColors.Primary.copy(alpha = alpha) else StudioColors.Surface)
+        .border(1.dp, if (checked) StudioColors.Primary.copy(alpha = alpha) else StudioColors.MutedForeground.copy(alpha = 0.5f * alpha), shape),
+        contentAlignment = Alignment.Center) {
+        if (checked) Icon(Lucide.Check, null, Modifier.size(14.dp), tint = StudioColors.PrimaryForeground)
+    }
+}
+
+/** Label with a check on the left; the whole row is one 48dp target. */
+@Composable
+fun StudioCheckRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit, enabled: Boolean = true, body: String? = null) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        StudioCheckMark(checked, enabled)
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = if (enabled) StudioColors.Foreground else StudioColors.MutedForeground)
+            if (body != null) MutedText(body, small = true)
         }
     }
 }
@@ -378,12 +428,27 @@ fun StudioSwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit
     }
 }
 
-/** Dialog in the popover colour with the web's button pair. */
+private val DialogShape = RoundedCornerShape(24.dp)
+
+/**
+ * Dialog in the popover colour (web `Dialog`): hairline border, Fraunces title, body in the secondary text colour.
+ * Pass a primary [StudioButton] as [confirmButton] and a ghost one as [dismissButton], like the web's button pair.
+ */
+@Composable
+fun StudioAlertDialog(
+    onDismissRequest: () -> Unit, title: String, text: @Composable () -> Unit,
+    confirmButton: @Composable () -> Unit = {}, dismissButton: (@Composable () -> Unit)? = null,
+) = AlertDialog(onDismissRequest = onDismissRequest, modifier = Modifier.border(1.dp, StudioColors.Border, DialogShape),
+    containerColor = StudioColors.Popover, titleContentColor = StudioColors.Foreground, textContentColor = StudioColors.SecondaryForeground,
+    shape = DialogShape, tonalElevation = 0.dp,
+    title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+    text = { ProvideTextStyle(MaterialTheme.typography.bodyMedium) { text() } },
+    confirmButton = confirmButton, dismissButton = dismissButton)
+
+/** A text-only confirmation dialog. */
 @Composable
 fun StudioDialog(title: String, body: String, confirm: String, onConfirm: () -> Unit, dismiss: String, onDismiss: () -> Unit) =
-    AlertDialog(onDismissRequest = onDismiss, containerColor = StudioColors.Popover, shape = RoundedCornerShape(24.dp),
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
-        text = { Text(body, style = MaterialTheme.typography.bodyMedium, color = StudioColors.SecondaryForeground) },
+    StudioAlertDialog(onDismiss, title, text = { Text(body) },
         confirmButton = { StudioButton(confirm, onConfirm) },
         dismissButton = { StudioButton(dismiss, onDismiss, variant = BtnVariant.Ghost) })
 
